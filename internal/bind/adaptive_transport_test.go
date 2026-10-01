@@ -19,10 +19,7 @@ func TestAdaptiveFirstBulkPacketsMayArriveReversed(t *testing.T) {
 
 func testAdaptiveReorderedStart(t *testing.T, delay time.Duration) {
 	clock := newFakeClock()
-	m, _, _ := newProbingMultipath(t, loopbackPaths(1), testKey(t, 0x42), clock)
-	if err := m.EnableAdaptive(); err != nil {
-		t.Fatal(err)
-	}
+	m, _ := newProbingMultipath(t, loopbackPaths(1), testKey(t, 0x42), clock)
 	if _, _, err := m.Open(0); err != nil {
 		t.Fatal(err)
 	}
@@ -64,10 +61,7 @@ func testAdaptiveReorderedStart(t *testing.T, delay time.Duration) {
 // BG regression: capability negotiation must not change padded PMTU echoes.
 func TestAdaptivePaddedProbeEcho(t *testing.T) {
 	psk := testKey(t, 0x42)
-	m, _, _ := newProbingMultipath(t, loopbackPaths(1), psk, newFakeClock())
-	if err := m.EnableAdaptive(); err != nil {
-		t.Fatal(err)
-	}
+	m, _ := newProbingMultipath(t, loopbackPaths(1), psk, newFakeClock())
 	if _, _, err := m.Open(0); err != nil {
 		t.Fatal(err)
 	}
@@ -106,10 +100,7 @@ func TestAdaptivePaddedProbeEcho(t *testing.T) {
 // including arrivals after a later datagram has already reached the engine.
 func TestAdaptiveSmallDatagramsDoNotWaitForMissingPredecessor(t *testing.T) {
 	clk := newFakeClock()
-	m, _, _ := newProbingMultipath(t, loopbackPaths(1), testKey(t, 0x42), clk)
-	if err := m.EnableAdaptive(); err != nil {
-		t.Fatal(err)
-	}
+	m, _ := newProbingMultipath(t, loopbackPaths(1), testKey(t, 0x42), clk)
 	receive, _, err := m.Open(0)
 	if err != nil {
 		t.Fatal(err)
@@ -153,26 +144,8 @@ func TestAdaptiveSmallDatagramsDoNotWaitForMissingPredecessor(t *testing.T) {
 	}
 }
 
-func TestAdaptiveRejectsLegacyData(t *testing.T) {
-	m, _, _ := newProbingMultipath(t, loopbackPaths(1), testKey(t, 0x42), newFakeClock())
-	if err := m.EnableAdaptive(); err != nil {
-		t.Fatal(err)
-	}
-	if _, _, err := m.Open(0); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = m.Close() })
-	m.dispatchInbound(m.paths[0], frame.Data{OuterSeq: 1, Payload: []byte("unauthenticated")}, nil, netip.MustParseAddrPort("127.0.0.1:51820"))
-	if _, ok := m.resequencer.Load().Pop(); ok {
-		t.Fatal("legacy unauthenticated data entered adaptive receive stream")
-	}
-}
-
 func TestAdaptiveRetiresRemovedSocketRoutes(t *testing.T) {
-	m, _, _ := newProbingMultipath(t, loopbackPaths(2), testKey(t, 0x42), newFakeClock())
-	if err := m.EnableAdaptive(); err != nil {
-		t.Fatal(err)
-	}
+	m, _ := newProbingMultipath(t, loopbackPaths(2), testKey(t, 0x42), newFakeClock())
 	if _, _, err := m.Open(0); err != nil {
 		t.Fatal(err)
 	}
@@ -194,13 +167,17 @@ func TestAdaptiveRetiresRemovedSocketRoutes(t *testing.T) {
 }
 
 func TestAdaptiveInvalidSecondaryPeerDoesNotHangOpen(t *testing.T) {
-	m, _, _ := newProbingMultipath(t, loopbackPaths(1), testKey(t, 0x42), newFakeClock())
-	if err := m.EnableAdaptive(); err != nil {
+	clock := newFakeClock()
+	paths := loopbackPaths(1)
+	m, _ := newProbingMultipath(t, paths, testKey(t, 0x42), clock)
+	if err := m.AddConcentratorPeer("no-probes", testKey(t, 0x43), nil, nil); err == nil {
+		t.Fatal("peer without authenticated probes accepted")
+	}
+	probers, factory := concPeerWiring(t, paths, testKey(t, 0x43), 988, clock)
+	if err := m.AddConcentratorPeer("desynced", testKey(t, 0x43), probers, factory); err != nil {
 		t.Fatal(err)
 	}
-	if err := m.AddConcentratorPeer("no-probes", testKey(t, 0x43), m.scheduler, nil, nil); err != nil {
-		t.Fatal(err)
-	}
+	m.peersByName["desynced"].probers = nil
 	opened := make(chan error, 1)
 	go func() { _, _, err := m.Open(0); opened <- err }()
 	select {
@@ -218,6 +195,14 @@ func TestAdaptiveInvalidSecondaryPeerDoesNotHangOpen(t *testing.T) {
 		m.mu.Unlock()
 		<-opened
 		t.Fatal("invalid secondary peer left Open waiting on a running adaptive worker")
+	}
+	if len(m.paths) != 0 || len(m.shared) != 0 || m.deliverSignal != nil || m.recvClosed != nil {
+		t.Fatal("failed Open retained per-generation bind state")
+	}
+	for _, peer := range m.peers {
+		if peer.resequencer.Load() != nil || len(peer.paths) != 0 {
+			t.Fatalf("failed Open retained per-generation state of peer %q", peer.name)
+		}
 	}
 	if err := m.Close(); err != nil {
 		t.Fatal(err)

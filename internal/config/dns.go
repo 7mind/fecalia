@@ -84,7 +84,7 @@ type DNS struct {
 	// after defaulting.
 	PollInterval time.Duration `toml:"-"`
 	// PollIntervalRaw is the TOML Go-duration string form of PollInterval,
-	// e.g. "30s". Mirrors Path.LinkRTTRaw: go-toml/v2 cannot decode a TOML
+	// e.g. "30s". Mirrors Path.RideThroughRaw: go-toml/v2 cannot decode a TOML
 	// string directly into a time.Duration field, so the raw string is parsed
 	// via time.ParseDuration in applyDefaults.
 	PollIntervalRaw string `toml:"poll_interval"`
@@ -101,7 +101,7 @@ type DNS struct {
 // usable settings — an absent block still ends up as the system resolver
 // with the standard cadence/timeout, per the type's zero-value contract.
 // PollIntervalRaw/TimeoutRaw are parsed here (mirroring Path's *Raw-field
-// normalize step for LinkRTTRaw); an unparseable duration string is reported
+// normalize step for RideThroughRaw); an unparseable duration string is reported
 // immediately.
 func (d *DNS) applyDefaults() error {
 	if d.Resolver == "" {
@@ -131,7 +131,7 @@ func (d *DNS) applyDefaults() error {
 // validate enforces the [dns] block invariants: a resolver-mode-appropriate
 // set of required fields, no stray fields left over from a different mode,
 // positive cadence/timeout, and the BOOTSTRAP-IP invariant for a hostname-form
-// doh_url/dot_server. Runs after applyDefaults (mirroring Amnezia/FEC/
+// doh_url/dot_server. Runs after applyDefaults (mirroring Amnezia/
 // SchedulerConfig), so Resolver/PollInterval/Timeout are already defaulted.
 func (d DNS) validate() error {
 	if !d.Resolver.valid() {

@@ -311,7 +311,6 @@ func TestReloadTokenRotationAtFixedPort(t *testing.T) {
 // [monitor] endpoint. It asserts, over the up()-wired t.monitorInfo:
 //   - Role from config and the ldflags Version passed into up();
 //   - a LIVE Uptime provider that reports a positive elapsed time (R242);
-//   - the config-DECLARED per-path link params keyed to the metrics (peer,path) rule;
 //   - the truncated (~10 base64 char) local WG public-key FINGERPRINT — a prefix of the
 //     real public key, NEVER the recoverable full key (Q63);
 //   - an empty endpoints list on the single-IP-literal edge (no failover controller).
@@ -321,21 +320,16 @@ func TestReloadTokenRotationAtFixedPort(t *testing.T) {
 // the freshness property (R242) a value captured once at construction would violate.
 //
 // Fails before the wiring: the placeholder monitor.Info{} yields empty Role/Version/
-// fingerprint, no PathLinks, a nil Uptime provider, and newEndpointsProvider does not exist.
+// fingerprint, a nil Uptime provider, and newEndpointsProvider does not exist.
 func TestMonitorWire_InfoFields(t *testing.T) {
 	defer goleak.VerifyNone(t)
 
 	const wantVersion = "v9.9.9-wiretest"
-	const wantBandwidthBps = 50_000_000.0
-	const wantRTT = 45 * time.Millisecond
 
 	// A single-IP-literal edge: no hub-failover controller (peerNeedsHubFailover is false),
-	// so the up()-wired endpoints provider returns an empty list. The declared link params
-	// are set post-Load directly on the path (buildPathLinks reads these fields).
+	// so the up()-wired endpoints provider returns an empty list.
 	cfg := writeEdgeConfig(t, `["127.0.0.1:51821"]`, false)
 	cfg.Monitor = config.Monitor{Listen: "127.0.0.1:0"}
-	cfg.Paths[0].LinkBandwidthBitsPerSec = wantBandwidthBps
-	cfg.Paths[0].LinkRTT = wantRTT
 	chtun := tuntest.NewChannelTUN()
 
 	tun, err := up(cfg, discardLogger(t), chtun.TUN(), "wanbondtest0", inertFactory, wantVersion)
@@ -359,18 +353,6 @@ func TestMonitorWire_InfoFields(t *testing.T) {
 	}
 	if up := info.Uptime(); up <= 0 {
 		t.Fatalf("Info.Uptime() = %v, want > 0", up)
-	}
-
-	// Per-path declared link params, keyed by the single-peer (peer="") rule.
-	link, ok := info.PathLinks[monitor.PathKey{Peer: "", Name: cfg.Paths[0].Name}]
-	if !ok {
-		t.Fatalf("Info.PathLinks missing key {Peer:\"\", Name:%q}; have %+v", cfg.Paths[0].Name, info.PathLinks)
-	}
-	if link.LinkBandwidthBps != wantBandwidthBps {
-		t.Fatalf("PathLink.LinkBandwidthBps = %v, want %v", link.LinkBandwidthBps, wantBandwidthBps)
-	}
-	if link.LinkRttSeconds != wantRTT.Seconds() {
-		t.Fatalf("PathLink.LinkRttSeconds = %v, want %v", link.LinkRttSeconds, wantRTT.Seconds())
 	}
 
 	// The fingerprint is the truncated base64 of the REAL local public key: a prefix of the

@@ -96,31 +96,6 @@ func TestReloadWarnings(t *testing.T) {
 			c.Paths = []config.Path{path("a"), modPath("b", "10.0.0.9")}
 			return c
 		}, `path "b"`},
-		{"same-name link_bandwidth changed", func() *config.Config {
-			// D70: a same-name path whose declared link_bandwidth changed must warn —
-			// it is not applied (survivors keep original pacing) and the catch-all
-			// zeroes Paths, so without the same-name link comparison it is silent.
-			c := base()
-			b := path("b")
-			b.LinkBandwidthBitsPerSec = 1_000_000
-			c.Paths = []config.Path{path("a"), b}
-			return c
-		}, `path "b"`},
-		{"same-name link_rtt changed", func() *config.Config {
-			// D70: a same-name path whose declared link_rtt changed must warn, same rationale.
-			c := base()
-			b := path("b")
-			b.LinkRTT = 45 * time.Millisecond
-			c.Paths = []config.Path{path("a"), b}
-			return c
-		}, `path "b"`},
-		{"same-name link_bandwidth_limit changed", func() *config.Config {
-			c := base()
-			b := path("b")
-			b.LinkBandwidthLimitBitsPerSec = 2_000_000
-			c.Paths = []config.Path{path("a"), b}
-			return c
-		}, `path "b"`},
 		{"reordered paths", func() *config.Config {
 			c := base()
 			c.Paths = []config.Path{path("b"), path("a")}
@@ -148,14 +123,9 @@ func TestReloadWarnings(t *testing.T) {
 		}, "tun_persist"},
 		{"scheduler changed", func() *config.Config {
 			c := base()
-			c.Scheduler = config.SchedulerConfig{Policy: config.PolicyWeighted}
+			c.Scheduler = config.SchedulerConfig{Policy: config.PolicyAdaptive}
 			return c
-		}, "scheduler"},
-		{"fec changed", func() *config.Config {
-			c := base()
-			c.FEC = config.FEC{Enabled: true, DataShards: 4, ParityShards: 2}
-			return c
-		}, "fec"},
+		}, "other config section changed"}, // no dedicated warning: reported by the catch-all
 		{"dns changed", func() *config.Config {
 			c := base()
 			c.DNS = config.DNS{Resolver: config.DNSResolverDoH, DoHURL: "https://example.com/dns-query"}
@@ -191,91 +161,6 @@ func TestReloadWarnings(t *testing.T) {
 			}
 			if len(w) != 1 {
 				t.Fatalf("want exactly one warning, got %v", w)
-			}
-		})
-	}
-}
-
-func TestReloadWarnsEveryRecoveryServiceInputUntilRestart(t *testing.T) {
-	base := &config.Config{
-		Role:  config.RoleEdge,
-		Paths: []config.Path{path("a")},
-		Scheduler: config.SchedulerConfig{
-			Policy:        config.PolicyActiveBackup,
-			PacingEnabled: true,
-			PerPathShapers: []config.PathShaperConfig{{
-				RateBytesPerSecond:      1_000_000,
-				DataBurstBytes:          45_000,
-				ControlReserveBytes:     1472,
-				MaxEncodedDatagramBytes: 1472,
-				ProbeRateBytesPerSecond: 14_720,
-				ProbeBurstBytes:         2944,
-				PriorityReserveBytes:    2944,
-				FECGroupReserveBytes:    20_000,
-				RecoveryWriteSlack:      10 * time.Millisecond,
-				RecoveryBound:           125 * time.Millisecond,
-			}},
-		},
-		FEC: config.FEC{Enabled: true, DataShards: 3, ParityShards: 1},
-	}
-
-	schedulerMutations := []struct {
-		name   string
-		mutate func(*config.PathShaperConfig)
-	}{
-		{"R", func(c *config.PathShaperConfig) { c.RateBytesPerSecond++ }},
-		{"Rlimit", func(c *config.PathShaperConfig) { c.RateLimitBytesPerSecond++ }},
-		{"controller", func(c *config.PathShaperConfig) { c.CongestionControlled = !c.CongestionControlled }},
-		{"RTT", func(c *config.PathShaperConfig) { c.LinkRTT++ }},
-		{"Rp", func(c *config.PathShaperConfig) { c.ProbeRateBytesPerSecond++ }},
-		{"B", func(c *config.PathShaperConfig) { c.DataBurstBytes++ }},
-		{"C", func(c *config.PathShaperConfig) { c.ControlReserveBytes++ }},
-		{"Pburst", func(c *config.PathShaperConfig) { c.ProbeBurstBytes++ }},
-		{"P", func(c *config.PathShaperConfig) { c.PriorityReserveBytes++ }},
-		{"Lmax", func(c *config.PathShaperConfig) { c.MaxEncodedDatagramBytes++ }},
-		{"Fgroup", func(c *config.PathShaperConfig) { c.FECGroupReserveBytes++ }},
-		{"I", func(c *config.PathShaperConfig) { c.RecoveryWriteSlack++ }},
-		{"A", func(c *config.PathShaperConfig) { c.RecoveryBound++ }},
-		{"Ecompletion", func(c *config.PathShaperConfig) { c.CompletionOverrunBound++ }},
-		{"Mtotal", func(c *config.PathShaperConfig) { c.MemoryBoundBytes++ }},
-	}
-	for _, test := range schedulerMutations {
-		t.Run(test.name, func(t *testing.T) {
-			desired := *base
-			desired.Scheduler = base.Scheduler
-			desired.Scheduler.PerPathShapers = append([]config.PathShaperConfig(nil), base.Scheduler.PerPathShapers...)
-			test.mutate(&desired.Scheduler.PerPathShapers[0])
-			warnings := reloadWarnings(base, &desired)
-			if !containsSubstr(warnings, "scheduler section changed") ||
-				!containsSubstr(warnings, "until restart") {
-				t.Fatalf("recovery-service mutation %s warnings = %v", test.name, warnings)
-			}
-			running := runningConfig(base, nil, nil)
-			if !reflect.DeepEqual(running.Scheduler, base.Scheduler) {
-				t.Fatalf("membership-only reload applied recovery-service mutation %s", test.name)
-			}
-		})
-	}
-
-	for _, test := range []struct {
-		name   string
-		mutate func(*config.FEC)
-	}{
-		{"Kdata", func(f *config.FEC) { f.DataShards++ }},
-		{"Mmax", func(f *config.FEC) { f.ParityShards++ }},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			desired := *base
-			desired.FEC = base.FEC
-			test.mutate(&desired.FEC)
-			warnings := reloadWarnings(base, &desired)
-			if !containsSubstr(warnings, "fec section changed") ||
-				!containsSubstr(warnings, "until restart") {
-				t.Fatalf("recovery-service mutation %s warnings = %v", test.name, warnings)
-			}
-			running := runningConfig(base, nil, nil)
-			if !reflect.DeepEqual(running.FEC, base.FEC) {
-				t.Fatalf("membership-only reload applied recovery-service mutation %s", test.name)
 			}
 		})
 	}
@@ -326,15 +211,15 @@ func TestReloadWarningsBind(t *testing.T) {
 // that DOES have a dedicated warning must stay at exactly one warning — proving the
 // catch-all does NOT double-fire once a field is individually handled; (2) this test
 // enumerates config.Config's actual fields via reflection and asserts the set is
-// EXACTLY the set reloadWarnings's catch-all zeroes — so adding a new field to
+// EXACTLY the set reloadWarnings's catch-all zeroes, plus Scheduler, which it
+// deliberately leaves to the generic warning — so adding a new field to
 // Config without also updating reloadWarnings (with either a dedicated warning or an
 // addition to the zeroed set) fails this test, forcing the invariant to be honoured.
 func TestReloadWarningsCatchAll(t *testing.T) {
 	known := map[string]bool{
 		"Role": true, "Exit": true, "Paths": true, "WireGuard": true, "Amnezia": true, "PSK": true,
-		"Metrics": true, "Monitor": true, "Log": true, "Scheduler": true, "FEC": true, "DNS": true,
-		"Liveness": true, "Bind": true, "TUNPersist": true, "WeightedCapacitySane": true,
-		"LivenessBudgetSane": true,
+		"Metrics": true, "Monitor": true, "Log": true, "Scheduler": true, "DNS": true,
+		"Liveness": true, "Bind": true, "TUNPersist": true, "LivenessBudgetSane": true,
 	}
 	typ := reflect.TypeOf(config.Config{})
 	for i := 0; i < typ.NumField(); i++ {

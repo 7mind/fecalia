@@ -17,14 +17,14 @@ import (
 //   - keeping the engine's single virtual endpoint pinned to the ORIGINAL source
 //     (the WG session must not observe endpoint churn), and
 //   - NOT tripping the receive resequencer's discontinuity guard — a re-roam is
-//     the SAME session, so outer-seq keeps climbing monotonically across it and
+//     the SAME session, so its sequences keep climbing monotonically across it and
 //     only the source address changes.
 //
 // It drives handleInbound directly (no goroutines), mirroring probe_test.go.
 func TestMultipathReRoamRelearnsRemoteVirtStable(t *testing.T) {
 	psk := testKey(t, 0x16)
 	clk := newFakeClock()
-	m, _, _ := newProbingMultipath(t, loopbackPaths(1), psk, clk)
+	m, _ := newProbingMultipath(t, loopbackPaths(1), psk, clk)
 	if _, _, err := m.Open(0); err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -34,13 +34,10 @@ func TestMultipathReRoamRelearnsRemoteVirtStable(t *testing.T) {
 	srcA := netip.MustParseAddrPort("198.51.100.10:5000") // the edge's original public addr
 	srcB := netip.MustParseAddrPort("203.0.113.20:5000")  // its addr AFTER the re-roam
 
-	dataCodec, _ := frame.NewCodec(psk)
-	data := func(seq uint64, payload string) []byte {
-		raw, err := dataCodec.Encode(nil, frame.Data{OuterSeq: seq, PathID: 0, Payload: []byte(payload)})
-		if err != nil {
-			t.Fatalf("encode data: %v", err)
-		}
-		return raw
+	// The edge's transport: one process, so its sequences keep climbing across the roam.
+	edge := newRemoteTransport(t, m.peerState, 0x1122334455667788)
+	data := func(payload string) []byte {
+		return edge.wire(edge.bulk(ps, []byte(payload)))
 	}
 	// probe builds an authenticated originating PROBE (IsEcho=false) as the edge
 	// would emit it: same session, strictly increasing ProbeSeq.
@@ -69,7 +66,8 @@ func TestMultipathReRoamRelearnsRemoteVirtStable(t *testing.T) {
 	if got, ok := ps.getRemote(); !ok || got != srcA {
 		t.Fatalf("remote before re-roam = %v (ok=%v), want %v", got, ok, srcA)
 	}
-	m.handleInbound(ps, data(1, "a"), srcA)
+	edge.join(ps, srcA)
+	m.handleInbound(ps, data("a"), srcA)
 	if src := popPayload("a"); src != srcA {
 		t.Fatalf("frame 1 carried src %v, want %v", src, srcA)
 	}
@@ -83,10 +81,13 @@ func TestMultipathReRoamRelearnsRemoteVirtStable(t *testing.T) {
 		t.Fatalf("remote NOT re-learned after re-roam = %v (ok=%v), want %v", got, ok, srcB)
 	}
 
-	// DATA keeps flowing from srcB with CONTINUOUS outer-seq (same session): every
-	// frame is delivered in order, and the virtual endpoint stays pinned to srcA.
-	m.handleInbound(ps, data(2, "b"), srcB)
-	m.handleInbound(ps, data(3, "c"), srcB)
+	// Datagrams keep flowing from srcB with CONTINUOUS sequences (same session, whose
+	// hello now arrives from srcB): every one is delivered in order, and the virtual
+	// endpoint stays pinned to srcA.
+	rebaselines := m.resequencer.Load().Stats().Rebaselines
+	edge.join(ps, srcB)
+	m.handleInbound(ps, data("b"), srcB)
+	m.handleInbound(ps, data("c"), srcB)
 	if src := popPayload("b"); src != srcB {
 		t.Fatalf("frame 2 carried src %v, want %v", src, srcB)
 	}
@@ -97,9 +98,12 @@ func TestMultipathReRoamRelearnsRemoteVirtStable(t *testing.T) {
 		t.Fatalf("virtual endpoint moved to %v after re-roam, want it PINNED to %v", m.virt.dstAddrPort(), srcA)
 	}
 
-	// The discontinuity guard must NOT have fired: the source changed but outer-seq
-	// stayed monotonic, so there was no resync and no frame dropped as suspect.
+	// The discontinuity guard must NOT have fired: the source changed but the stream
+	// continued, so there was no re-baseline, no resync and no frame dropped as suspect.
 	st := m.resequencer.Load().Stats()
+	if st.Rebaselines != rebaselines {
+		t.Fatalf("resequencer re-baselined %d time(s) across a re-roam; a same-session source change must not restart the stream", st.Rebaselines-rebaselines)
+	}
 	if st.Resyncs != 0 {
 		t.Fatalf("resequencer resynced %d time(s) across a re-roam; a same-session source change must not look like a discontinuity", st.Resyncs)
 	}

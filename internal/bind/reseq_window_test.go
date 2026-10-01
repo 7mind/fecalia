@@ -22,7 +22,6 @@ func TestResequencerHoldsARepairAtHighRate(t *testing.T) {
 	)
 	clock := newFakeClock()
 	rq := reseq.New(resequencerWindow, resequencerTimeout, clock)
-	rq.SetMultiPathExpected(true)
 	rq.SetHoldBound(adaptiveReorderHold)
 	source := netip.MustParseAddrPort("192.0.2.1:51820")
 	later := uint64(datagramsPerSecond * repairAfter / time.Second)

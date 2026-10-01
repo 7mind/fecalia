@@ -18,33 +18,25 @@ import (
 // teardown). Keep this in sync when adding a file:
 //
 //	9095  p2_aggregation_test.go      (p2MetricsListen)
-//	9096  p3_fec_test.go              (p3MetricsListen)
-//	9097  p4_adaptive_test.go         (p4MetricsListen)
 //	9098  tolerant_startup_test.go    (t60MetricsListen)
 //	9099  hub_failover_test.go        (hfMetricsListen)
 //	9100  standby_liveness_test.go    (t104MetricsListen)
 //	9101  session_established_test.go (i2MetricsListen)
 //	9102  multipeer_test.go           (mpMetricsListen)
-//	9103  pacing_test.go              (pacingMetricsListen)
 //	9104  restart_onesided_test.go    (r121MetricsPort; edge on loopback 127.0.0.1 in the base
 //	      netns, scraped directly; concentrator on loopback 127.0.0.1 in the peer netns,
-//	      scraped via fetchMetricsInNetns — like p2/p3/p4 and 9107)
+//	      scraped via fetchMetricsInNetns — like p2 and 9107)
 //	9105  load_self_test.go           (loadSelfTestMetricsListen)
-//	9106  weighted_capacity_warn_test.go (t144MetricsListen)
 //	9107  multipeer_hardened_test.go  (hwMetricsPort; concentrator on loopback 127.0.0.1 in the
-//	      peer netns, scraped via fetchMetricsInNetns — like p2/p3/p4)
-//	9108  aggregation_metrics_test.go   (aggMetricsListen)
+//	      peer netns, scraped via fetchMetricsInNetns — like p2)
 //	9109  probe_headroom_test.go       (t145MetricsListen)
-//	9110  aggregation_visibility_test.go (visMetricsListen; both scenarios share the port,
-//	      each in its own netns, sequentially)
 //	9111  ride_through_test.go         (rtMetricsListen; the three D86 phases share the port,
 //	      each in its own netns, sequentially)
 //	9112  two_wan_downlink_pin_test.go (t248MetricsListen; edge in the base netns, scraped
-//	      directly — the single-socket-concentrator two-WAN downlink-pin e2e, T248/D94)
+//	      directly — the single-socket-concentrator two-WAN downlink e2e, T248/D94)
 //	9113  multi_concentrator_warm_standby_test.go (mcMonitorListen; edge in the base netns,
 //	      a [monitor] endpoint — NOT /metrics — dialed directly over 127.0.0.1 for the /ws
 //	      snapshot and POST /api/exit control, the T261 multi-exit warm-standby e2e, G28/M108)
-//	9114  pacing_regression_repro_test.go (pacingCounterMetricsListen)
 
 // pathSpec describes one emulated WAN uplink between the edge and concentrator
 // namespaces: a veth pair carrying a /24, with netem delay+jitter on the edge
@@ -55,13 +47,10 @@ import (
 // WG crypto — the bottleneck ONLY when rateMbit sits below the EXECUTING host's
 // measured in-fixture tunnel ceiling. That ceiling is CPU/PPS-bound (both daemons
 // plus the load generator share the host's cores), a lower bound that scales with
-// core count, NOT a link-throughput spec: ~12–46 Mbit/s single-flow on a 1-vCPU
-// aarch64 host (docs/p0-findings.md:216-225), ~13 Mbit/s single-path (up to
-// ~47–87 Mbit/s FEC single-flow) on a 4-vCPU amd64 host. Sizing rule: cap < ceiling
+// core count, NOT a link-throughput spec. Sizing rule: cap < ceiling
 // for single-path, 2×cap < ceiling for aggregation. Below the ceiling
-// a standing queue can form for bufferbloat/pacing (T21/T23) work; a non-zero
-// lossPct injects uniform egress loss at Setup time for FEC-recovery (T25/T29)
-// work.
+// a standing queue can form; a non-zero lossPct injects uniform egress loss at
+// Setup time.
 type pathSpec struct {
 	name     string
 	edgeIP   string

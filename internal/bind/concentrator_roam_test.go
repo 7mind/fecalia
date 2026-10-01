@@ -15,12 +15,12 @@ import (
 //
 //   - Peer B is bound to its ORIGINAL source by an authenticated PROBE; peer A (the primary)
 //     is bound to its own source likewise.
-//   - Peer B roams: its traffic now arrives from a NEW, not-yet-bound source. B's DATA from
+//   - Peer B roams: its traffic now arrives from a NEW, not-yet-bound source. B's data from
 //     that new source is DROPPED — a binding, like a return remote, is learned ONLY from an
-//     authenticated PROBE (D9/D11), never from forgeable DATA. Critically the dropped DATA is
+//     authenticated PROBE (D9/D11), never from a data frame. Critically the dropped data is
 //     never MISROUTED into peer A's resequencer.
 //   - A fresh authenticated PROBE under B's psk from the new source RE-BINDS the new source to
-//     the SAME peer B; thereafter DATA from the new source routes to B's resequencer.
+//     the SAME peer B; thereafter data from the new source routes to B's resequencer.
 //   - Throughout, peer A's resequencer observes ONLY peer A's own frames — none of B's, before,
 //     during, or after the roam.
 //
@@ -37,21 +37,10 @@ func TestConcentratorRoamRebindsPeerOnAuthenticatedProbe(t *testing.T) {
 		t.Fatal("peer B has no view of shared path 'a'")
 	}
 
-	dataCodecA, _ := frame.NewCodec(pskA)
-	dataCodecB, _ := frame.NewCodec(pskB)
-	dataA := func(seq uint64, payload string) []byte {
-		raw, err := dataCodecA.Encode(nil, frame.Data{OuterSeq: seq, PathID: aView.id, Payload: []byte(payload)})
-		if err != nil {
-			t.Fatalf("encode peer-A data: %v", err)
-		}
-		return raw
-	}
-	dataB := func(seq uint64, payload string) []byte {
-		raw, err := dataCodecB.Encode(nil, frame.Data{OuterSeq: seq, PathID: bView.id, Payload: []byte(payload)})
-		if err != nil {
-			t.Fatalf("encode peer-B data: %v", err)
-		}
-		return raw
+	remoteA := newRemoteTransport(t, primary, 987)
+	remoteB := newRemoteTransport(t, second, 988)
+	dataA := func(payload string) []byte {
+		return remoteA.wire(remoteA.bulk(aView, []byte(payload)))
 	}
 	probeUnder := func(psk config.Key, pathID uint8, seq uint64) []byte {
 		raw, err := frame.Encode(psk, frame.Probe{PathID: pathID, ProbeSeq: seq, TimestampNanos: clk.Now().UnixNano(), IsEcho: false})
@@ -75,18 +64,24 @@ func TestConcentratorRoamRebindsPeerOnAuthenticatedProbe(t *testing.T) {
 		t.Fatalf("srcB0 bound to %v (ok=%v), want peer B", bound, ok)
 	}
 
-	// Pre-roam: peer A's own DATA routes to peer A. (First frame the primary's resequencer sees.)
-	m.demuxInbound(aView, dataA(10, "a-pre"), srcA)
+	remoteA.join(aView, srcA)
+	remoteB.join(bView, srcB0)
+
+	// Pre-roam: peer A's own data routes to peer A. (First frame the primary's resequencer sees.)
+	m.demuxInbound(aView, dataA("a-pre"), srcA)
 
 	// --- the roam: peer B's traffic now appears from srcB1 (a NEW, unbound source) ---
-	// B's DATA from the new source must be DROPPED until an authenticated PROBE re-binds it, and
-	// must NOT be misrouted into peer A's resequencer.
-	m.demuxInbound(aView, dataB(20, "b-roam-early"), srcB1)
+	// B's data from the new source must be DROPPED until an authenticated PROBE re-binds it, and
+	// must NOT be misrouted into peer A's resequencer — even though B's transport already
+	// holds the lane to the new source.
+	remoteB.join(bView, srcB1)
+	early := remoteB.clone()
+	m.demuxInbound(aView, early.wire(early.bulk(bView, []byte("b-roam-early"))), srcB1)
 	if _, ok := m.lookupPeerBySource(srcB1); ok {
-		t.Fatal("DATA from the roamed (unbound) source established a source->peer binding — only a PROBE may (D9/D11)")
+		t.Fatal("data from the roamed (unbound) source established a source->peer binding — only a PROBE may (D9/D11)")
 	}
 	if it, ok := second.resequencer.Load().Pop(); ok {
-		t.Fatalf("peer B's DATA from an unbound roamed source was delivered before any re-binding PROBE (%q)", it.Payload)
+		t.Fatalf("peer B's data from an unbound roamed source was delivered before any re-binding PROBE (%q)", it.Payload)
 	}
 
 	// A fresh authenticated PROBE under peer B's psk from the NEW source re-binds it to the SAME peer B.
@@ -103,16 +98,16 @@ func TestConcentratorRoamRebindsPeerOnAuthenticatedProbe(t *testing.T) {
 		t.Fatalf("peer B view remote after roam = %v (ok=%v), want %v", remote, ok, srcB1)
 	}
 
-	// Post-roam: DATA from the new source now routes to peer B's resequencer.
-	m.demuxInbound(aView, dataB(21, "b-roam-late"), srcB1)
+	// Post-roam: data from the new source now routes to peer B's resequencer.
+	m.demuxInbound(aView, remoteB.wire(remoteB.bulk(bView, []byte("b-roam-late"))), srcB1)
 	if it, ok := second.resequencer.Load().Pop(); !ok || !bytes.Equal(it.Payload, []byte("b-roam-late")) {
-		t.Fatalf("DATA from the re-bound roamed source was not delivered to peer B: ok=%v payload=%q", ok, it.Payload)
+		t.Fatalf("data from the re-bound roamed source was not delivered to peer B: ok=%v payload=%q", ok, it.Payload)
 	} else if it.Src != srcB1 {
 		t.Fatalf("peer B's post-roam frame carried src %v, want %v", it.Src, srcB1)
 	}
 
-	// Peer A's own DATA still routes to peer A after the roam churn.
-	m.demuxInbound(aView, dataA(11, "a-post"), srcA)
+	// Peer A's own data still routes to peer A after the roam churn.
+	m.demuxInbound(aView, dataA("a-post"), srcA)
 
 	// --- invariant: peer A's resequencer observed ONLY peer A's own frames, never any of B's. ---
 	rqA := primary.resequencer.Load()

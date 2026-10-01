@@ -6,7 +6,6 @@
 package device
 
 import (
-	"errors"
 	"runtime"
 	"sync"
 	"sync/atomic"
@@ -81,9 +80,8 @@ type Device struct {
 		decryption *inboundQueue
 		handshake  *handshakeQueue
 	}
-	outbound               outboundStats
-	outboundAdmissionLimit atomic.Int64
-	packetBind             conn.BindPacketBatchCompleter
+	outbound   outboundStats
+	packetBind conn.BindPacketSender
 
 	tun struct {
 		device tun.Device
@@ -334,7 +332,7 @@ func NewDevice(tunDevice tun.Device, bind conn.Bind, logger *Logger) *Device {
 	device.closed = make(chan struct{})
 	device.log = logger
 	device.net.bind = bind
-	if packetBind, ok := bind.(conn.BindPacketBatchCompleter); ok && packetBind.PacketMetadataEnabled() {
+	if packetBind, ok := bind.(conn.BindPacketSender); ok && packetBind.PacketMetadataEnabled() {
 		device.packetBind = packetBind
 	}
 	device.tun.device = tunDevice
@@ -402,54 +400,6 @@ func (device *Device) LookupPeer(pk NoisePublicKey) *Peer {
 	defer device.peers.RUnlock()
 
 	return device.peers.keyMap[pk]
-}
-
-func (device *Device) SetOutboundAdmissionLimit(bytes int) error {
-	applied, err := device.TrySetOutboundAdmissionLimit(bytes)
-	if err != nil {
-		return err
-	}
-	if !applied {
-		return errors.New(
-			"device: outbound admission shrink deferred until retained bytes fit",
-		)
-	}
-	return nil
-}
-
-func (device *Device) OutboundAdmissionLimit() int {
-	limit := device.outboundAdmissionLimit.Load()
-	asInt := int(limit)
-	if limit < 0 || int64(asInt) != limit {
-		panic("device: outbound admission limit does not fit int")
-	}
-	device.peers.RLock()
-	defer device.peers.RUnlock()
-	for _, peer := range device.peers.keyMap {
-		if peer.outboundAdmission.snapshot().limitBytes != limit {
-			panic("device: per-peer outbound admission limits diverged")
-		}
-	}
-	return asInt
-}
-
-func (device *Device) TrySetOutboundAdmissionLimit(bytes int) (bool, error) {
-	if bytes <= 0 {
-		return false, errors.New("device: outbound admission limit must be positive")
-	}
-	limit := int64(bytes)
-	device.peers.RLock()
-	admissions := make([]*outboundAdmission, 0, len(device.peers.keyMap))
-	for _, peer := range device.peers.keyMap {
-		admissions = append(admissions, peer.outboundAdmission)
-	}
-	if !trySetOutboundAdmissionLimit(admissions, limit) {
-		device.peers.RUnlock()
-		return false, nil
-	}
-	device.outboundAdmissionLimit.Store(limit)
-	device.peers.RUnlock()
-	return true, nil
 }
 
 func (device *Device) RemovePeer(key NoisePublicKey) {

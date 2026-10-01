@@ -24,7 +24,7 @@ import (
 // the wrapped WG init/response — as SUSPECT (reseq.go), so the tunnel stays down until a
 // WG rescue timer fires (field-reported as a multi-minute outage). T119 wired the
 // authenticated peer-restart epoch change (T116/T117) to the per-peer
-// Resequencer.RebaselineToLow re-anchor in dispatchInbound, and T120 drives a forced WG
+// Resequencer re-anchor (today RebaselineAt, on the transport's epoch change), and T120 drives a forced WG
 // handshake initiation off the first path-up edge (D37). This test proves both, in BOTH
 // restart directions, and captures the counters + 0->1 timestamps for the D36 record.
 //
@@ -84,7 +84,7 @@ const (
 	// PEER netns, where the T17 requireLoopback invariant (internal/metrics/server.go,
 	// docs/design.md:740) UNCONDITIONALLY refuses any non-loopback bind — so it too binds
 	// 127.0.0.1 (r121ConcMetricsListen/r121ConcMetricsURL), reachable from the base netns only
-	// by dialing INTO the peer netns (fetchMetricsInNetns/netnsMetricsClient — like p2/p3/p4
+	// by dialing INTO the peer netns (fetchMetricsInNetns/netnsMetricsClient — like p2
 	// and multipeer_hardened_test.go's hwMetricsHost). Both sides use the SAME port 9104
 	// (distinct netns — no collision); 9104 is this file's registry entry (see netns.go
 	// metricsPortRegistry).
@@ -273,8 +273,8 @@ func r121AssertRecovery(t *testing.T, dir string, reconv time.Duration, rebaseBe
 	if rebaseDelta < 1 {
 		t.Errorf("D36/%s: survivor rebaselines delta = %.0f, want >= 1 — the authenticated peer-restart epoch change did "+
 			"not re-anchor the survivor's resequencer, so the restarted peer's low-outer-seq wrapped init would be "+
-			"SUSPECT-dropped (the D36 multi-minute-outage pathology). T119 wires this via dispatchInbound's "+
-			"RebaselineToLow on epochChanged.", dir, rebaseDelta)
+			"SUSPECT-dropped (the D36 multi-minute-outage pathology). The bind wires this via "+
+			"RebaselineAt on the transport's epoch change.", dir, rebaseDelta)
 	}
 	if dropDelta > r121DropSuspectSlack {
 		t.Errorf("D36/%s: survivor dropSuspect delta = %.0f across the restart, want ~0 (<= %d slack for stale-high "+

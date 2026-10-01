@@ -4,11 +4,11 @@ import (
 	"crypto/rand"
 	"net"
 	"net/netip"
+	"slices"
 	"testing"
 
 	"github.com/7mind/wanbond/internal/config"
 	"github.com/7mind/wanbond/internal/frame"
-	"github.com/7mind/wanbond/internal/sched"
 	"github.com/7mind/wanbond/internal/telemetry"
 )
 
@@ -25,7 +25,7 @@ const unassignableSource = "192.0.2.1"
 // bindable path and one whose well-formed source_addr is not-yet-assignable
 // (EADDRNOTAVAIL), Open() brings the tunnel up on the bindable path instead of
 // tearing the whole bond down, and the unbindable path is recorded DEFERRED and
-// reported DOWN (its prober never echoes) so the scheduler excludes it. This test
+// reported DOWN (its prober never echoes) so the transport holds no lane on it. This test
 // FAILS on the pre-T51 Open(), which returns fatally on the first per-path bind error.
 func TestOpenToleratesUnassignableSourceAddr(t *testing.T) {
 	psk := testKey(t, 0x51)
@@ -34,7 +34,7 @@ func TestOpenToleratesUnassignableSourceAddr(t *testing.T) {
 		{Name: "bindable", SourceAddr: netip.MustParseAddr("127.0.0.1")},
 		{Name: "deferred", SourceAddr: netip.MustParseAddr(unassignableSource)},
 	}
-	m, probers, scheduler := newProbingMultipath(t, paths, psk, clk)
+	m, probers := newProbingMultipath(t, paths, psk, clk)
 
 	_, _, err := m.Open(0)
 	if err != nil {
@@ -51,7 +51,7 @@ func TestOpenToleratesUnassignableSourceAddr(t *testing.T) {
 	}
 
 	// The unbindable path is PRESENT in the deferred set and marked DOWN (its prober,
-	// never fed an echo, stays StateDown) so the scheduler excludes it — the runtime
+	// never fed an echo, stays StateDown) and has no socket to learn a lane on — the runtime
 	// path-down model reused at boot. This is the state T55's background reconcile
 	// retries: a recorded not-yet-bound path def plus its (Down) prober.
 	if len(m.deferred) != 1 {
@@ -67,8 +67,8 @@ func TestOpenToleratesUnassignableSourceAddr(t *testing.T) {
 		t.Fatalf("deferred path liveness = %v, want down", got)
 	}
 
-	// The scheduler was reconciled to the BOUND paths only, so once the bindable path
-	// is healthy Pick selects it (index 0) and can never index the deferred path.
+	// The transport learns lanes on the BOUND paths only, so once the bindable path
+	// is healthy it holds that path's lane and none for the deferred path.
 	refl := telemetry.NewReflector(psk, rand.Reader)
 	codec, _ := frame.NewCodec(psk)
 	peer0, ap0 := rawPeer(t)
@@ -80,8 +80,8 @@ func TestOpenToleratesUnassignableSourceAddr(t *testing.T) {
 	if probers[0].State() != telemetry.StateUp {
 		t.Fatalf("bindable path state = %v, want up", probers[0].State())
 	}
-	if idx := scheduler.Pick(sched.ClassData, 1); idx != 0 {
-		t.Fatalf("Pick = %d, want 0 (the sole bound path)", idx)
+	if got := upLanes(t, m, 0); !slices.Equal(got, []uint8{m.paths[0].id}) {
+		t.Fatalf("lanes = %v, want only the sole bound path's", got)
 	}
 }
 
@@ -95,7 +95,7 @@ func TestOpenFailsWhenNoPathBinds(t *testing.T) {
 		{Name: "a", SourceAddr: netip.MustParseAddr("192.0.2.1")},
 		{Name: "b", SourceAddr: netip.MustParseAddr("192.0.2.2")},
 	}
-	m, _, _ := newProbingMultipath(t, paths, psk, clk)
+	m, _ := newProbingMultipath(t, paths, psk, clk)
 
 	if _, _, err := m.Open(0); err == nil {
 		_ = m.Close()
@@ -128,7 +128,7 @@ func TestOpenFailsOnAddrInUse(t *testing.T) {
 		{Name: "bindable", SourceAddr: netip.MustParseAddr("127.0.0.4")},
 		{Name: "inuse", SourceAddr: netip.MustParseAddr("127.0.0.5")},
 	}
-	m, _, _ := newProbingMultipath(t, paths, psk, clk)
+	m, _ := newProbingMultipath(t, paths, psk, clk)
 
 	if _, _, err := m.Open(port); err == nil {
 		_ = m.Close()

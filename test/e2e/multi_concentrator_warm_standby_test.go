@@ -60,7 +60,7 @@ package e2e
 //	(2) default-route traffic egresses via the boot-active exit (exit-a) ONLY;
 //	(3) POST /api/exit exit-b → egress moves to exit-b within the switch budget (no
 //	    handshake wait — exit-b was already warm);
-//	(4) per-concentrator stats: the monitor snapshot carries per-peer paths/fec/reseq/
+//	(4) per-concentrator stats: the monitor snapshot carries per-peer paths/reseq/
 //	    endpoints/sessions for BOTH exits;
 //	(5) Q72 composition: kill exit-b's ACTIVE endpoint → exit-b's OWN endpoint failover
 //	    advances to its standby endpoint within the failover budget, activeExit STAYS
@@ -285,19 +285,18 @@ func TestMultiConcentratorWarmStandby(t *testing.T) {
 	readSnapUntil(t, readSnap, "activeExit=exit-b after manual switch", mcSwitchBudget,
 		func(s monitor.MonitorSnapshot) bool { return s.ActiveExit == mcPeerB })
 
-	// ---- (4) Per-concentrator stats: the snapshot carries per-peer paths/fec/reseq/
+	// ---- (4) Per-concentrator stats: the snapshot carries per-peer paths/reseq/
 	// endpoints/sessions for BOTH exits. ----
-	stats := readSnapUntil(t, readSnap, "per-peer paths/fec/reseq/endpoints/sessions for both exits", mcBringUp,
+	stats := readSnapUntil(t, readSnap, "per-peer paths/reseq/endpoints/sessions for both exits", mcBringUp,
 		func(s monitor.MonitorSnapshot) bool {
 			return s.MultiPeer &&
 				peerPathCount(s, mcPeerA) == 2 && peerPathCount(s, mcPeerB) == 2 &&
-				hasPeer(fecPeers(s), mcPeerA) && hasPeer(fecPeers(s), mcPeerB) &&
 				hasPeer(reseqPeers(s), mcPeerA) && hasPeer(reseqPeers(s), mcPeerB) &&
 				peerSessionEstablished(s, mcPeerA) && peerSessionEstablished(s, mcPeerB) &&
 				peerEndpointCount(s, mcPeerA) == 1 && peerEndpointCount(s, mcPeerB) == 2
 		})
 	assertOneActiveEndpointPerPeer(t, stats)
-	t.Logf("(4) per-peer stats present: exit-a paths=%d endpoints=%d, exit-b paths=%d endpoints=%d; fec/reseq/sessions carry both peers",
+	t.Logf("(4) per-peer stats present: exit-a paths=%d endpoints=%d, exit-b paths=%d endpoints=%d; reseq/sessions carry both peers",
 		peerPathCount(stats, mcPeerA), peerEndpointCount(stats, mcPeerA),
 		peerPathCount(stats, mcPeerB), peerEndpointCount(stats, mcPeerB))
 
@@ -931,14 +930,6 @@ func anyPeerPathUp(s monitor.MonitorSnapshot, peer string) bool {
 		}
 	}
 	return false
-}
-
-func fecPeers(s monitor.MonitorSnapshot) []string {
-	out := make([]string, 0, len(s.FEC))
-	for _, f := range s.FEC {
-		out = append(out, f.Peer)
-	}
-	return out
 }
 
 func reseqPeers(s monitor.MonitorSnapshot) []string {

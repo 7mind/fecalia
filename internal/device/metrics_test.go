@@ -16,8 +16,6 @@ import (
 	"github.com/7mind/wanbond/internal/log"
 	"github.com/7mind/wanbond/internal/metrics"
 	"github.com/7mind/wanbond/internal/reseq"
-	"github.com/7mind/wanbond/internal/sched"
-	"github.com/7mind/wanbond/internal/shaper"
 	"github.com/7mind/wanbond/internal/telemetry"
 )
 
@@ -136,26 +134,6 @@ func TestMetricsSourceMapsProbeSendErrors(t *testing.T) {
 	}
 }
 
-func TestMetricsSourceMapsOptionalShaperSnapshot(t *testing.T) {
-	shaperSnapshot := shaper.Snapshot{AcceptedBytes: 17, PriorityDebtBytes: 23}
-	prov := &fakeProvider{}
-	prov.set([]bind.PeerSnapshot{{
-		Paths: []bind.PathTraffic{
-			{Name: "paced", Shaper: &shaperSnapshot},
-			{Name: "unpaced"},
-		},
-	}})
-	src := newMetricsSource(prov, fakeSession{}, fakePeerSessions{}, &fakeClock{now: time.Unix(1000, 0)})
-
-	got := src.Paths()
-	if got[0].Shaper != &shaperSnapshot {
-		t.Fatalf("paced shaper snapshot pointer = %p, want %p", got[0].Shaper, &shaperSnapshot)
-	}
-	if got[1].Shaper != nil {
-		t.Fatalf("unpaced shaper snapshot = %+v, want nil", got[1].Shaper)
-	}
-}
-
 // TestMetricsSource_PathsCarriesAddressing asserts the adapter copies the runtime
 // addressing fields (Source, Remote, BindMode, BoundDevice) verbatim from
 // bind.PathTraffic into metrics.PathSnapshot (T220): pass-through only, no derivation.
@@ -242,7 +220,7 @@ func scrapeText(t *testing.T, src metrics.Source) string {
 	if err != nil {
 		t.Fatalf("log.New: %v", err)
 	}
-	srv, err := metrics.NewServer("127.0.0.1:0", src, nil, nil, lg)
+	srv, err := metrics.NewServer("127.0.0.1:0", src, nil, lg)
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
@@ -267,161 +245,6 @@ func scrapeText(t *testing.T, src metrics.Source) string {
 	return string(body)
 }
 
-// TestMetricsSourceMapsFEC asserts the adapter passes the Bind's per-peer
-// connection-scoped FEC counters (T24, T94) verbatim onto the metrics.FECSnapshot the
-// exposition reads, for a single-peer (unnamed primary) source.
-func TestMetricsSourceMapsFEC(t *testing.T) {
-	prov := &fakeProvider{}
-	prov.set([]bind.PeerSnapshot{{
-		Name: "",
-		FEC:  bind.FECStats{DataFrames: 82, ParityFrames: 33, ParityBytes: 4096, Recovered: 5, Unrecoverable: 1},
-	}})
-	src := newMetricsSource(prov, fakeSession{}, fakePeerSessions{}, &fakeClock{now: time.Unix(1000, 0)})
-
-	got := src.FEC()
-	if len(got) != 1 {
-		t.Fatalf("FEC len = %d, want 1", len(got))
-	}
-	if got[0].Peer != "" {
-		t.Errorf("Peer = %q, want \"\"", got[0].Peer)
-	}
-	if got[0].DataPackets != 82 {
-		t.Errorf("DataPackets = %d, want 82 (data frames)", got[0].DataPackets)
-	}
-	if got[0].RepairPackets != 33 {
-		t.Errorf("RepairPackets = %d, want 33 (parity frames)", got[0].RepairPackets)
-	}
-	if got[0].RecoveredPackets != 5 {
-		t.Errorf("RecoveredPackets = %d, want 5", got[0].RecoveredPackets)
-	}
-	if got[0].UnrecoverablePackets != 1 {
-		t.Errorf("UnrecoverablePackets = %d, want 1", got[0].UnrecoverablePackets)
-	}
-	if got[0].Adaptive != nil {
-		t.Errorf("Adaptive = %+v, want nil (fixed-ratio FECStats carries no adaptive decision)", got[0].Adaptive)
-	}
-}
-
-func TestMetricsSourceMapsRecoveryDirectionsExactly(t *testing.T) {
-	freshSender := time.Unix(100, 101)
-	freshReceiver := time.Unix(200, 202)
-	prov := &fakeProvider{}
-	prov.set([]bind.PeerSnapshot{{
-		FEC: bind.FECStats{Recovery: bind.RecoveryStats{
-			Sender: bind.RecoverySenderStats{
-				OfferPresent:     true,
-				FastEligible:     true,
-				TransitionFrozen: true,
-				WriterExclusive:  true,
-				FreshUntil:       freshSender,
-				OfferWrites:      1,
-				ACKAccepts:       2,
-				Rotations:        3,
-				StaleRejections:  4,
-				WrongRejections:  5,
-				ReplayRejections: 6,
-				FallbackReason:   "sender-fallback",
-				ServiceBound:     7 * time.Nanosecond,
-			},
-			Receiver: bind.RecoveryReceiverStats{
-				OfferPresent:     true,
-				FastEligible:     true,
-				TransitionFrozen: true,
-				WriterExclusive:  true,
-				FreshUntil:       freshReceiver,
-				ACKWrites:        8,
-				OfferAccepts:     9,
-				SessionRestarts:  10,
-				StaleRejections:  11,
-				WrongRejections:  12,
-				ReplayRejections: 13,
-				FallbackReason:   "receiver-fallback",
-				ServiceBound:     14 * time.Nanosecond,
-				RTTAge:           15 * time.Nanosecond,
-				Headroom:         16 * time.Nanosecond,
-				Window:           17 * time.Nanosecond,
-			},
-		}},
-	}})
-
-	got := newMetricsSource(
-		prov,
-		fakeSession{},
-		fakePeerSessions{},
-		&fakeClock{now: time.Unix(1000, 0)},
-	).FEC()[0].Recovery
-	want := metrics.RecoveryStats{
-		Sender: metrics.RecoveryDirectionStats{
-			OfferPresent:     true,
-			FastEligible:     true,
-			TransitionFrozen: true,
-			WriterExclusive:  true,
-			FreshUntil:       freshSender,
-			OfferWrites:      1,
-			ACKAccepts:       2,
-			Rotations:        3,
-			StaleRejections:  4,
-			WrongRejections:  5,
-			ReplayRejections: 6,
-			FallbackReason:   "sender-fallback",
-			ServiceBound:     7 * time.Nanosecond,
-		},
-		Receiver: metrics.RecoveryDirectionStats{
-			OfferPresent:     true,
-			FastEligible:     true,
-			TransitionFrozen: true,
-			WriterExclusive:  true,
-			FreshUntil:       freshReceiver,
-			ACKWrites:        8,
-			OfferAccepts:     9,
-			SessionRestarts:  10,
-			StaleRejections:  11,
-			WrongRejections:  12,
-			ReplayRejections: 13,
-			FallbackReason:   "receiver-fallback",
-			ServiceBound:     14 * time.Nanosecond,
-			RTTAge:           15 * time.Nanosecond,
-			Headroom:         16 * time.Nanosecond,
-			Window:           17 * time.Nanosecond,
-		},
-	}
-	if got != want {
-		t.Fatalf("recovery mapping = %+v, want %+v", got, want)
-	}
-}
-
-// TestMetricsSourceMapsFECAdaptive asserts the adapter mirrors the Bind's adaptive-FEC
-// controller decision (T263, D96) into metrics.FECSnapshot.Adaptive verbatim when the
-// peer's FECStats carries one.
-func TestMetricsSourceMapsFECAdaptive(t *testing.T) {
-	prov := &fakeProvider{}
-	prov.set([]bind.PeerSnapshot{{
-		Name: "",
-		FEC: bind.FECStats{
-			DataFrames: 82,
-			Adaptive: &bind.AdaptiveFECStats{
-				Parity:        3,
-				SmoothedLoss:  0.02,
-				EligibleLoss:  0.05,
-				EligiblePaths: 2,
-			},
-		},
-	}})
-	src := newMetricsSource(prov, fakeSession{}, fakePeerSessions{}, &fakeClock{now: time.Unix(1000, 0)})
-
-	got := src.FEC()
-	if len(got) != 1 {
-		t.Fatalf("FEC len = %d, want 1", len(got))
-	}
-	if got[0].Adaptive == nil {
-		t.Fatalf("Adaptive = nil, want non-nil")
-	}
-	want := metrics.AdaptiveFECStats{Parity: 3, SmoothedLoss: 0.02, EligibleLoss: 0.05, EligiblePaths: 2}
-	if *got[0].Adaptive != want {
-		t.Errorf("Adaptive = %+v, want %+v", *got[0].Adaptive, want)
-	}
-}
-
 // TestMetricsSourceMapsReseq asserts the adapter passes the Bind's per-peer
 // resequencer counters (T94) verbatim onto the metrics.ReseqSnapshot the exposition
 // reads, for a single-peer (unnamed primary) source.
@@ -442,58 +265,6 @@ func TestMetricsSourceMapsReseq(t *testing.T) {
 	}
 	if got[0].Stats != (reseq.Stats{Released: 900, DroppedDup: 3, DroppedOld: 2, DroppedSuspect: 1, Skipped: 4, Resyncs: 2, Rebaselines: 1}) {
 		t.Errorf("Stats = %+v, want the injected counters verbatim", got[0].Stats)
-	}
-}
-
-// TestMetricsSourceMapsAggregation asserts the adapter passes a peer's weighted-scheduler
-// aggregation-gate snapshot (T146) verbatim onto the metrics.AggregationSnapshot the
-// exposition reads, for a single-peer (unnamed primary) source.
-func TestMetricsSourceMapsAggregation(t *testing.T) {
-	prov := &fakeProvider{}
-	prov.set([]bind.PeerSnapshot{{
-		Name: "",
-		Aggregation: &sched.AggregationSnapshot{
-			Aggregating:           true,
-			OfferedLoadFPS:        640,
-			EngageThresholdFPS:    630,
-			DisengageThresholdFPS: 350,
-		},
-	}})
-	src := newMetricsSource(prov, fakeSession{}, fakePeerSessions{}, &fakeClock{now: time.Unix(1000, 0)})
-
-	got := src.Aggregation()
-	if len(got) != 1 {
-		t.Fatalf("Aggregation len = %d, want 1", len(got))
-	}
-	want := metrics.AggregationSnapshot{
-		Peer:                  "",
-		Aggregating:           true,
-		OfferedLoadFPS:        640,
-		EngageThresholdFPS:    630,
-		DisengageThresholdFPS: 350,
-	}
-	if got[0] != want {
-		t.Errorf("Aggregation[0] = %+v, want %+v", got[0], want)
-	}
-}
-
-// TestMetricsSourceAggregationAbsentForActiveBackup asserts a peer whose Bind snapshot
-// carries a nil Aggregation (an active-backup peer — no scheduler gate) contributes NO
-// entry to src.Aggregation(), so the four series are absent for it (T146).
-func TestMetricsSourceAggregationAbsentForActiveBackup(t *testing.T) {
-	prov := &fakeProvider{}
-	prov.set([]bind.PeerSnapshot{
-		{Name: "edge1", Aggregation: nil}, // active-backup: no gate
-		{Name: "edge2", Aggregation: &sched.AggregationSnapshot{Aggregating: true, EngageThresholdFPS: 630, DisengageThresholdFPS: 350}},
-	})
-	src := newMetricsSource(prov, fakeSession{}, fakePeerSessions{}, &fakeClock{now: time.Unix(1000, 0)})
-
-	got := src.Aggregation()
-	if len(got) != 1 {
-		t.Fatalf("Aggregation len = %d, want 1 (only the weighted peer reports a gate)", len(got))
-	}
-	if got[0].Peer != "edge2" {
-		t.Errorf("Aggregation[0].Peer = %q, want %q (the nil-gate active-backup peer must be skipped)", got[0].Peer, "edge2")
 	}
 }
 
@@ -550,7 +321,7 @@ func TestMetricsSourcePeerNamesSinglePeer(t *testing.T) {
 }
 
 // TestMetricsSourceTwoPeersDistinctSeries asserts a 2-peer source (a concentrator, T94)
-// carries distinct `Peer` values on each returned Path/FEC/Reseq snapshot,
+// carries distinct `Peer` values on each returned Path/Reseq snapshot,
 // independent counters per peer, and correctly keys the throughput last-sample map by
 // (peer,path) — two peers with a same-named path ("starlink") each derive their OWN
 // rate from their OWN byte-counter delta, not a rate clobbered by the other peer's
@@ -564,13 +335,11 @@ func TestMetricsSourceTwoPeersDistinctSeries(t *testing.T) {
 		{
 			Name:  "",
 			Paths: []bind.PathTraffic{{Name: "starlink", TxBytes: 1000, RxBytes: 0}},
-			FEC:   bind.FECStats{DataFrames: 10, ParityFrames: 2},
 			Reseq: reseq.Stats{Released: 50},
 		},
 		{
 			Name:  "edge2",
 			Paths: []bind.PathTraffic{{Name: "starlink", TxBytes: 5000, RxBytes: 0}},
-			FEC:   bind.FECStats{DataFrames: 700, ParityFrames: 140},
 			Reseq: reseq.Stats{Released: 900},
 		},
 	})
@@ -581,13 +350,11 @@ func TestMetricsSourceTwoPeersDistinctSeries(t *testing.T) {
 		{
 			Name:  "",
 			Paths: []bind.PathTraffic{{Name: "starlink", TxBytes: 1100, RxBytes: 0}}, // +100 bytes
-			FEC:   bind.FECStats{DataFrames: 11, ParityFrames: 2},
 			Reseq: reseq.Stats{Released: 51},
 		},
 		{
 			Name:  "edge2",
 			Paths: []bind.PathTraffic{{Name: "starlink", TxBytes: 6000, RxBytes: 0}}, // +1000 bytes
-			FEC:   bind.FECStats{DataFrames: 705, ParityFrames: 141},
 			Reseq: reseq.Stats{Released: 950},
 		},
 	})
@@ -605,21 +372,6 @@ func TestMetricsSourceTwoPeersDistinctSeries(t *testing.T) {
 	}
 	if got, want := byPeer["edge2"].ThroughputBitsPerSecond, 1000.0*8; got != want {
 		t.Errorf("edge2 starlink throughput = %g, want %g (own +1000B delta, not clobbered by primary)", got, want)
-	}
-
-	fec := src.FEC()
-	if len(fec) != 2 {
-		t.Fatalf("FEC len = %d, want 2", len(fec))
-	}
-	fecByPeer := map[string]metrics.FECSnapshot{}
-	for _, f := range fec {
-		fecByPeer[f.Peer] = f
-	}
-	if got, want := fecByPeer[""].DataPackets, uint64(11); got != want {
-		t.Errorf("primary FEC DataPackets = %d, want %d", got, want)
-	}
-	if got, want := fecByPeer["edge2"].DataPackets, uint64(705); got != want {
-		t.Errorf("edge2 FEC DataPackets = %d, want %d (independent of primary's counter)", got, want)
 	}
 
 	reseqSnaps := src.Reseq()
@@ -681,7 +433,7 @@ func TestMetricsSourcePeerSessionsTwoPeers(t *testing.T) {
 
 // TestMetricsSourcePeerSessionsSinglePeerBackCompat asserts a single-bound-peer source's
 // PeerSessions() returns exactly one entry with Peer "" (T94/D58 back-compat), matching
-// the existing FEC/Reseq/Aggregation single-peer shape, while still resolving that one
+// the existing Reseq single-peer shape, while still resolving that one
 // peer's real established verdict.
 func TestMetricsSourcePeerSessionsSinglePeerBackCompat(t *testing.T) {
 	now := time.Unix(10_000, 0)

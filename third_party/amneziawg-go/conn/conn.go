@@ -57,14 +57,6 @@ type Bind interface {
 	BatchSize() int
 }
 
-// BindBatchCompleter optionally transfers ownership of one Send batch until
-// complete runs exactly once after terminal transport completion. A return
-// from SendWithCompletion only acknowledges that the Bind copied the caller's
-// buffers. On a pre-transfer error, complete runs before return.
-type BindBatchCompleter interface {
-	SendWithCompletion(bufs [][]byte, ep Endpoint, complete func()) error
-}
-
 // FlowID identifies a local IP flow. It is metadata and is never transmitted.
 // Zero identifies packets without a classified IP flow, including keepalives.
 type FlowID [40]byte
@@ -85,11 +77,11 @@ type PacketMetadata struct {
 	ACK  TCPACK
 }
 
-// BindPacketBatchCompleter accepts local metadata for each encrypted datagram.
-// Completion has the same ownership contract as BindBatchCompleter.
-type BindPacketBatchCompleter interface {
+// BindPacketSender accepts local metadata for each encrypted datagram. Like
+// Bind.Send, it must not retain bufs after it returns.
+type BindPacketSender interface {
 	PacketMetadataEnabled() bool
-	SendWithMetadata(bufs [][]byte, metadata []PacketMetadata, ep Endpoint, complete func()) error
+	SendWithMetadata(bufs [][]byte, metadata []PacketMetadata, ep Endpoint) error
 }
 
 // BindSocketToInterface is implemented by Bind objects that support being

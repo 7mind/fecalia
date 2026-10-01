@@ -24,7 +24,7 @@ func bindToDevice(fd uintptr, dev string) error {
 // precondition for meaningful padded-probe PMTU discovery — without DF the kernel
 // silently fragments an oversized probe or data datagram, so the probe can never
 // learn the real path MTU — and it converts today's silent-fragmentation loss into an
-// explicit EMSGSIZE at send, which the caller counts and rate-limits (accountSendError)
+// explicit EMSGSIZE at send, which the transport's writer counts (socketWriteErrors)
 // rather than swallowing. isV6 selects the AF_INET6 option (IPV6_MTU_DISCOVER) over the
 // AF_INET one (IP_MTU_DISCOVER); the two share the numeric PMTUDISC_DO level. It mirrors
 // bindToDevice: Linux-only, applied on the raw fd in the socket's Control hook, with a

@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/7mind/wanbond/internal/bond"
-	"github.com/7mind/wanbond/internal/config"
 	"github.com/7mind/wanbond/internal/log"
 	"github.com/7mind/wanbond/internal/telemetry"
 )
@@ -218,12 +217,9 @@ func udpAdaptiveHarness(t *testing.T) adaptiveHarness {
 		if side == 1 {
 			paths[1].SourceAddr = netip.MustParseAddr("127.0.0.2")
 		}
-		scheduler, probers, factory := concPeerWiring(t, paths, psk, uint64(side+100), telemetry.SystemClock{})
-		m, err := NewMultipath(paths, psk, scheduler, probers, factory, nil, nil, config.Amnezia{}, lg)
+		probers, factory := concPeerWiring(t, paths, psk, uint64(side+100), telemetry.SystemClock{})
+		m, err := NewMultipath(paths, psk, probers, factory, lg)
 		if err != nil {
-			t.Fatal(err)
-		}
-		if err = m.EnableAdaptive(); err != nil {
 			t.Fatal(err)
 		}
 		receive, _, err := m.Open(0)
@@ -281,7 +277,7 @@ func udpAdaptiveHarness(t *testing.T) adaptiveHarness {
 	}
 	return adaptiveHarness{
 		send: func(side int, p []byte, meta PacketMetadata) error {
-			return peers[side].SendWithMetadata([][]byte{p}, []PacketMetadata{meta}, peers[side].virt, func() {})
+			return peers[side].SendWithMetadata([][]byte{p}, []PacketMetadata{meta}, peers[side].virt)
 		},
 		outage: drop.Store,
 		step:   func() { time.Sleep(time.Millisecond) },

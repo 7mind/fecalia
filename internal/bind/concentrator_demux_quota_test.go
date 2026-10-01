@@ -4,13 +4,11 @@ import (
 	"bytes"
 	"net/netip"
 	"testing"
-
-	"github.com/7mind/wanbond/internal/frame"
 )
 
 // TestConcentratorDemuxSharesOneIPByAddrPort is the D47 acceptance (a): two peers behind ONE
 // public IP (CGNAT — one netip.Addr, distinct source ports) each bind INDEPENDENTLY, and each
-// peer's DATA reaches its OWN resequencer. This discriminates the AddrPort re-key from the old
+// peer's data reaches its OWN resequencer. This discriminates the AddrPort re-key from the old
 // bare-netip.Addr key: under the old key the two same-address sources would collide into a single
 // slot (the second peer's PROBE re-pointing the first, T90 roam), cross-wiring the two peers.
 func TestConcentratorDemuxSharesOneIPByAddrPort(t *testing.T) {
@@ -41,17 +39,19 @@ func TestConcentratorDemuxSharesOneIPByAddrPort(t *testing.T) {
 		t.Fatalf("srcB bound to %v (ok=%v), want peer B — the shared IP must NOT collide the two peers", bound, ok)
 	}
 
-	// Each peer's DATA reaches its OWN resequencer; neither leaks into the other's.
-	dataCodecA, _ := frame.NewCodec(pskA)
-	dataCodecB, _ := frame.NewCodec(pskB)
-	m.demuxInbound(aView, mustEncodeData(t, dataCodecA, 10, aView.id, "a-data"), srcA)
-	m.demuxInbound(aView, mustEncodeData(t, dataCodecB, 20, bView.id, "b-data"), srcB)
+	// Each peer's data reaches its OWN resequencer; neither leaks into the other's.
+	remoteA := newRemoteTransport(t, primary, 987)
+	remoteA.join(aView, srcA)
+	remoteB := newRemoteTransport(t, second, 988)
+	remoteB.join(bView, srcB)
+	m.demuxInbound(aView, remoteA.wire(remoteA.bulk(aView, []byte("a-data"))), srcA)
+	m.demuxInbound(aView, remoteB.wire(remoteB.bulk(bView, []byte("b-data"))), srcB)
 
 	if it, ok := primary.resequencer.Load().Pop(); !ok || !bytes.Equal(it.Payload, []byte("a-data")) {
-		t.Fatalf("peer A DATA not delivered to peer A's resequencer: ok=%v payload=%q", ok, it.Payload)
+		t.Fatalf("peer A data not delivered to peer A's resequencer: ok=%v payload=%q", ok, it.Payload)
 	}
 	if it, ok := second.resequencer.Load().Pop(); !ok || !bytes.Equal(it.Payload, []byte("b-data")) {
-		t.Fatalf("peer B DATA not delivered to peer B's resequencer: ok=%v payload=%q", ok, it.Payload)
+		t.Fatalf("peer B data not delivered to peer B's resequencer: ok=%v payload=%q", ok, it.Payload)
 	}
 	if it, ok := primary.resequencer.Load().Pop(); ok {
 		t.Fatalf("peer A's resequencer received an extra frame %q (leak across the shared IP)", it.Payload)
@@ -110,7 +110,6 @@ func TestConcentratorSamePeerRoamChurnEvictsOwnOldest(t *testing.T) {
 	m.maxDemuxSources = capLimit
 	const quota = capLimit / 2 // len(peers) == 2
 	secondView := peerPathByName(second, "a")
-	dataCodecB, _ := frame.NewCodec(pskB)
 
 	// An unrelated primary binding that peer B's churn must never evict.
 	srcA := synthSource(0)
@@ -162,11 +161,13 @@ func TestConcentratorSamePeerRoamChurnEvictsOwnOldest(t *testing.T) {
 	if bound, ok := m.lookupPeerBySource(srcA); !ok || bound != primary {
 		t.Fatal("peer B's roam churn evicted the primary's binding — a peer must never evict ANOTHER peer's slot")
 	}
-	// DATA from the newest re-bound AddrPort reaches peer B's resequencer.
+	// Data from the newest re-bound AddrPort reaches peer B's resequencer.
 	newest := ports[n-1]
-	m.demuxInbound(m.paths[0], mustEncodeData(t, dataCodecB, 100, secondView.id, "roamed"), newest)
+	remote := newRemoteTransport(t, second, 987)
+	remote.join(secondView, newest)
+	m.demuxInbound(m.paths[0], remote.wire(remote.bulk(secondView, []byte("roamed"))), newest)
 	if it, ok := second.resequencer.Load().Pop(); !ok || !bytes.Equal(it.Payload, []byte("roamed")) {
-		t.Fatalf("DATA from the re-bound roamed AddrPort was not delivered to peer B: ok=%v payload=%q", ok, it.Payload)
+		t.Fatalf("data from the re-bound roamed AddrPort was not delivered to peer B: ok=%v payload=%q", ok, it.Payload)
 	}
 }
 

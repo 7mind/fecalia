@@ -3,13 +3,13 @@ package monitor
 import (
 	"encoding/json"
 	"net/netip"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/7mind/wanbond/internal/metrics"
 	"github.com/7mind/wanbond/internal/reseq"
-	"github.com/7mind/wanbond/internal/shaper"
 	"github.com/7mind/wanbond/internal/telemetry"
 )
 
@@ -18,157 +18,20 @@ import (
 // can be exercised with no live engine/bind wiring.
 type fakeSource struct {
 	paths        []metrics.PathSnapshot
-	fec          []metrics.FECSnapshot
 	reseq        []metrics.ReseqSnapshot
-	aggregation  []metrics.AggregationSnapshot
 	session      metrics.SessionSnapshot
 	peerSessions []metrics.PeerSessionSnapshot
 	peerNames    []string
 }
 
 func (f fakeSource) Paths() []metrics.PathSnapshot               { return f.paths }
-func (f fakeSource) FEC() []metrics.FECSnapshot                  { return f.fec }
 func (f fakeSource) Reseq() []metrics.ReseqSnapshot              { return f.reseq }
-func (f fakeSource) Aggregation() []metrics.AggregationSnapshot  { return f.aggregation }
 func (f fakeSource) Session() metrics.SessionSnapshot            { return f.session }
 func (f fakeSource) PeerSessions() []metrics.PeerSessionSnapshot { return f.peerSessions }
 func (f fakeSource) PeerNames() []string                         { return f.peerNames }
 
-func TestBuildSnapshotShaperContractAndDisabledOmission(t *testing.T) {
-	const (
-		queueDataBytes          = 1200
-		queueControlBytes       = 300
-		queueBytes              = queueDataBytes + queueControlBytes
-		inFlightBytes           = 800
-		rateBytesPerSecond      = 1_510_000.0
-		dataBudgetBytes         = 4000
-		maxDatagramBytes        = 1000
-		controlReserveBytes     = maxDatagramBytes
-		queueBudgetBytes        = dataBudgetBytes + controlReserveBytes
-		emittedBytes            = 100_000
-		asyncWriteErrorBytes    = 4000
-		asyncWriteEMSGSIZEBytes = 2000
-		acceptedBytes           = emittedBytes + asyncWriteErrorBytes +
-			asyncWriteEMSGSIZEBytes + queueBytes + inFlightBytes
-		outerPriorityBytes         = 5000
-		priorityDebtBytes          = 1000.0
-		priorityRateBytesPerSecond = 10_000.0
-		priorityBurstBytes         = 2 * maxDatagramBytes
-		admissionWaits             = 7
-		admissionCanceledDatagrams = 4
-		asyncWriteErrors           = 2
-		asyncWriteEMSGSIZEErrors   = 1
-	)
-	priorityDelayBound := time.Duration(
-		(priorityDebtBytes + priorityBurstBytes) /
-			(rateBytesPerSecond - priorityRateBytesPerSecond) *
-			float64(time.Second),
-	)
-	shaperSnapshot := shaper.Snapshot{
-		QueueDataBytes:             queueDataBytes,
-		QueueControlBytes:          queueControlBytes,
-		QueueBytes:                 queueBytes,
-		InFlightBytes:              inFlightBytes,
-		ScheduledDelay:             2300 * time.Microsecond,
-		RateBytesPerSecond:         rateBytesPerSecond,
-		DataBudgetBytes:            dataBudgetBytes,
-		ControlReserveBytes:        controlReserveBytes,
-		QueueBudgetBytes:           queueBudgetBytes,
-		MaxDatagramBytes:           maxDatagramBytes,
-		AcceptedBytes:              acceptedBytes,
-		EmittedBytes:               emittedBytes,
-		OuterPriorityBytes:         outerPriorityBytes,
-		PriorityDebtBytes:          priorityDebtBytes,
-		PriorityRateBytesPerSecond: priorityRateBytesPerSecond,
-		PriorityBurstBytes:         priorityBurstBytes,
-		PriorityDelayBound:         priorityDelayBound,
-		AdmissionWaits:             admissionWaits,
-		AdmissionWaitDuration:      3 * time.Second,
-		AdmissionCanceledDatagrams: admissionCanceledDatagrams,
-		AsyncWriteErrors:           asyncWriteErrors,
-		AsyncWriteErrorBytes:       asyncWriteErrorBytes,
-		AsyncWriteEMSGSIZEErrors:   asyncWriteEMSGSIZEErrors,
-		AsyncWriteEMSGSIZEBytes:    asyncWriteEMSGSIZEBytes,
-	}
-	snapshot := BuildSnapshot(fakeSource{
-		paths: []metrics.PathSnapshot{
-			{Name: "paced", Shaper: &shaperSnapshot},
-			{Name: "unpaced"},
-		},
-	}, Info{}, true, false)
-	got := snapshot.Paths[0].Shaper
-	if got == nil {
-		t.Fatal("paced path omitted shaper")
-	}
-	if *got != (ShaperSnapshot{
-		QueueDataBytes:             queueDataBytes,
-		QueueControlBytes:          queueControlBytes,
-		QueueBytes:                 queueBytes,
-		InFlightBytes:              inFlightBytes,
-		ScheduledDelaySeconds:      shaperSnapshot.ScheduledDelay.Seconds(),
-		RateBytesPerSecond:         rateBytesPerSecond,
-		DataBudgetBytes:            dataBudgetBytes,
-		ControlReserveBytes:        controlReserveBytes,
-		QueueBudgetBytes:           queueBudgetBytes,
-		MaxDatagramBytes:           maxDatagramBytes,
-		AcceptedBytes:              acceptedBytes,
-		EmittedBytes:               emittedBytes,
-		OuterPriorityBytes:         outerPriorityBytes,
-		PriorityDebtBytes:          priorityDebtBytes,
-		PriorityRateBytesPerSecond: priorityRateBytesPerSecond,
-		PriorityBurstBytes:         priorityBurstBytes,
-		PriorityDelayBoundSeconds:  priorityDelayBound.Seconds(),
-		AdmissionWaits:             admissionWaits,
-		AdmissionWaitSeconds:       shaperSnapshot.AdmissionWaitDuration.Seconds(),
-		AdmissionCanceledDatagrams: admissionCanceledDatagrams,
-		AsyncWriteErrors:           asyncWriteErrors,
-		AsyncWriteErrorBytes:       asyncWriteErrorBytes,
-		AsyncWriteEMSGSIZEErrors:   asyncWriteEMSGSIZEErrors,
-		AsyncWriteEMSGSIZEBytes:    asyncWriteEMSGSIZEBytes,
-	}) {
-		t.Fatalf("shaper DTO = %+v", *got)
-	}
-	if snapshot.Paths[1].Shaper != nil {
-		t.Fatalf("unpaced path shaper = %+v, want nil", snapshot.Paths[1].Shaper)
-	}
-	wire, err := json.Marshal(snapshot)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Count(string(wire), `"shaper":`) != 1 {
-		t.Fatalf("shaper JSON presence = %s", wire)
-	}
-	resetPriorityDelayNumerator := int64(priorityBurstBytes) * int64(time.Second)
-	resetPriorityDelayDenominator := int64(rateBytesPerSecond - priorityRateBytesPerSecond)
-	resetPriorityDelayBound := time.Duration(
-		(resetPriorityDelayNumerator + resetPriorityDelayDenominator - 1) /
-			resetPriorityDelayDenominator,
-	)
-	if resetPriorityDelayBound != 1_333_334*time.Nanosecond {
-		t.Fatalf("reset Dp = %s, want ceil(Pburst/(R-Rp)) = 1.333334ms", resetPriorityDelayBound)
-	}
-	shaperSnapshot = shaper.Snapshot{
-		RateBytesPerSecond:         rateBytesPerSecond,
-		DataBudgetBytes:            dataBudgetBytes,
-		ControlReserveBytes:        controlReserveBytes,
-		QueueBudgetBytes:           queueBudgetBytes,
-		MaxDatagramBytes:           maxDatagramBytes,
-		PriorityRateBytesPerSecond: priorityRateBytesPerSecond,
-		PriorityBurstBytes:         priorityBurstBytes,
-		PriorityDelayBound:         resetPriorityDelayBound,
-	}
-	reset := BuildSnapshot(fakeSource{
-		paths: []metrics.PathSnapshot{{Name: "paced", Shaper: &shaperSnapshot}},
-	}, Info{}, true, false)
-	if reset.Paths[0].Shaper == nil ||
-		reset.Paths[0].Shaper.AcceptedBytes != 0 ||
-		reset.Paths[0].Shaper.AsyncWriteErrors != 0 {
-		t.Fatalf("reset shaper DTO = %+v", reset.Paths[0].Shaper)
-	}
-}
-
 // TestBuildSnapshot_ExtendedFields exercises the G21 contract extension (T214):
-// the daemon identity, per-path bind metadata + declared link params + the
+// the daemon identity, per-path bind metadata + the
 // redactable addressing block, the ordered endpoint list from the LIVE Info
 // provider, and the truncated WG fingerprint. It also asserts the server-side
 // redaction gate: with revealAddressing=false the per-path addressing block is
@@ -195,9 +58,6 @@ func TestBuildSnapshot_ExtendedFields(t *testing.T) {
 		Version:                "v1.2.3",
 		UptimeSeconds:          42,
 		WGPublicKeyFingerprint: "AbCdEfGhIj",
-		PathLinks: map[PathKey]PathLink{
-			{Peer: "", Name: "starlink"}: {LinkBandwidthBps: 50e6, LinkRttSeconds: 0.045},
-		},
 		Endpoints: func() []EndpointSnapshot {
 			return []EndpointSnapshot{
 				{Address: "203.0.113.7:51820", Active: true},
@@ -223,9 +83,6 @@ func TestBuildSnapshot_ExtendedFields(t *testing.T) {
 	p := snap.Paths[0]
 	if p.BindMode != "device" || p.BoundDevice != "eth0" {
 		t.Fatalf("bind metadata = %q/%q", p.BindMode, p.BoundDevice)
-	}
-	if p.LinkBandwidthBps != 50e6 || p.LinkRttSeconds != 0.045 {
-		t.Fatalf("link metadata = %v/%v", p.LinkBandwidthBps, p.LinkRttSeconds)
 	}
 	if p.Addressing == nil || p.Addressing.Source != "192.168.1.10" || p.Addressing.Remote != "203.0.113.7:51820" {
 		t.Fatalf("addressing = %+v", p.Addressing)
@@ -367,18 +224,6 @@ func TestBuildSnapshotSinglePeer(t *testing.T) {
 				State: telemetry.StateUp,
 			},
 		},
-		fec: []metrics.FECSnapshot{
-			{
-				Peer:                 "",
-				DataPackets:          100,
-				RepairPackets:        10,
-				RecoveredPackets:     5,
-				UnrecoverablePackets: 1,
-				DataBytes:            140000,
-				RepairBytes:          14000,
-				ResidualLossRatio:    0.02,
-			},
-		},
 		reseq: []metrics.ReseqSnapshot{
 			{
 				Peer: "",
@@ -391,15 +236,6 @@ func TestBuildSnapshotSinglePeer(t *testing.T) {
 					Resyncs:        6,
 					Rebaselines:    7,
 				},
-			},
-		},
-		aggregation: []metrics.AggregationSnapshot{
-			{
-				Peer:                  "",
-				Aggregating:           true,
-				OfferedLoadFPS:        123.4,
-				EngageThresholdFPS:    200,
-				DisengageThresholdFPS: 100,
 			},
 		},
 		session: metrics.SessionSnapshot{
@@ -465,18 +301,6 @@ func TestBuildSnapshotSinglePeer(t *testing.T) {
 		t.Errorf("path up = %v, want true", p["up"])
 	}
 
-	fec, ok := decoded["fec"].([]any)
-	if !ok || len(fec) != 1 {
-		t.Fatalf("json fec = %#v, want a 1-element array", decoded["fec"])
-	}
-	f := fec[0].(map[string]any)
-	if f["dataPackets"] != float64(100) || f["repairPackets"] != float64(10) {
-		t.Errorf("fec counters = %#v, want dataPackets=100 repairPackets=10", f)
-	}
-	if f["residualLossRatio"] != 0.02 {
-		t.Errorf("fec residualLossRatio = %v, want 0.02", f["residualLossRatio"])
-	}
-
 	reseqArr, ok := decoded["reseq"].([]any)
 	if !ok || len(reseqArr) != 1 {
 		t.Fatalf("json reseq = %#v, want a 1-element array", decoded["reseq"])
@@ -484,18 +308,6 @@ func TestBuildSnapshotSinglePeer(t *testing.T) {
 	r := reseqArr[0].(map[string]any)
 	if r["released"] != float64(500) || r["rebaselines"] != float64(7) {
 		t.Errorf("reseq counters = %#v, want released=500 rebaselines=7", r)
-	}
-
-	agg, ok := decoded["aggregation"].([]any)
-	if !ok || len(agg) != 1 {
-		t.Fatalf("json aggregation = %#v, want a 1-element array", decoded["aggregation"])
-	}
-	a := agg[0].(map[string]any)
-	if a["aggregating"] != true {
-		t.Errorf("aggregation aggregating = %v, want true", a["aggregating"])
-	}
-	if a["offeredLoadFps"] != 123.4 {
-		t.Errorf("aggregation offeredLoadFps = %v, want 123.4", a["offeredLoadFps"])
 	}
 
 	session, ok := decoded["session"].(map[string]any)
@@ -511,7 +323,7 @@ func TestBuildSnapshotSinglePeer(t *testing.T) {
 }
 
 // TestBuildSnapshotMultiPeer feeds BuildSnapshot a 2-peer Source and asserts
-// MultiPeer is true and each per-(peer,path)/FEC/Reseq/Aggregation entry
+// MultiPeer is true and each per-(peer,path)/Reseq entry
 // carries its bound peer's name.
 func TestBuildSnapshotMultiPeer(t *testing.T) {
 	src := fakeSource{
@@ -519,16 +331,9 @@ func TestBuildSnapshotMultiPeer(t *testing.T) {
 			{Peer: "east", Name: "starlink", State: telemetry.StateUp},
 			{Peer: "west", Name: "starlink", State: telemetry.StateDown},
 		},
-		fec: []metrics.FECSnapshot{
-			{Peer: "east", DataPackets: 10},
-			{Peer: "west", DataPackets: 20},
-		},
 		reseq: []metrics.ReseqSnapshot{
 			{Peer: "east", Stats: reseq.Stats{Released: 1}},
 			{Peer: "west", Stats: reseq.Stats{Released: 2}},
-		},
-		aggregation: []metrics.AggregationSnapshot{
-			{Peer: "east", Aggregating: true},
 		},
 		session:   metrics.SessionSnapshot{Established: false, LastHandshakeAge: 0},
 		peerNames: []string{"east", "west"},
@@ -575,24 +380,72 @@ func TestBuildSnapshotMultiPeer(t *testing.T) {
 		t.Errorf("path[1] = %#v, want peer=west up=false", p1)
 	}
 
-	fec := decoded["fec"].([]any)
-	if len(fec) != 2 || fec[0].(map[string]any)["peer"] != "east" || fec[1].(map[string]any)["peer"] != "west" {
-		t.Errorf("json fec = %#v, want peers east then west", decoded["fec"])
-	}
-
 	reseqArr := decoded["reseq"].([]any)
 	if len(reseqArr) != 2 || reseqArr[0].(map[string]any)["peer"] != "east" || reseqArr[1].(map[string]any)["peer"] != "west" {
 		t.Errorf("json reseq = %#v, want peers east then west", decoded["reseq"])
 	}
 
-	agg := decoded["aggregation"].([]any)
-	if len(agg) != 1 || agg[0].(map[string]any)["peer"] != "east" {
-		t.Errorf("json aggregation = %#v, want a single east entry (west has no gate)", decoded["aggregation"])
-	}
-
 	session := decoded["session"].(map[string]any)
 	if session["established"] != false || session["lastHandshakeSeconds"] != float64(0) {
 		t.Errorf("session = %#v, want established=false lastHandshakeSeconds=0", session)
+	}
+}
+
+// TestBuildSnapshotReseqMirrorsStats pins the resequencer wire object: every
+// reseq.Stats field is carried under its JSON name with its value, durations and
+// the armed deadline as integer nanoseconds, and the object has no other key.
+func TestBuildSnapshotReseqMirrorsStats(t *testing.T) {
+	armedDeadline := time.Unix(1_700_000_000, 123)
+	snap := BuildSnapshot(fakeSource{
+		reseq: []metrics.ReseqSnapshot{
+			{Peer: "east", Stats: reseq.Stats{
+				Released:        1,
+				DroppedDup:      2,
+				DroppedOld:      3,
+				DroppedSuspect:  4,
+				Skipped:         5,
+				Resyncs:         6,
+				Rebaselines:     7,
+				Holds:           8,
+				HoldNanos:       9,
+				ArmedDeadline:   armedDeadline,
+				ArmedWindow:     60 * time.Millisecond,
+				DeadlineWakeups: 11,
+				GapFills:        12,
+			}},
+			{Peer: "west"},
+		},
+		peerNames: []string{"east", "west"},
+	}, Info{}, true, false)
+
+	wire, err := json.Marshal(snap.Reseq)
+	if err != nil {
+		t.Fatalf("json.Marshal: %v", err)
+	}
+	var got []map[string]any
+	if err := json.Unmarshal(wire, &got); err != nil {
+		t.Fatalf("json.Unmarshal: %v", err)
+	}
+	want := []map[string]any{
+		{
+			"peer": "east", "released": float64(1), "droppedDup": float64(2), "droppedOld": float64(3),
+			"droppedSuspect": float64(4), "skipped": float64(5), "resyncs": float64(6),
+			"rebaselines": float64(7), "holds": float64(8), "holdNanos": float64(9),
+			"armedDeadlineUnixNano": float64(armedDeadline.UnixNano()),
+			"armedWindowNanos":      float64(60 * time.Millisecond),
+			"deadlineWakeups":       float64(11), "gapFills": float64(12),
+		},
+		{
+			"peer": "west", "released": float64(0), "droppedDup": float64(0), "droppedOld": float64(0),
+			"droppedSuspect": float64(0), "skipped": float64(0), "resyncs": float64(0),
+			"rebaselines": float64(0), "holds": float64(0), "holdNanos": float64(0),
+			"armedDeadlineUnixNano": float64(0),
+			"armedWindowNanos":      float64(0),
+			"deadlineWakeups":       float64(0), "gapFills": float64(0),
+		},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("reseq wire objects:\n got=%s\nwant=%v", wire, want)
 	}
 }
 
@@ -625,8 +478,8 @@ func TestBuildSnapshotSeparatesExitModeFromActiveExit(t *testing.T) {
 	}
 }
 
-// TestBuildSnapshotEmptyIsNotNull asserts that empty per-(peer,path)/FEC/
-// Reseq/Aggregation sets marshal as `[]`, not `null` — a nil slice would force
+// TestBuildSnapshotEmptyIsNotNull asserts that empty per-(peer,path)/
+// Reseq sets marshal as `[]`, not `null` — a nil slice would force
 // the frontend to null-check every field before iterating.
 func TestBuildSnapshotEmptyIsNotNull(t *testing.T) {
 	snap := BuildSnapshot(fakeSource{peerNames: []string{""}}, Info{}, true, false)
@@ -636,7 +489,7 @@ func TestBuildSnapshotEmptyIsNotNull(t *testing.T) {
 		t.Fatalf("json.Marshal: %v", err)
 	}
 
-	for _, field := range []string{`"paths":[]`, `"fec":[]`, `"reseq":[]`, `"aggregation":[]`, `"exitCapablePeers":[]`} {
+	for _, field := range []string{`"paths":[]`, `"reseq":[]`, `"peerSessions":[]`, `"exitCapablePeers":[]`} {
 		if !strings.Contains(string(b), field) {
 			t.Errorf("marshalled JSON %s does not contain %q, want an empty array not null", b, field)
 		}
@@ -646,9 +499,10 @@ func TestBuildSnapshotEmptyIsNotNull(t *testing.T) {
 // TestBuildSnapshotSinglePeerByteCompatibleExceptAdditiveFields is the T257 back-compat
 // acceptance: for a single-bound-peer edge, the marshalled snapshot is JSON-identical to the
 // pre-T257 wire shape once the additive fields (peerSessions, activeExit,
-// exitCapablePeers, and each endpoint's peer) are stripped. The pre-T257 "want"
-// shape below is the literal pre-change BuildSnapshot/EndpointSnapshot behaviour
-// for this fixture.
+// exitCapablePeers, and each endpoint's peer) are stripped. The "want" shape below
+// is the literal pre-T257 BuildSnapshot/EndpointSnapshot behaviour for this fixture,
+// less the fields of the removed static transports; the comparison is exact, so it
+// also proves none of those fields is still served.
 func TestBuildSnapshotSinglePeerByteCompatibleExceptAdditiveFields(t *testing.T) {
 	src := fakeSource{
 		paths: []metrics.PathSnapshot{
@@ -711,11 +565,10 @@ func TestBuildSnapshotSinglePeerByteCompatibleExceptAdditiveFields(t *testing.T)
 				"name": "solo", "peer": "", "txBytes": float64(100), "rxBytes": float64(200),
 				"throughputBps": float64(0), "rttSeconds": 0.01, "jitterSeconds": float64(0),
 				"loss": float64(0), "up": true, "bindMode": "", "boundDevice": "",
-				"linkBandwidthBps": float64(0), "linkRttSeconds": float64(0),
 				"addressing": map[string]any{"source": "", "remote": ""},
 			},
 		},
-		"fec": []any{}, "reseq": []any{}, "aggregation": []any{},
+		"reseq":     []any{},
 		"session":   map[string]any{"established": false, "lastHandshakeSeconds": float64(0)},
 		"peerNames": []any{""},
 		"multiPeer": false,

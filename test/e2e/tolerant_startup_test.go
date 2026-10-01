@@ -109,9 +109,8 @@ func TestTolerantStartupDeferredPathPromotes(t *testing.T) {
 	waitPathUp(t, t60MetricsURL, t60DeferredPath.name, 1, t60PromoteTimeout)
 
 	// Prove the PROMOTED path itself carries traffic (not merely that the bond
-	// survives): blackhole the survivor so only the reconciled path can forward. The
-	// active-backup scheduler's Pick can only land here once modem5g is genuinely
-	// admitted and healthy.
+	// survives): blackhole the survivor so only the reconciled path can forward, which
+	// is possible only once modem5g is genuinely admitted and healthy.
 	top.Blackhole(survivor.name)
 	if !top.pingUntil(concInner, time.Duration(P1RecoverySeconds)*time.Second+2*time.Second) {
 		t.Fatalf("tunnel did not recover on the promoted path %q once the survivor %q was blackholed\n--- edge ---\n%s\n--- conc ---\n%s",

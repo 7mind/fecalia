@@ -23,14 +23,10 @@ const REDACTED_FRAME = `{
       "loss": 0.01,
       "up": true,
       "bindMode": "device",
-      "boundDevice": "eth0",
-      "linkBandwidthBps": 1000000,
-      "linkRttSeconds": 0.03
+      "boundDevice": "eth0"
     }
   ],
-  "fec": [],
   "reseq": [],
-  "aggregation": [],
   "session": { "established": true, "lastHandshakeSeconds": 12.5 },
   "peerNames": [],
   "multiPeer": false,
@@ -62,40 +58,10 @@ const FULL_FRAME = `{
       "up": true,
       "bindMode": "source",
       "boundDevice": "",
-      "linkBandwidthBps": 1000000,
-      "linkRttSeconds": 0.03,
-      "shaper": {
-        "queueDataBytes": 1,
-        "queueControlBytes": 2,
-        "queueBytes": 3,
-        "inFlightBytes": 4,
-        "scheduledDelaySeconds": 5,
-        "rateBytesPerSecond": 6,
-        "dataBudgetBytes": 7,
-        "controlReserveBytes": 8,
-        "queueBudgetBytes": 9,
-        "maxDatagramBytes": 10,
-        "acceptedBytes": 11,
-        "emittedBytes": 12,
-        "outerPriorityBytes": 13,
-        "priorityDebtBytes": 14,
-        "priorityRateBytesPerSecond": 15,
-        "priorityBurstBytes": 16,
-        "priorityDelayBoundSeconds": 17,
-        "admissionWaits": 18,
-        "admissionWaitSeconds": 19,
-        "admissionCanceledDatagrams": 20,
-        "asyncWriteErrors": 21,
-        "asyncWriteErrorBytes": 22,
-        "asyncWriteEmsgsizeErrors": 23,
-        "asyncWriteEmsgsizeBytes": 24
-      },
       "addressing": { "source": "192.0.2.1", "remote": "198.51.100.7:51820" }
     }
   ],
-  "fec": [],
   "reseq": [],
-  "aggregation": [],
   "session": { "established": true, "lastHandshakeSeconds": 12.5 },
   "peerNames": [],
   "multiPeer": false,
@@ -119,15 +85,13 @@ const FULL_FRAME = `{
 // `addressing` block, matching FULL_FRAME's documented invariant above.
 const TWO_PEER_FRAME = `{
   "paths": [
-    { "name": "wan0", "peer": "tokyo", "txBytes": 1000, "rxBytes": 2000, "throughputBps": 5000, "rttSeconds": 0.02, "jitterSeconds": 0.001, "loss": 0.01, "up": true, "bindMode": "device", "boundDevice": "eth0", "linkBandwidthBps": 1000000, "linkRttSeconds": 0.03, "addressing": { "source": "192.0.2.1", "remote": "198.51.100.7:51820" } },
-    { "name": "wan1", "peer": "osaka", "txBytes": 500, "rxBytes": 900, "throughputBps": 2500, "rttSeconds": 0.04, "jitterSeconds": 0.002, "loss": 0.02, "up": true, "bindMode": "device", "boundDevice": "eth1", "linkBandwidthBps": 500000, "linkRttSeconds": 0.05, "addressing": { "source": "192.0.2.2", "remote": "198.51.100.8:51820" } }
+    { "name": "wan0", "peer": "tokyo", "txBytes": 1000, "rxBytes": 2000, "throughputBps": 5000, "rttSeconds": 0.02, "jitterSeconds": 0.001, "loss": 0.01, "up": true, "bindMode": "device", "boundDevice": "eth0", "addressing": { "source": "192.0.2.1", "remote": "198.51.100.7:51820" } },
+    { "name": "wan1", "peer": "osaka", "txBytes": 500, "rxBytes": 900, "throughputBps": 2500, "rttSeconds": 0.04, "jitterSeconds": 0.002, "loss": 0.02, "up": true, "bindMode": "device", "boundDevice": "eth1", "addressing": { "source": "192.0.2.2", "remote": "198.51.100.8:51820" } }
   ],
-  "fec": [],
   "reseq": [
-    { "peer": "tokyo", "released": 10, "droppedDup": 0, "droppedOld": 0, "droppedSuspect": 0, "skipped": 0, "resyncs": 0, "rebaselines": 0, "holds": 3, "holdNanos": 1500000, "immediateReleases": 1 },
-    { "peer": "osaka", "released": 20, "droppedDup": 1, "droppedOld": 0, "droppedSuspect": 0, "skipped": 0, "resyncs": 0, "rebaselines": 0, "holds": 0, "holdNanos": 0, "immediateReleases": 0 }
+    { "peer": "tokyo", "released": 10, "droppedDup": 0, "droppedOld": 0, "droppedSuspect": 0, "skipped": 0, "resyncs": 0, "rebaselines": 0, "holds": 3, "holdNanos": 1500000, "armedDeadlineUnixNano": 1700000000000000000, "armedWindowNanos": 60000000, "deadlineWakeups": 2, "gapFills": 1 },
+    { "peer": "osaka", "released": 20, "droppedDup": 1, "droppedOld": 0, "droppedSuspect": 0, "skipped": 0, "resyncs": 0, "rebaselines": 0, "holds": 0, "holdNanos": 0, "armedDeadlineUnixNano": 0, "armedWindowNanos": 0, "deadlineWakeups": 0, "gapFills": 0 }
   ],
-  "aggregation": [],
   "session": { "established": true, "lastHandshakeSeconds": 12.5 },
   "peerNames": ["tokyo", "osaka"],
   "multiPeer": true,
@@ -158,8 +122,6 @@ describe('MonitorSnapshot wire fixtures (T218)', () => {
     const path = snapshot.paths[0];
     expect(path.bindMode).toBe('device');
     expect(path.boundDevice).toBe('eth0');
-    expect(path.linkBandwidthBps).toBe(1000000);
-    expect(path.linkRttSeconds).toBe(0.03);
 
     // Type narrowing: `addressing` is optional, so it must be checked before
     // use. On the redacted frame that check must fail (the field is absent).
@@ -168,7 +130,6 @@ describe('MonitorSnapshot wire fixtures (T218)', () => {
     }
     expect(path.addressing).toBeUndefined();
     expect('addressing' in path).toBe(false);
-    expect(path.shaper).toBeUndefined();
 
     expect(snapshot.endpoints).toEqual([
       { address: '', active: true },
@@ -192,33 +153,6 @@ describe('MonitorSnapshot wire fixtures (T218)', () => {
     }
     expect(path.addressing.source).toBe('192.0.2.1');
     expect(path.addressing.remote).toBe('198.51.100.7:51820');
-    expect(path.shaper).toEqual({
-      queueDataBytes: 1,
-      queueControlBytes: 2,
-      queueBytes: 3,
-      inFlightBytes: 4,
-      scheduledDelaySeconds: 5,
-      rateBytesPerSecond: 6,
-      dataBudgetBytes: 7,
-      controlReserveBytes: 8,
-      queueBudgetBytes: 9,
-      maxDatagramBytes: 10,
-      acceptedBytes: 11,
-      emittedBytes: 12,
-      outerPriorityBytes: 13,
-      priorityDebtBytes: 14,
-      priorityRateBytesPerSecond: 15,
-      priorityBurstBytes: 16,
-      priorityDelayBoundSeconds: 17,
-      admissionWaits: 18,
-      admissionWaitSeconds: 19,
-      admissionCanceledDatagrams: 20,
-      asyncWriteErrors: 21,
-      asyncWriteErrorBytes: 22,
-      asyncWriteEmsgsizeErrors: 23,
-      asyncWriteEmsgsizeBytes: 24,
-    });
-
     expect(snapshot.endpoints).toEqual([
       { address: '198.51.100.9:51820', active: true },
       { address: '198.51.100.10:51820', active: false },
@@ -277,10 +211,11 @@ describe('MonitorSnapshot wire fixtures (T218)', () => {
     expect(snapshot.activeExit).toBe('osaka');
     expect(snapshot.exitCapablePeers).toEqual(['tokyo', 'osaka']);
 
-    // reseq HoL-stall/hold accounting (T242, D93) round-trips per peer.
+    // reseq HoL-stall/hold accounting (T242, D93) and the live-gap deadline
+    // fields round-trip per peer.
     expect(snapshot.reseq).toEqual([
-      { peer: 'tokyo', released: 10, droppedDup: 0, droppedOld: 0, droppedSuspect: 0, skipped: 0, resyncs: 0, rebaselines: 0, holds: 3, holdNanos: 1500000, immediateReleases: 1 },
-      { peer: 'osaka', released: 20, droppedDup: 1, droppedOld: 0, droppedSuspect: 0, skipped: 0, resyncs: 0, rebaselines: 0, holds: 0, holdNanos: 0, immediateReleases: 0 },
+      { peer: 'tokyo', released: 10, droppedDup: 0, droppedOld: 0, droppedSuspect: 0, skipped: 0, resyncs: 0, rebaselines: 0, holds: 3, holdNanos: 1500000, armedDeadlineUnixNano: 1700000000000000000, armedWindowNanos: 60000000, deadlineWakeups: 2, gapFills: 1 },
+      { peer: 'osaka', released: 20, droppedDup: 1, droppedOld: 0, droppedSuspect: 0, skipped: 0, resyncs: 0, rebaselines: 0, holds: 0, holdNanos: 0, armedDeadlineUnixNano: 0, armedWindowNanos: 0, deadlineWakeups: 0, gapFills: 0 },
     ]);
   });
 });

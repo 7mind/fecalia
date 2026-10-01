@@ -1,9 +1,11 @@
 package bind
 
 import (
+	"bytes"
 	"crypto/rand"
 	"net"
 	"net/netip"
+	"slices"
 	"sync"
 	"syscall"
 	"testing"
@@ -11,7 +13,6 @@ import (
 
 	"github.com/7mind/wanbond/internal/config"
 	"github.com/7mind/wanbond/internal/frame"
-	"github.com/7mind/wanbond/internal/sched"
 	"github.com/7mind/wanbond/internal/telemetry"
 	"go.uber.org/goleak"
 )
@@ -58,8 +59,8 @@ func (f *fakeDeferredBinder) listen(_ netip.Addr, _ uint16, dev string) (*net.UD
 // TestReconcilePromotesDeferredPathToLive is the T55 core acceptance: a path DEFERRED
 // at Open because its source_addr was not assignable (EADDRNOTAVAIL) is BOUND and
 // PROMOTED to a live path by the background reconcile once the address becomes
-// assignable — brought into m.paths, the scheduler, and its reader — so the scheduler
-// then selects it, WITHOUT a Close→Open restart. It also asserts the promoted path
+// assignable — brought into m.paths with its reader — so the transport then learns a
+// lane on it and sends over it, WITHOUT a Close→Open restart. It also asserts the promoted path
 // reuses its deferred boot prober (id-stamp continuity, T51). The promotion assertion
 // FAILS on the pre-T55 code, which has no reconcile: a deferred path stays Down forever.
 func TestReconcilePromotesDeferredPathToLive(t *testing.T) {
@@ -69,7 +70,7 @@ func TestReconcilePromotesDeferredPathToLive(t *testing.T) {
 		{Name: "bindable", SourceAddr: netip.MustParseAddr("127.0.0.1")},
 		{Name: "deferred", SourceAddr: netip.MustParseAddr(unassignableSource)},
 	}
-	m, probers, scheduler := newProbingMultipath(t, paths, psk, clk)
+	m, probers := newProbingMultipath(t, paths, psk, clk)
 	binder := &fakeDeferredBinder{}
 	m.deferredListen = binder.listen
 
@@ -107,7 +108,7 @@ func TestReconcilePromotesDeferredPathToLive(t *testing.T) {
 		t.Fatal("promoted path has no socket")
 	}
 	// Stamp continuity (T51): the promoted path reuses its deferred boot prober, so its
-	// id-stamp is unchanged and its prober is the SAME object the scheduler selects on.
+	// id-stamp is unchanged and its prober is the SAME object that measured it while deferred.
 	if promoted.prober != probers[1] {
 		t.Fatal("promoted path did not reuse its deferred boot prober (stamp continuity lost)")
 	}
@@ -115,9 +116,10 @@ func TestReconcilePromotesDeferredPathToLive(t *testing.T) {
 		t.Fatalf("promoted path id = %d, want its reserved prober stamp %d", promoted.id, probers[1].PathID())
 	}
 
-	// The promoted path is now in the SCHEDULER: bring both paths Up, blackhole the
-	// original primary, and assert egress fails over to the promoted path — only possible
-	// if reconcile admitted it to the scheduler as a live, selectable path.
+	// The promoted path is now a live path of the bond: with the original primary
+	// blackholed (its probes never echoed) the promoted path alone comes Up, the
+	// transport learns its lane, and egress goes over it — only possible if reconcile
+	// wired its socket, prober and reader into the bond.
 	refl := telemetry.NewReflector(psk, rand.Reader)
 	codec, _ := frame.NewCodec(psk)
 	peer0, ap0 := rawPeer(t)
@@ -125,45 +127,28 @@ func TestReconcilePromotesDeferredPathToLive(t *testing.T) {
 	m.paths[0].setRemote(ap0)
 	promoted.setRemote(ap1)
 	for i := 0; i < testProbeUpSucc; i++ {
-		probeRound(t, m, clk, refl, codec, psk,
-			map[int]*net.UDPConn{0: peer0, 1: peer1}, map[int]netip.AddrPort{0: ap0, 1: ap1})
+		m.emitProbes()
+		clk.advance(testProbeRTT)
+		_ = readProbe(t, peer0, codec) // primary blackholed: drain its probe, do not echo
+		m.handleInbound(m.paths[1], reflectHello(t, refl, psk, readProbe(t, peer1, codec)), ap1)
+		clk.advance(testProbeInterval - testProbeRTT)
 	}
 	if promoted.prober.State() != telemetry.StateUp {
 		t.Fatalf("promoted path state = %v, want up (probes not driving its liveness)", promoted.prober.State())
 	}
-	if idx := scheduler.Pick(sched.ClassData, 1); idx != 0 {
-		t.Fatalf("Pick = %d while both up, want the primary 0", idx)
-	}
-
-	// Blackhole the primary: drop its echoes, keep echoing the promoted path. After the
-	// detection window the primary goes Down and the scheduler fails egress over to the
-	// promoted path (index 1).
-	rounds := int(testProbeDownAfter/testProbeInterval) + 3
-	for i := 0; i < rounds; i++ {
-		m.emitProbes()
-		clk.advance(testProbeRTT)
-		_ = readProbe(t, peer0, codec) // primary blackholed: drain its probe, do not echo
-		probe1 := readProbe(t, peer1, codec)
-		raw, err := frame.Encode(psk, probe1)
-		if err != nil {
-			t.Fatalf("re-encode probe: %v", err)
-		}
-		echo, _, err := refl.Reflect(raw)
-		if err != nil {
-			t.Fatalf("reflect promoted path: %v", err)
-		}
-		m.handleInbound(m.paths[1], echo, ap1)
-		clk.advance(testProbeInterval - testProbeRTT)
-	}
 	if probers[0].State() != telemetry.StateDown {
 		t.Fatalf("blackholed primary state = %v, want down", probers[0].State())
 	}
-	if idx := scheduler.Pick(sched.ClassData, 1); idx != 1 {
-		t.Fatalf("Pick = %d after primary blackhole, want failover to the promoted path 1", idx)
+	if got := upLanes(t, m, 0); !slices.Equal(got, []uint8{promoted.id}) {
+		t.Fatalf("lanes = %v, want only the promoted path's", got)
 	}
-	// The failover is usable end to end: a Send routes over the promoted path.
-	if err := m.Send([][]byte{[]byte("post-promote")}, m.virt); err != nil {
+	// The promoted path is usable end to end: a Send egresses over it.
+	payload := []byte("post-promote")
+	if err := m.Send([][]byte{payload}, m.virt); err != nil {
 		t.Fatalf("Send over the promoted path: %v", err)
+	}
+	if data, _ := readTransportData(t, peer1, codec); !bytes.HasSuffix(data.Payload, payload) {
+		t.Fatalf("datagram on the promoted path = %x, want it to end in %q", data.Payload, payload)
 	}
 }
 
@@ -178,7 +163,7 @@ func TestReconcileSkipsPathRemovedBeforeBind(t *testing.T) {
 		{Name: "bindable", SourceAddr: netip.MustParseAddr("127.0.0.1")},
 		{Name: "deferred", SourceAddr: netip.MustParseAddr(unassignableSource)},
 	}
-	m, _, _ := newProbingMultipath(t, paths, psk, clk)
+	m, _ := newProbingMultipath(t, paths, psk, clk)
 	binder := &fakeDeferredBinder{}
 	m.deferredListen = binder.listen
 
@@ -230,7 +215,7 @@ func TestReconcileThreadsForcedDeviceBind(t *testing.T) {
 		{Name: "deferred-auto", SourceAddr: netip.MustParseAddr(unassignableSource), Bind: config.BindModeAuto},
 		{Name: "deferred-device", SourceAddr: netip.MustParseAddr(unassignableSource), Bind: config.BindModeDevice},
 	}
-	m, _, _ := newProbingMultipath(t, paths, psk, clk)
+	m, _ := newProbingMultipath(t, paths, psk, clk)
 	binder := &fakeDeferredBinder{}
 	m.deferredListen = binder.listen
 	// Deterministic fake decision: BindModeDevice resolves to "wan0"; every other mode
@@ -311,7 +296,7 @@ func (f *fakeAddPathBinder) listen(src netip.Addr, _ uint16, dev string) (*net.U
 func TestAddPathThreadsForcedDeviceBind(t *testing.T) {
 	psk := testKey(t, 0x5A)
 	clk := newFakeClock()
-	m, _, _ := newProbingMultipath(t, loopbackPaths(1), psk, clk)
+	m, _ := newProbingMultipath(t, loopbackPaths(1), psk, clk)
 	if _, _, err := m.Open(0); err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -354,7 +339,7 @@ func TestReconcileLoopStopsCleanly(t *testing.T) {
 	defer goleak.VerifyNone(t)
 	psk := testKey(t, 0x57)
 	clk := newFakeClock()
-	m, _, _ := newProbingMultipath(t, loopbackPaths(1), psk, clk)
+	m, _ := newProbingMultipath(t, loopbackPaths(1), psk, clk)
 	if _, _, err := m.Open(0); err != nil {
 		t.Fatalf("Open: %v", err)
 	}

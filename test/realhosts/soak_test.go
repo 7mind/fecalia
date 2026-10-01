@@ -19,7 +19,7 @@ import (
 //   - CONC  = o3.7mind.io                (aarch64, PUBLIC 89.168.124.91)
 //
 // This is a LONGER, SAMPLED version of T58's loaded window (aggregation_bufferbloat_test.go):
-// it brings the SAME two-source-IP weighted bond up over the real internet, then runs ONE
+// it brings the SAME two-source-IP bond up over the real internet, then runs ONE
 // sustained saturating transfer for a bounded window and SAMPLES the tunnel health across
 // that window — throughput (per iperf3 interval), RTT + loss (periodic ping), and path
 // liveness (periodic edge-journal path-state read) — emitting the per-sample time series
@@ -79,7 +79,7 @@ type soakSample struct {
 	backup  string
 }
 
-// TestRealSoakShort brings the T58 weighted bond up over the real internet between the two
+// TestRealSoakShort brings the T58 bond up over the real internet between the two
 // standing hosts, runs ONE sustained saturating transfer for soakWindow, and samples tunnel
 // health across the window. REPORT-ONLY: it asserts ONLY that the transfer completed and the
 // tunnel stayed up; the throughput/RTT/loss/liveness time series is logged, not gated. Every
@@ -125,9 +125,8 @@ func TestRealSoakShort(t *testing.T) {
 	t.Logf("concentrator source addr: %s", concSrc)
 
 	// 6. Write the 0600 configs: a plain single-path concentrator listener, and an edge that
-	//    lists TWO paths pinning the two source IPs and selects the WEIGHTED scheduler with
-	//    per-link pacing — identical to T58's bond (reusing the operator-declared per-link
-	//    bandwidth/RTT). Both ends run at "info" so liveness transitions are journalled.
+	//    lists TWO paths pinning the two source IPs — identical to T58's bond. Both ends
+	//    run at "info" so liveness transitions are journalled.
 	concCfg := fmt.Sprintf(`role = "concentrator"
 psk = "%s"
 
@@ -153,18 +152,10 @@ psk = "%s"
 [[paths]]
 name = "%s"
 source_addr = "%s"
-link_bandwidth = "%s"
-link_rtt = "%s"
 
 [[paths]]
 name = "%s"
 source_addr = "%s"
-link_bandwidth = "%s"
-link_rtt = "%s"
-
-[scheduler]
-policy = "weighted"
-pacing_enabled = true
 
 [wireguard]
 private_key = "%s"
@@ -177,8 +168,8 @@ allowed_ips = ["%s/32"]
 [log]
 level = "info"
 `, psk,
-		mpPrimaryPathName, plan.primaryIP, aggDeclaredBandwidth, aggDeclaredRTT,
-		mpBackupPathName, plan.altIP, aggDeclaredBandwidth, aggDeclaredRTT,
+		mpPrimaryPathName, plan.primaryIP,
+		mpBackupPathName, plan.altIP,
 		edgePriv, concPub, cfg.ConcPubIP, smokeListenPort, smokeConcInner)
 
 	concCfgPath := smokeRemoteDir + "/conc.toml"
@@ -211,7 +202,7 @@ level = "info"
 		dumpDaemonLog(t, r, cfg.Edge)
 		t.Fatalf("handshake never completed: %s unreachable from the edge through the tunnel", smokeConcInner)
 	}
-	t.Logf("HANDSHAKE OK over the weighted bond")
+	t.Logf("HANDSHAKE OK over the bond")
 
 	// 10. Both paths must ESTABLISH (each reaches liveness "up" after authenticated echoes on
 	//     its own 4-tuple) before the soak begins, so the bond is fully up for the window.
@@ -328,7 +319,6 @@ level = "info"
 	// Final report block (report-only; nothing below gates the test).
 	t.Logf("=== REAL-HOST SHORT SOAK RESULTS ===\n"+
 		"  window:            %s (spans the ~120s WG rekey cadence)\n"+
-		"  scheduler:         weighted, pacing on (declared %s / %s per link)\n"+
 		"  sustained flow:    %.2f Mbit/s over %d intervals (retransmits=%d)\n"+
 		"  samples:           %d taken every %s\n"+
 		"  reachable samples: %d/%d\n"+
@@ -336,7 +326,7 @@ level = "info"
 		"  avg sampled loss:  %.1f%%\n"+
 		"  path-down flaps:   %d (recovered — window still completed)\n"+
 		"  final in-tunnel RTT: %.3f ms",
-		soakWindow, aggDeclaredBandwidth, aggDeclaredRTT,
+		soakWindow,
 		mbps, len(rep.Intervals), rep.End.SumSent.Retransmits,
 		n, soakSampleInterval, reachable, n, avgRTT, avgLoss, flaps, finalRTT)
 }

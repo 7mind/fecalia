@@ -22,20 +22,12 @@ import (
 // two paths present two distinct 4-tuples through the NAT to the ONE concentrator
 // public endpoint. The concentrator runs a SINGLE virtual endpoint that reflects
 // each path's probe to the source it arrived from and learns the surviving edge
-// endpoint from authenticated traffic, so egress failover is measured EDGE-side
-// (the concentrator has one path and never logs a scheduler transition).
+// endpoint from authenticated traffic, so failover detection is measured EDGE-side.
 const (
-	// mpPrimaryPathName / mpBackupPathName are the two edge path names, in
-	// active-backup priority order: index 0 (primary) carries all DATA, index 1
-	// (backup) carries only probes until the primary fails.
+	// mpPrimaryPathName / mpBackupPathName are the two edge path names, in config
+	// order: the primary is the path the failover tests kill, the backup survives.
 	mpPrimaryPathName = "wan0"
 	mpBackupPathName  = "wan1"
-
-	// mpPrimaryPathIdx / mpBackupPathIdx mirror the config path order in the
-	// scheduler's priority-ordered health slice; a "scheduler active path change"
-	// with to==mpBackupPathIdx is the failover this test measures.
-	mpPrimaryPathIdx = 0
-	mpBackupPathIdx  = 1
 
 	// Policy-routing tables and rule preferences for the two edge source IPs. Each
 	// path's source IP is routed via its own table (a faithful copy of the main
@@ -85,9 +77,9 @@ type edgePathPlan struct {
 // gives the NAT'd edge TWO paths to the ONE concentrator over its single physical
 // uplink (two source IPs + policy routing), brings the P1 multipath bond up over
 // the real internet, confirms BOTH paths establish (both reach liveness "up", the
-// "traffic observed on both paths" telemetry), then blackholes the ACTIVE path's
+// "traffic observed on both paths" telemetry), then blackholes the primary path's
 // egress mid-flow and confirms a long-lived TCP transfer survives — recording the
-// edge-side failover time. REPORT-ONLY per Q12: executing and recording IS the
+// edge-side detection time. REPORT-ONLY per Q12: executing and recording IS the
 // acceptance; it gates nothing. A slow-but-recovered failover is recorded, not
 // failed; only a genuine wedge (the flow does not survive) is an error. Every host
 // mutation (secondary address, ip rules, routing tables, systemd units, iperf3,
@@ -140,7 +132,7 @@ func TestRealMultipathFailover(t *testing.T) {
 	// 6. Write the 0600 configs. The edge lists TWO paths pinning the two source IPs;
 	//    neither carries dest_addr, so both reuse the wireguard peer endpoint (the
 	//    single concentrator public IP) — the source-routed multipath case. Both ends
-	//    run at "info" so the scheduler/liveness transitions are journalled.
+	//    run at "info" so the liveness transitions are journalled.
 	concCfg := fmt.Sprintf(`role = "concentrator"
 psk = "%s"
 
@@ -252,18 +244,17 @@ level = "info"
 	flowErr := flow.Wait()
 	restoreEdgePath(t, r, cfg.Edge, plan, mpPrimaryTable)
 
-	// 14. Edge-side failover latency: the earliest "scheduler active path change" to
-	//     the backup index logged after the edge-clock T0 marker. Both the marker and
-	//     the transition timestamp come from the edge clock (single domain); the
-	//     reroute is a sub-ms update, so the transition timestamp IS the recovery instant.
+	// 14. Edge-side detection latency: the earliest "path liveness transition" of the
+	//     killed path to "down" logged after the edge-clock T0 marker. Both the marker
+	//     and the transition timestamp come from the edge clock (single domain).
 	journal := readDaemonJournal(t, r, cfg.Edge, smokeUnit)
-	failover := schedulerSwitchAfter(journal, killAt, mpBackupPathIdx)
+	failover := pathDownAfter(journal, mpPrimaryPathName, killAt)
 	if failover < 0 {
 		dumpDaemonLog(t, r, cfg.Edge)
-		t.Errorf("no edge scheduler transition to the backup (idx %d) logged after the kill — did the active path actually go down?", mpBackupPathIdx)
+		t.Errorf("no edge liveness transition of %q to down logged after the kill — did the path actually go down?", mpPrimaryPathName)
 	} else {
-		t.Logf("FAILOVER_MS=%d (edge egress %q[%d] -> %q[%d])",
-			failover.Milliseconds(), mpPrimaryPathName, mpPrimaryPathIdx, mpBackupPathName, mpBackupPathIdx)
+		t.Logf("FAILOVER_MS=%d (edge marked %q down; %q survives)",
+			failover.Milliseconds(), mpPrimaryPathName, mpBackupPathName)
 	}
 
 	// 15. Data-plane survival: the spanning TCP flow must have completed with positive
@@ -482,7 +473,7 @@ func delRule(ip string, table, pref int) string {
 
 // blackholeEdgePath installs a SCOPED blackhole of the concentrator /32 in the given
 // path's source table, so ONLY that path's egress to the concentrator is dropped (its
-// probes stop echoing -> the edge marks the path down -> the scheduler fails over).
+// probes stop echoing -> the edge marks the path down).
 // It deliberately does NOT blackhole the table's default: management SSH (dest = the
 // control host, never concPubIP) and every other primary-sourced flow keep routing
 // via the table's mirrored routes, so the control channel — and the iperf3-over-SSH
@@ -610,10 +601,11 @@ func waitBothPathsUp(t *testing.T, r *Runner, host Host, names []string, d time.
 // livenessRecord is the subset of a "path liveness transition" slog line this tier
 // reads.
 type livenessRecord struct {
-	Msg       string `json:"msg"`
-	Path      string `json:"path"`
-	To        string `json:"to"`
-	SilenceMs int64  `json:"silence_ms"`
+	Time      time.Time `json:"time"`
+	Msg       string    `json:"msg"`
+	Path      string    `json:"path"`
+	To        string    `json:"to"`
+	SilenceMs int64     `json:"silence_ms"`
 }
 
 // pathUpSilences scans journal for the FIRST "path liveness transition" to "up" per
@@ -638,24 +630,20 @@ func pathUpSilences(journal string) map[string]int64 {
 	return ups
 }
 
-// schedulerSwitchAfter returns the delay from `after` to the EARLIEST "scheduler
-// active path change" transition whose destination is toIdx logged strictly after
-// `after`, or -1 if none. It is the edge-side per-direction failover latency: the
-// reroute is a sub-ms update, so the transition timestamp is the recovery instant.
-func schedulerSwitchAfter(journal string, after time.Time, toIdx int) time.Duration {
+// pathDownAfter returns the delay from `after` to the EARLIEST "path liveness
+// transition" of path to "down" logged strictly after `after`, or -1 if none. It is
+// the edge-side detection latency of a killed path.
+func pathDownAfter(journal, path string, after time.Time) time.Duration {
 	best := time.Duration(-1)
 	for _, line := range strings.Split(journal, "\n") {
-		if !strings.Contains(line, "scheduler active path change") {
+		if !strings.Contains(line, "path liveness transition") {
 			continue
 		}
-		var rec struct {
-			Time time.Time `json:"time"`
-			To   int       `json:"to"`
-		}
+		var rec livenessRecord
 		if err := json.Unmarshal([]byte(line), &rec); err != nil {
 			continue
 		}
-		if rec.To != toIdx || !rec.Time.After(after) {
+		if rec.Msg != "path liveness transition" || rec.Path != path || rec.To != "down" || !rec.Time.After(after) {
 			continue
 		}
 		if d := rec.Time.Sub(after); best < 0 || d < best {

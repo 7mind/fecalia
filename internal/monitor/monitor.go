@@ -26,53 +26,6 @@ type AddressingSnapshot struct {
 	Remote string `json:"remote"`
 }
 
-// ShaperSnapshot is the JSON encoding of a live per-path exact-byte shaper.
-// It is omitted from a path when shaping is disabled.
-// Queue fields retain at most B DATA/PARITY bytes, C=Lmax inner-control bytes,
-// and Q=B+C total bytes; InFlightBytes is one <=Lmax writer datagram outside Q.
-// Scheduled deadlines remain immutable, and successful authenticated outer
-// PROBE/echo writes add only future priority debt. AcceptedBytes linearizes at
-// pre-copy reservation, while EmittedBytes counts successful shaped UDP writes.
-// PriorityDebtBytes is P0 and PriorityDelayBoundSeconds is
-// Dp=(P0+Pburst)/(R-Rp). Async error counts represent actual writer calls; their
-// byte fields also include reserved unstarted suffix bytes retired by a failed
-// batch.
-type ShaperSnapshot struct {
-	QueueDataBytes             int     `json:"queueDataBytes"`
-	QueueControlBytes          int     `json:"queueControlBytes"`
-	QueueBytes                 int     `json:"queueBytes"`
-	InFlightBytes              int     `json:"inFlightBytes"`
-	ScheduledDelaySeconds      float64 `json:"scheduledDelaySeconds"`
-	RateBytesPerSecond         float64 `json:"rateBytesPerSecond"`
-	DataBudgetBytes            int     `json:"dataBudgetBytes"`
-	ControlReserveBytes        int     `json:"controlReserveBytes"`
-	QueueBudgetBytes           int     `json:"queueBudgetBytes"`
-	MaxDatagramBytes           int     `json:"maxDatagramBytes"`
-	AcceptedBytes              uint64  `json:"acceptedBytes"`
-	EmittedBytes               uint64  `json:"emittedBytes"`
-	OuterPriorityBytes         uint64  `json:"outerPriorityBytes"`
-	PriorityDebtBytes          float64 `json:"priorityDebtBytes"`
-	PriorityRateBytesPerSecond float64 `json:"priorityRateBytesPerSecond"`
-	PriorityBurstBytes         int     `json:"priorityBurstBytes"`
-	PriorityDelayBoundSeconds  float64 `json:"priorityDelayBoundSeconds"`
-	AdmissionWaits             uint64  `json:"admissionWaits"`
-	AdmissionWaitSeconds       float64 `json:"admissionWaitSeconds"`
-	AdmissionCanceledDatagrams uint64  `json:"admissionCanceledDatagrams"`
-	AsyncWriteErrors           uint64  `json:"asyncWriteErrors"`
-	AsyncWriteErrorBytes       uint64  `json:"asyncWriteErrorBytes"`
-	AsyncWriteEMSGSIZEErrors   uint64  `json:"asyncWriteEmsgsizeErrors"`
-	AsyncWriteEMSGSIZEBytes    uint64  `json:"asyncWriteEmsgsizeBytes"`
-
-	OuterPriorityEmittedBytes    uint64 `json:"outerPriorityEmittedBytes"`
-	OuterPriorityErrorBytes      uint64 `json:"outerPriorityErrorBytes"`
-	RecoveryCutActive            bool   `json:"recoveryCutActive"`
-	RecoveryCutDeadlineUnixNano  int64  `json:"recoveryCutDeadlineUnixNano"`
-	RecoveryCutDatagrams         int    `json:"recoveryCutDatagrams"`
-	RecoveryCutSocketCalls       uint64 `json:"recoveryCutSocketCalls"`
-	FECGroupOwnedHighWaterBytes  int    `json:"fecGroupOwnedHighWaterBytes"`
-	MemoryRetainedHighWaterBytes int    `json:"memoryRetainedHighWaterBytes"`
-}
-
 // PathSnapshot is the JSON encoding of one per-(peer,path) entry
 // (metrics.PathSnapshot): traffic counters fused with the telemetry plane's
 // quality estimate and liveness verdict. Durations are rendered as float
@@ -94,79 +47,10 @@ type PathSnapshot struct {
 	// collapse the separate "source interface" candidate into BoundDevice (R242).
 	BindMode    string `json:"bindMode"`
 	BoundDevice string `json:"boundDevice"`
-	// LinkBandwidthBps and LinkRttSeconds are the operator-DECLARED link
-	// parameters for this path (config, Q60), 0 when undeclared. They are sourced
-	// from monitor.Info (config-declared), distinct from the runtime-resolved
-	// fields above, and shown on any binding.
-	LinkBandwidthBps float64 `json:"linkBandwidthBps"`
-	LinkRttSeconds   float64 `json:"linkRttSeconds"`
 	// Addressing is the per-path REDACTABLE addressing block (Q61/Q62): non-nil
 	// only when addressing is revealed (loopback binding); nil (omitted) on a
 	// non-loopback binding. See AddressingSnapshot.
 	Addressing *AddressingSnapshot `json:"addressing,omitempty"`
-	Shaper     *ShaperSnapshot     `json:"shaper,omitempty"`
-}
-
-// FECSnapshot is the JSON encoding of one per-peer connection-scoped FEC
-// counter set (metrics.FECSnapshot).
-type FECSnapshot struct {
-	Peer                 string  `json:"peer"`
-	DataPackets          uint64  `json:"dataPackets"`
-	RepairPackets        uint64  `json:"repairPackets"`
-	RecoveredPackets     uint64  `json:"recoveredPackets"`
-	UnrecoverablePackets uint64  `json:"unrecoverablePackets"`
-	DataBytes            uint64  `json:"dataBytes"`
-	RepairBytes          uint64  `json:"repairBytes"`
-	ResidualLossRatio    float64 `json:"residualLossRatio"`
-	// Adaptive is the JSON encoding of the adaptive-FEC controller's most recent
-	// published decision (metrics.FECSnapshot.Adaptive, T263, D96), omitted (nil) for a
-	// fixed-ratio or FEC-off peer so fixed-ratio-only output stays byte-identical.
-	Adaptive *AdaptiveFECStats `json:"adaptive,omitempty"`
-
-	StagedGroups                uint64        `json:"stagedGroups"`
-	StagedDataFrames            uint64        `json:"stagedDataFrames"`
-	GroupDecisions              uint64        `json:"groupDecisions"`
-	DeadlineDecisions           uint64        `json:"deadlineDecisions"`
-	DeadlineMisses              uint64        `json:"deadlineMisses"`
-	DeadlineMaxOvershootSeconds float64       `json:"deadlineMaxOvershootSeconds"`
-	OpenGroupDeadlineUnixNano   int64         `json:"openGroupDeadlineUnixNano"`
-	Recovery                    RecoveryStats `json:"recovery"`
-}
-
-type RecoveryStats struct {
-	Sender   RecoveryDirectionStats `json:"sender"`
-	Receiver RecoveryDirectionStats `json:"receiver"`
-}
-
-type RecoveryDirectionStats struct {
-	OfferPresent       bool   `json:"offerPresent"`
-	FastEligible       bool   `json:"fastEligible"`
-	TransitionFrozen   bool   `json:"transitionFrozen"`
-	WriterExclusive    bool   `json:"writerExclusive"`
-	FreshUntilUnixNano int64  `json:"freshUntilUnixNano"`
-	OfferWrites        uint64 `json:"offerWrites"`
-	ACKWrites          uint64 `json:"ackWrites"`
-	OfferAccepts       uint64 `json:"offerAccepts"`
-	ACKAccepts         uint64 `json:"ackAccepts"`
-	Rotations          uint64 `json:"rotations"`
-	SessionRestarts    uint64 `json:"sessionRestarts"`
-	StaleRejections    uint64 `json:"staleRejections"`
-	WrongRejections    uint64 `json:"wrongRejections"`
-	ReplayRejections   uint64 `json:"replayRejections"`
-	FallbackReason     string `json:"fallbackReason"`
-	ServiceBoundNanos  int64  `json:"serviceBoundNanos"`
-	RTTAgeNanos        int64  `json:"rttAgeNanos"`
-	HeadroomNanos      int64  `json:"headroomNanos"`
-	WindowNanos        int64  `json:"windowNanos"`
-}
-
-// AdaptiveFECStats is the JSON encoding of the adaptive-FEC controller's per-drive
-// decision (metrics.AdaptiveFECStats, T263, D96).
-type AdaptiveFECStats struct {
-	Parity        int     `json:"parity"`
-	SmoothedLoss  float64 `json:"smoothedLoss"`
-	EligibleLoss  float64 `json:"eligibleLoss"`
-	EligiblePaths int     `json:"eligiblePaths"`
 }
 
 // ReseqSnapshot is the JSON encoding of one per-peer resequencer counter set
@@ -180,29 +64,14 @@ type ReseqSnapshot struct {
 	Skipped        uint64 `json:"skipped"`
 	Resyncs        uint64 `json:"resyncs"`
 	Rebaselines    uint64 `json:"rebaselines"`
-	// HoL-stall / hold accounting (T242, D93 observability leg), mirrored verbatim
+	// HoL-stall / hold accounting (T242), mirrored verbatim
 	// from reseq.Stats.
 	Holds                 uint64 `json:"holds"`
 	HoldNanos             uint64 `json:"holdNanos"`
-	ImmediateReleases     uint64 `json:"immediateReleases"`
-	RecoveryArmed         bool   `json:"recoveryArmed"`
 	ArmedDeadlineUnixNano int64  `json:"armedDeadlineUnixNano"`
 	ArmedWindowNanos      int64  `json:"armedWindowNanos"`
 	DeadlineWakeups       uint64 `json:"deadlineWakeups"`
 	GapFills              uint64 `json:"gapFills"`
-	FastWindowArms        uint64 `json:"fastWindowArms"`
-	FallbackWindowArms    uint64 `json:"fallbackWindowArms"`
-}
-
-// AggregationSnapshot is the JSON encoding of one per-peer weighted-scheduler
-// aggregation-gate snapshot (metrics.AggregationSnapshot). Absent for a peer
-// whose scheduler exposes no gate (active-backup).
-type AggregationSnapshot struct {
-	Peer                  string  `json:"peer"`
-	Aggregating           bool    `json:"aggregating"`
-	OfferedLoadFPS        float64 `json:"offeredLoadFps"`
-	EngageThresholdFPS    float64 `json:"engageThresholdFps"`
-	DisengageThresholdFPS float64 `json:"disengageThresholdFps"`
 }
 
 // SessionSnapshot is the JSON encoding of the connection-scoped WG-session
@@ -252,20 +121,6 @@ type EndpointSnapshot struct {
 	Active  bool   `json:"active"`
 }
 
-// PathKey identifies a per-(peer,path) entry for monitor.Info lookups, matching
-// metrics.Source's (peer,path) keying (Peer is "" on a single-bound-peer Source).
-type PathKey struct {
-	Peer string
-	Name string
-}
-
-// PathLink carries the operator-declared per-path link parameters that are NOT
-// on the metrics.Source hot path (config-derived, Q60).
-type PathLink struct {
-	LinkBandwidthBps float64
-	LinkRttSeconds   float64
-}
-
 // Info is the monitor-local read seam for the identity/config/failover data the
 // prometheus-facing metrics.Source deliberately does NOT carry (keeping that
 // interface narrow — no new Prometheus series). It is supplied by the device
@@ -284,8 +139,6 @@ type Info struct {
 	// advance. The device layer (T222) supplies this closure; when it is nil the plain
 	// UptimeSeconds value is used (the zero-value / test path).
 	Uptime func() float64
-	// PathLinks carries the config-declared per-path link params, keyed by PathKey.
-	PathLinks map[PathKey]PathLink
 	// WGPublicKeyFingerprint is the truncated (~10 base64 chars) fingerprint of the
 	// local WG public key (Q63 — fingerprint ONLY, never the full key). Shown on any
 	// binding.
@@ -316,17 +169,15 @@ type Info struct {
 // endpoint (W2) serves to the frontend: a full point-in-time mirror of a
 // metrics.Source read model, plus the G21 identity/addressing/failover surface.
 // PeerNames and MultiPeer mirror the metrics package's peer-label rule (see
-// internal/metrics/metrics.go): MultiPeer is true, and per-(peer,path)/FEC/
-// Reseq/Aggregation entries carry a meaningful Peer, only when 2+ peers are
+// internal/metrics/metrics.go): MultiPeer is true, and per-(peer,path)/
+// Reseq entries carry a meaningful Peer, only when 2+ peers are
 // bound; on a single-bound-peer Source, Peer is "" throughout. See BuildSnapshot.
 type MonitorSnapshot struct {
-	Paths       []PathSnapshot        `json:"paths"`
-	FEC         []FECSnapshot         `json:"fec"`
-	Reseq       []ReseqSnapshot       `json:"reseq"`
-	Aggregation []AggregationSnapshot `json:"aggregation"`
-	Session     SessionSnapshot       `json:"session"`
-	PeerNames   []string              `json:"peerNames"`
-	MultiPeer   bool                  `json:"multiPeer"`
+	Paths     []PathSnapshot  `json:"paths"`
+	Reseq     []ReseqSnapshot `json:"reseq"`
+	Session   SessionSnapshot `json:"session"`
+	PeerNames []string        `json:"peerNames"`
+	MultiPeer bool            `json:"multiPeer"`
 	// Daemon carries the process identity (role/version/uptime, Q60).
 	Daemon DaemonSnapshot `json:"daemon"`
 	// Endpoints is the ordered hub-endpoint list with active/standby state
@@ -384,8 +235,8 @@ func addrPortString(a netip.AddrPort) string {
 	return ""
 }
 
-// BuildSnapshot reads src exactly once — one call each to Paths/FEC/Reseq/
-// Aggregation/Session/PeerSessions/PeerNames — folds in the monitor.Info
+// BuildSnapshot reads src exactly once — one call each to Paths/Reseq/
+// Session/PeerSessions/PeerNames — folds in the monitor.Info
 // identity/failover seam (info.Endpoints and info.ActiveExit are each evaluated
 // here, once, so the active-hub/active-exit state is fresh per snapshot), and
 // marshals the result into the MonitorSnapshot wire format. telemetry.Estimate's
@@ -405,9 +256,7 @@ func addrPortString(a netip.AddrPort) string {
 // revealAddressing; the latter controls only addressing redaction.
 func BuildSnapshot(src metrics.Source, info Info, revealAddressing, controlAvailable bool) MonitorSnapshot {
 	paths := src.Paths()
-	fec := src.FEC()
 	reseqSnapshots := src.Reseq()
-	aggregation := src.Aggregation()
 	session := src.Session()
 	peerSessions := src.PeerSessions()
 	peerNames := src.PeerNames()
@@ -434,9 +283,7 @@ func BuildSnapshot(src metrics.Source, info Info, revealAddressing, controlAvail
 
 	out := MonitorSnapshot{
 		Paths:            make([]PathSnapshot, len(paths)),
-		FEC:              make([]FECSnapshot, len(fec)),
 		Reseq:            make([]ReseqSnapshot, len(reseqSnapshots)),
-		Aggregation:      make([]AggregationSnapshot, len(aggregation)),
 		PeerSessions:     make([]PeerSessionSnapshot, len(peerSessions)),
 		ActiveExit:       activeExit,
 		ExitMode:         exitMode,
@@ -471,52 +318,10 @@ func BuildSnapshot(src metrics.Source, info Info, revealAddressing, controlAvail
 			BindMode:      p.BindMode,
 			BoundDevice:   p.BoundDevice,
 		}
-		if link, ok := info.PathLinks[PathKey{Peer: p.Peer, Name: p.Name}]; ok {
-			ps.LinkBandwidthBps = link.LinkBandwidthBps
-			ps.LinkRttSeconds = link.LinkRttSeconds
-		}
 		if revealAddressing {
 			ps.Addressing = &AddressingSnapshot{
 				Source: addrString(p.Source),
 				Remote: addrPortString(p.Remote),
-			}
-		}
-		if p.Shaper != nil {
-			s := p.Shaper
-			ps.Shaper = &ShaperSnapshot{
-				QueueDataBytes:             s.QueueDataBytes,
-				QueueControlBytes:          s.QueueControlBytes,
-				QueueBytes:                 s.QueueBytes,
-				InFlightBytes:              s.InFlightBytes,
-				ScheduledDelaySeconds:      s.ScheduledDelay.Seconds(),
-				RateBytesPerSecond:         s.RateBytesPerSecond,
-				DataBudgetBytes:            s.DataBudgetBytes,
-				ControlReserveBytes:        s.ControlReserveBytes,
-				QueueBudgetBytes:           s.QueueBudgetBytes,
-				MaxDatagramBytes:           s.MaxDatagramBytes,
-				AcceptedBytes:              s.AcceptedBytes,
-				EmittedBytes:               s.EmittedBytes,
-				OuterPriorityBytes:         s.OuterPriorityBytes,
-				PriorityDebtBytes:          s.PriorityDebtBytes,
-				PriorityRateBytesPerSecond: s.PriorityRateBytesPerSecond,
-				PriorityBurstBytes:         s.PriorityBurstBytes,
-				PriorityDelayBoundSeconds:  s.PriorityDelayBound.Seconds(),
-				AdmissionWaits:             s.AdmissionWaits,
-				AdmissionWaitSeconds:       s.AdmissionWaitDuration.Seconds(),
-				AdmissionCanceledDatagrams: s.AdmissionCanceledDatagrams,
-				AsyncWriteErrors:           s.AsyncWriteErrors,
-				AsyncWriteErrorBytes:       s.AsyncWriteErrorBytes,
-				AsyncWriteEMSGSIZEErrors:   s.AsyncWriteEMSGSIZEErrors,
-				AsyncWriteEMSGSIZEBytes:    s.AsyncWriteEMSGSIZEBytes,
-
-				OuterPriorityEmittedBytes:    s.OuterPriorityEmittedBytes,
-				OuterPriorityErrorBytes:      s.OuterPriorityErrorBytes,
-				RecoveryCutActive:            s.RecoveryCutActive,
-				RecoveryCutDeadlineUnixNano:  unixNanoOrZero(s.RecoveryCutDeadline),
-				RecoveryCutDatagrams:         s.RecoveryCutDatagrams,
-				RecoveryCutSocketCalls:       s.RecoveryCutSocketCalls,
-				FECGroupOwnedHighWaterBytes:  s.FECGroupOwnedHighWaterBytes,
-				MemoryRetainedHighWaterBytes: s.MemoryRetainedHighWaterBytes,
 			}
 		}
 		out.Paths[i] = ps
@@ -535,71 +340,23 @@ func BuildSnapshot(src metrics.Source, info Info, revealAddressing, controlAvail
 		}
 	}
 
-	for i, f := range fec {
-		fs := FECSnapshot{
-			Peer:                 f.Peer,
-			DataPackets:          f.DataPackets,
-			RepairPackets:        f.RepairPackets,
-			RecoveredPackets:     f.RecoveredPackets,
-			UnrecoverablePackets: f.UnrecoverablePackets,
-			DataBytes:            f.DataBytes,
-			RepairBytes:          f.RepairBytes,
-			ResidualLossRatio:    f.ResidualLossRatio,
-
-			StagedGroups:                f.StagedGroups,
-			StagedDataFrames:            f.StagedDataFrames,
-			GroupDecisions:              f.GroupDecisions,
-			DeadlineDecisions:           f.DeadlineDecisions,
-			DeadlineMisses:              f.DeadlineMisses,
-			DeadlineMaxOvershootSeconds: f.DeadlineMaxOvershoot.Seconds(),
-			OpenGroupDeadlineUnixNano:   unixNanoOrZero(f.OpenGroupDeadline),
-			Recovery: RecoveryStats{
-				Sender:   monitorRecoveryDirection(f.Recovery.Sender),
-				Receiver: monitorRecoveryDirection(f.Recovery.Receiver),
-			},
-		}
-		if f.Adaptive != nil {
-			fs.Adaptive = &AdaptiveFECStats{
-				Parity:        f.Adaptive.Parity,
-				SmoothedLoss:  f.Adaptive.SmoothedLoss,
-				EligibleLoss:  f.Adaptive.EligibleLoss,
-				EligiblePaths: f.Adaptive.EligiblePaths,
-			}
-		}
-		out.FEC[i] = fs
-	}
-
 	for i, r := range reseqSnapshots {
 		out.Reseq[i] = ReseqSnapshot{
-			Peer:              r.Peer,
-			Released:          r.Released,
-			DroppedDup:        r.DroppedDup,
-			DroppedOld:        r.DroppedOld,
-			DroppedSuspect:    r.DroppedSuspect,
-			Skipped:           r.Skipped,
-			Resyncs:           r.Resyncs,
-			Rebaselines:       r.Rebaselines,
-			Holds:             r.Holds,
-			HoldNanos:         r.HoldNanos,
-			ImmediateReleases: r.ImmediateReleases,
+			Peer:           r.Peer,
+			Released:       r.Released,
+			DroppedDup:     r.DroppedDup,
+			DroppedOld:     r.DroppedOld,
+			DroppedSuspect: r.DroppedSuspect,
+			Skipped:        r.Skipped,
+			Resyncs:        r.Resyncs,
+			Rebaselines:    r.Rebaselines,
+			Holds:          r.Holds,
+			HoldNanos:      r.HoldNanos,
 
-			RecoveryArmed:         r.RecoveryArmed,
 			ArmedDeadlineUnixNano: unixNanoOrZero(r.ArmedDeadline),
 			ArmedWindowNanos:      r.ArmedWindow.Nanoseconds(),
 			DeadlineWakeups:       r.DeadlineWakeups,
 			GapFills:              r.GapFills,
-			FastWindowArms:        r.FastWindowArms,
-			FallbackWindowArms:    r.FallbackWindowArms,
-		}
-	}
-
-	for i, a := range aggregation {
-		out.Aggregation[i] = AggregationSnapshot{
-			Peer:                  a.Peer,
-			Aggregating:           a.Aggregating,
-			OfferedLoadFPS:        a.OfferedLoadFPS,
-			EngageThresholdFPS:    a.EngageThresholdFPS,
-			DisengageThresholdFPS: a.DisengageThresholdFPS,
 		}
 	}
 
@@ -612,30 +369,6 @@ func BuildSnapshot(src metrics.Source, info Info, revealAddressing, controlAvail
 	}
 
 	return out
-}
-
-func monitorRecoveryDirection(stats metrics.RecoveryDirectionStats) RecoveryDirectionStats {
-	return RecoveryDirectionStats{
-		OfferPresent:       stats.OfferPresent,
-		FastEligible:       stats.FastEligible,
-		TransitionFrozen:   stats.TransitionFrozen,
-		WriterExclusive:    stats.WriterExclusive,
-		FreshUntilUnixNano: unixNanoOrZero(stats.FreshUntil),
-		OfferWrites:        stats.OfferWrites,
-		ACKWrites:          stats.ACKWrites,
-		OfferAccepts:       stats.OfferAccepts,
-		ACKAccepts:         stats.ACKAccepts,
-		Rotations:          stats.Rotations,
-		SessionRestarts:    stats.SessionRestarts,
-		StaleRejections:    stats.StaleRejections,
-		WrongRejections:    stats.WrongRejections,
-		ReplayRejections:   stats.ReplayRejections,
-		FallbackReason:     stats.FallbackReason,
-		ServiceBoundNanos:  stats.ServiceBound.Nanoseconds(),
-		RTTAgeNanos:        stats.RTTAge.Nanoseconds(),
-		HeadroomNanos:      stats.Headroom.Nanoseconds(),
-		WindowNanos:        stats.Window.Nanoseconds(),
-	}
 }
 
 func unixNanoOrZero(value time.Time) int64 {

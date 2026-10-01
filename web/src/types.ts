@@ -11,40 +11,6 @@ export interface AddressingSnapshot {
   remote: string;
 }
 
-/**
- * Mirrors monitor.ShaperSnapshot. Absent when exact-byte shaping is disabled.
- * Queue fields retain at most B DATA/PARITY, C=Lmax inner control, and Q=B+C
- * total; inFlightBytes is one <=Lmax writer datagram outside Q. Accepted bytes
- * linearize at pre-copy reservation, while emitted/error fields expose terminal
- * outcomes. Priority debt is P0 and the bound is Dp=(P0+Pburst)/(R-Rp).
- */
-export interface ShaperSnapshot {
-  queueDataBytes: number;
-  queueControlBytes: number;
-  queueBytes: number;
-  inFlightBytes: number;
-  scheduledDelaySeconds: number;
-  rateBytesPerSecond: number;
-  dataBudgetBytes: number;
-  controlReserveBytes: number;
-  queueBudgetBytes: number;
-  maxDatagramBytes: number;
-  acceptedBytes: number;
-  emittedBytes: number;
-  outerPriorityBytes: number;
-  priorityDebtBytes: number;
-  priorityRateBytesPerSecond: number;
-  priorityBurstBytes: number;
-  priorityDelayBoundSeconds: number;
-  admissionWaits: number;
-  admissionWaitSeconds: number;
-  admissionCanceledDatagrams: number;
-  asyncWriteErrors: number;
-  asyncWriteErrorBytes: number;
-  asyncWriteEmsgsizeErrors: number;
-  asyncWriteEmsgsizeBytes: number;
-}
-
 /** Mirrors monitor.PathSnapshot: one per-(peer,path) traffic/quality entry. */
 export interface PathSnapshot {
   name: string;
@@ -58,48 +24,19 @@ export interface PathSnapshot {
   up: boolean;
   bindMode: string;
   boundDevice: string;
-  linkBandwidthBps: number;
-  linkRttSeconds: number;
   /**
    * Present ONLY when addressing is revealed (loopback bind, or the
    * default-off token-gated reveal_addressing opt-in); absent (server omits
    * the field, `omitempty`) otherwise — see MonitorSnapshot.addressingHidden.
    */
   addressing?: AddressingSnapshot;
-  /** Present only while this path has an active exact-byte shaper generation. */
-  shaper?: ShaperSnapshot;
-}
-
-/** Mirrors monitor.FECSnapshot: one per-peer connection-scoped FEC counter set. */
-export interface FECSnapshot {
-  peer: string;
-  dataPackets: number;
-  repairPackets: number;
-  recoveredPackets: number;
-  unrecoverablePackets: number;
-  dataBytes: number;
-  repairBytes: number;
-  residualLossRatio: number;
-  /**
-   * Mirrors monitor.FECSnapshot.Adaptive (T263, D96): the adaptive-FEC
-   * controller's most recent published decision. Absent (server omits the
-   * field, `omitempty`) for a fixed-ratio or FEC-off peer.
-   */
-  adaptive?: AdaptiveFECStats;
-}
-
-/** Mirrors monitor.AdaptiveFECStats: the adaptive-FEC controller's per-drive decision. */
-export interface AdaptiveFECStats {
-  parity: number;
-  smoothedLoss: number;
-  eligibleLoss: number;
-  eligiblePaths: number;
 }
 
 /**
  * Mirrors monitor.ReseqSnapshot: one per-peer resequencer counter set.
- * holds/holdNanos/immediateReleases (T242, D93) mirror reseq.Stats' HoL-stall
- * / hold accounting verbatim.
+ * holds/holdNanos (T242) mirror reseq.Stats' HoL-stall
+ * / hold accounting verbatim. armedDeadlineUnixNano and armedWindowNanos
+ * describe the live head-of-line gap and are 0 while none is armed.
  */
 export interface ReseqSnapshot {
   peer: string;
@@ -112,20 +49,10 @@ export interface ReseqSnapshot {
   rebaselines: number;
   holds: number;
   holdNanos: number;
-  immediateReleases: number;
-}
-
-/**
- * Mirrors monitor.AggregationSnapshot: one per-peer weighted-scheduler
- * aggregation-gate snapshot. Absent for a peer whose scheduler exposes no
- * gate (active-backup).
- */
-export interface AggregationSnapshot {
-  peer: string;
-  aggregating: boolean;
-  offeredLoadFps: number;
-  engageThresholdFps: number;
-  disengageThresholdFps: number;
+  armedDeadlineUnixNano: number;
+  armedWindowNanos: number;
+  deadlineWakeups: number;
+  gapFills: number;
 }
 
 /**
@@ -214,9 +141,7 @@ export interface PeerSessionSnapshot {
  */
 export interface MonitorSnapshot {
   paths: PathSnapshot[];
-  fec: FECSnapshot[];
   reseq: ReseqSnapshot[];
-  aggregation: AggregationSnapshot[];
   session: SessionSnapshot;
   peerNames: string[];
   multiPeer: boolean;

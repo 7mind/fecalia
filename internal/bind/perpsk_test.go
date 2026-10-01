@@ -17,10 +17,10 @@ func TestPeerStatePerPSKCodecAndReflector(t *testing.T) {
 	pskA := testKey(t, 0x11)
 	pskB := testKey(t, 0x22)
 
-	// The scheduler/prober collaborators are irrelevant to codec/reflector derivation, so this
+	// The prober collaborators are irrelevant to codec/reflector derivation, so this
 	// exercises the PSK seam in isolation (nil is never dereferenced by newPeerState).
-	peerA := newPeerState("peer-a", pskA, nil, nil, nil)
-	peerB := newPeerState("peer-b", pskB, nil, nil, nil)
+	peerA := newPeerState("peer-a", pskA, nil, nil)
+	peerB := newPeerState("peer-b", pskB, nil, nil)
 
 	// --- Codec: a frame encoded under peer A's psk fails peer B's Decode. ---
 	encA, err := peerA.newCodec()
@@ -66,8 +66,8 @@ func TestPeerStatePerPSKCodecAndReflector(t *testing.T) {
 	if _, _, err := peerA.reflector.Reflect(probeA); err != nil {
 		t.Fatalf("peer A reflector must authenticate a probe under its own psk: %v", err)
 	}
-	// Under peer B's psk the probe never reflects: it fails the MAC, or (when the wrong obfKey
-	// garbles the kind into an unauthenticated one) decodes to a non-probe the Reflector refuses.
+	// Under peer B's psk the probe never reflects: it fails the MAC, or the wrong obfKey garbles
+	// the kind into an unknown one.
 	if _, _, err := peerB.reflector.Reflect(probeA); err == nil {
 		t.Fatal("peer B reflector reflected a probe minted under psk A (cross-psk probe must be rejected)")
 	}

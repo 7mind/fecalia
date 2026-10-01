@@ -6,6 +6,7 @@ import (
 	"io"
 	"net"
 	"net/netip"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -13,15 +14,14 @@ import (
 	"github.com/7mind/wanbond/internal/config"
 	"github.com/7mind/wanbond/internal/frame"
 	"github.com/7mind/wanbond/internal/log"
-	"github.com/7mind/wanbond/internal/sched"
 	"github.com/7mind/wanbond/internal/telemetry"
 )
 
 // fakeClock is a hand-advanced telemetry.Clock. The probe-transport tests drive
 // emitProbes / handleInbound synchronously on a single goroutine, so those tests
-// need no internal synchronization. The adaptive tests, however, wire this SAME
-// clock into the bind's clock seam (Multipath.clock), where sender-owner
-// deadline timers read Now() concurrently with the test goroutine's advance()
+// need no internal synchronization. newProbingMultipath, however, wires this SAME
+// clock into the bind's clock seam (Multipath.clock), where the resequencers and
+// the receive drainer read Now() concurrently with the test goroutine's advance()
 // — so the clock IS mutex-guarded (a plain now field would be a
 // -race-flagged data race). In-repo precedent: internal/device/metrics_test.go's
 // fakeClock. Liveness transitions remain deterministic under -race.
@@ -36,54 +36,6 @@ type fakeDeadlineTimer struct {
 	ch    chan time.Time
 	due   time.Time
 	armed bool
-}
-
-type testFECClockAdapter struct {
-	clock telemetry.Clock
-}
-
-func (c testFECClockAdapter) Now() time.Time {
-	return c.clock.Now()
-}
-
-func (c testFECClockAdapter) NewTimerAt(due time.Time) fecDeadlineTimer {
-	delay := due.Sub(c.clock.Now())
-	if delay < 0 {
-		delay = 0
-	}
-	return &testFECClockTimer{clock: c.clock, timer: time.NewTimer(delay)}
-}
-
-type testFECClockTimer struct {
-	clock telemetry.Clock
-	timer *time.Timer
-}
-
-func (t *testFECClockTimer) C() <-chan time.Time {
-	return t.timer.C
-}
-
-func (t *testFECClockTimer) ResetAt(due time.Time) {
-	if !t.timer.Stop() {
-		select {
-		case <-t.timer.C:
-		default:
-		}
-	}
-	delay := due.Sub(t.clock.Now())
-	if delay < 0 {
-		delay = 0
-	}
-	t.timer.Reset(delay)
-}
-
-func (t *testFECClockTimer) Stop() {
-	if !t.timer.Stop() {
-		select {
-		case <-t.timer.C:
-		default:
-		}
-	}
 }
 
 func newFakeClock() *fakeClock {
@@ -115,7 +67,7 @@ func (c *fakeClock) advance(d time.Duration) {
 	}
 }
 
-func (c *fakeClock) NewTimerAt(due time.Time) fecDeadlineTimer {
+func (c *fakeClock) NewTimerAt(due time.Time) deadlineTimer {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	timer := &fakeDeadlineTimer{
@@ -176,10 +128,10 @@ const (
 )
 
 // newProbingMultipath builds a Multipath wired with one live *telemetry.Prober
-// per path and a real active-backup scheduler over those SAME probers, plus the
-// injected fake clock. FailbackAfter is set far beyond any test horizon so
-// failback never interferes with a failover assertion.
-func newProbingMultipath(t testing.TB, paths []config.Path, psk config.Key, clk telemetry.Clock) (*Multipath, []*telemetry.Prober, sched.Scheduler) {
+// per path, a factory minting runtime probers of the same session, and the injected
+// clock. A clock that also implements the bind's timer seam (the fake clock) drives
+// the resequencers and the receive drainer too.
+func newProbingMultipath(t testing.TB, paths []config.Path, psk config.Key, clk telemetry.Clock) (*Multipath, []*telemetry.Prober) {
 	t.Helper()
 	lg, err := log.New("error", io.Discard)
 	if err != nil {
@@ -193,25 +145,17 @@ func newProbingMultipath(t testing.TB, paths []config.Path, psk config.Key, clk 
 		return telemetry.NewProber(name, id, testProbeSessionID, psk, cfg, clk, lg)
 	}
 	probers := make([]*telemetry.Prober, len(paths))
-	health := make([]sched.PathHealth, len(paths))
 	for i := range paths {
 		probers[i] = newProber(paths[i].Name, uint8(i), paths[i].RideThrough)
-		health[i] = probers[i]
 	}
-	scheduler, err := sched.NewActiveBackup(health, sched.Config{FailbackAfter: time.Hour}, clk, lg)
-	if err != nil {
-		t.Fatalf("build scheduler: %v", err)
-	}
-	m, err := NewMultipath(paths, psk, scheduler, probers, newProber, nil, nil, config.Amnezia{}, lg)
+	m, err := NewMultipath(paths, psk, probers, newProber, lg)
 	if err != nil {
 		t.Fatalf("NewMultipath: %v", err)
 	}
-	if ownerClock, ok := clk.(fecOwnerClock); ok {
-		m.clock = ownerClock
-	} else {
-		m.clock = testFECClockAdapter{clock: clk}
+	if clock, ok := clk.(bindClock); ok {
+		m.clock = clock
 	}
-	return m, probers, scheduler
+	return m, probers
 }
 
 // rawPeer is a loopback UDP socket standing in for the remote (concentrator)
@@ -226,26 +170,28 @@ func rawPeer(t testing.TB) (*net.UDPConn, netip.AddrPort) {
 	return c, c.LocalAddr().(*net.UDPAddr).AddrPort()
 }
 
-// readProbe reads one datagram off a raw peer socket and decodes it as a probe.
+// readProbe reads datagrams off a raw peer socket until it holds a probe, which it
+// decodes. The transport's own frames (lane keepalives, acknowledgements, data) share
+// the socket once a lane exists and are skipped.
 func readProbe(t testing.TB, peer *net.UDPConn, codec *frame.Codec) frame.Probe {
 	t.Helper()
 	if err := peer.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
 		t.Fatalf("set read deadline: %v", err)
 	}
 	buf := make([]byte, maxDatagram)
-	n, err := peer.Read(buf)
-	if err != nil {
-		t.Fatalf("read probe: %v", err)
+	for {
+		n, err := peer.Read(buf)
+		if err != nil {
+			t.Fatalf("read probe: %v", err)
+		}
+		fr, err := codec.Decode(buf[:n])
+		if err != nil {
+			t.Fatalf("decode probe: %v", err)
+		}
+		if probe, ok := fr.(frame.Probe); ok {
+			return probe
+		}
 	}
-	fr, err := codec.Decode(buf[:n])
-	if err != nil {
-		t.Fatalf("decode probe: %v", err)
-	}
-	probe, ok := fr.(frame.Probe)
-	if !ok {
-		t.Fatalf("emitted frame is %T, want frame.Probe", fr)
-	}
-	return probe
 }
 
 // TestMultipathReflectsProbe: an authenticated inbound PROBE (IsEcho=false) is
@@ -254,7 +200,7 @@ func readProbe(t testing.TB, peer *net.UDPConn, codec *frame.Codec) frame.Probe 
 func TestMultipathReflectsProbe(t *testing.T) {
 	psk := testKey(t, 0x21)
 	clk := newFakeClock()
-	m, _, _ := newProbingMultipath(t, loopbackPaths(1), psk, clk)
+	m, _ := newProbingMultipath(t, loopbackPaths(1), psk, clk)
 	if _, _, err := m.Open(0); err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -290,30 +236,27 @@ func TestMultipathReflectsProbe(t *testing.T) {
 	}
 }
 
-// TestMultipathRemoteLearnedFromProbeNotData is the D9 assertion: a DATA frame no
-// longer teaches a path its return remote (unauthenticated learning removed), but
-// an authenticated PROBE does.
+// TestMultipathRemoteLearnedFromProbeNotData is the D9 assertion: a transport data
+// frame does not teach a path its return remote — the freshness table is owned by the
+// probe plane — but an authenticated PROBE does.
 func TestMultipathRemoteLearnedFromProbeNotData(t *testing.T) {
 	psk := testKey(t, 0x22)
 	clk := newFakeClock()
-	m, _, _ := newProbingMultipath(t, loopbackPaths(1), psk, clk)
+	m, _ := newProbingMultipath(t, loopbackPaths(1), psk, clk)
 	if _, _, err := m.Open(0); err != nil {
 		t.Fatalf("Open: %v", err)
 	}
 	t.Cleanup(func() { _ = m.Close() })
 
 	dataSrc := netip.MustParseAddrPort("192.0.2.10:4000")
-	dataCodec, _ := frame.NewCodec(psk)
-	dataRaw, err := dataCodec.Encode(nil, frame.Data{OuterSeq: 1, PathID: 0, Payload: []byte("wg")})
-	if err != nil {
-		t.Fatalf("encode data: %v", err)
-	}
-	m.handleInbound(m.paths[0], dataRaw, dataSrc)
+	remote := newRemoteTransport(t, m.peerState, 987)
+	remote.join(m.paths[0], dataSrc)
+	m.handleInbound(m.paths[0], remote.wire(remote.bulk(m.paths[0], []byte("wg"))), dataSrc)
 	if it, ok := m.resequencer.Load().Pop(); !ok || !bytes.Equal(it.Payload, []byte("wg")) {
-		t.Fatalf("DATA not resequenced up the WG path: ok=%v payload=%q, want %q", ok, it.Payload, "wg")
+		t.Fatalf("data frame not resequenced up the WG path: ok=%v payload=%q, want %q", ok, it.Payload, "wg")
 	}
 	if _, ok := m.paths[0].getRemote(); ok {
-		t.Fatal("path learned a remote from an unauthenticated DATA frame: D9 not resolved")
+		t.Fatal("path learned a remote from a transport data frame: D9 not resolved")
 	}
 
 	// An authenticated probe from a DIFFERENT source IS learned.
@@ -333,7 +276,7 @@ func TestMultipathRemoteLearnedFromProbeNotData(t *testing.T) {
 func TestMultipathEchoFeedsProber(t *testing.T) {
 	psk := testKey(t, 0x23)
 	clk := newFakeClock()
-	m, probers, _ := newProbingMultipath(t, loopbackPaths(1), psk, clk)
+	m, probers := newProbingMultipath(t, loopbackPaths(1), psk, clk)
 	if _, _, err := m.Open(0); err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -364,7 +307,7 @@ func TestMultipathEchoFeedsProber(t *testing.T) {
 func TestMultipathProbeLoopEmits(t *testing.T) {
 	psk := testKey(t, 0x24)
 	clk := newFakeClock()
-	m, _, _ := newProbingMultipath(t, loopbackPaths(2), psk, clk)
+	m, _ := newProbingMultipath(t, loopbackPaths(2), psk, clk)
 	if _, _, err := m.Open(0); err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -396,13 +339,13 @@ func TestMultipathProbeLoopEmits(t *testing.T) {
 }
 
 // TestMultipathProbeDrivesFailover is the end-to-end acceptance: a healthy probe
-// exchange brings both paths Up (scheduler selects the primary), then blackholing
-// the primary's echoes marks it Down within the detection window and the scheduler
-// fails egress over to the backup — all deterministic under the injected clock.
+// exchange brings both paths Up and teaches the transport a lane on each, then
+// blackholing the primary's echoes marks it Down within the detection window while
+// the backup stays Up and keeps its lane — all deterministic under the injected clock.
 func TestMultipathProbeDrivesFailover(t *testing.T) {
 	psk := testKey(t, 0x25)
 	clk := newFakeClock()
-	m, probers, scheduler := newProbingMultipath(t, loopbackPaths(2), psk, clk)
+	m, probers := newProbingMultipath(t, loopbackPaths(2), psk, clk)
 	if _, _, err := m.Open(0); err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -427,15 +370,7 @@ func TestMultipathProbeDrivesFailover(t *testing.T) {
 		if !echo {
 			return
 		}
-		raw, err := frame.Encode(psk, probe)
-		if err != nil {
-			t.Fatalf("re-encode probe: %v", err)
-		}
-		reflected, _, err := reflector.Reflect(raw)
-		if err != nil {
-			t.Fatalf("reflect path %d: %v", p, err)
-		}
-		m.handleInbound(m.paths[p], reflected, peerAPs[p])
+		m.handleInbound(m.paths[p], reflectHello(t, reflector, psk, probe), peerAPs[p])
 	}
 
 	// Bring both paths Up: UpAfterSuccesses healthy rounds, echoing both.
@@ -449,13 +384,13 @@ func TestMultipathProbeDrivesFailover(t *testing.T) {
 	if probers[0].State() != telemetry.StateUp || probers[1].State() != telemetry.StateUp {
 		t.Fatalf("after healthy exchange states = (%v,%v), want (up,up)", probers[0].State(), probers[1].State())
 	}
-	if idx := scheduler.Pick(sched.ClassData, 1); idx != 0 {
-		t.Fatalf("scheduler Pick = %d while both up, want the primary 0", idx)
+	if got := upLanes(t, m, 0); !slices.Equal(got, []uint8{0, 1}) {
+		t.Fatalf("lanes = %v while both up, want one on each path", got)
 	}
 
 	// Blackhole path 0: keep echoing path 1, drop path 0's echoes. After the
-	// detection window elapses, a Tick marks path 0 Down and the scheduler fails
-	// egress over to the backup path 1.
+	// detection window elapses, a Tick marks path 0 Down; the backup path 1 stays Up
+	// and its echoes keep renewing its lane.
 	rounds := int(testProbeDownAfter/testProbeInterval) + 3
 	for i := 0; i < rounds; i++ {
 		m.emitProbes() // Ticks both; path 0 goes stale as its silence grows
@@ -470,11 +405,11 @@ func TestMultipathProbeDrivesFailover(t *testing.T) {
 	if probers[1].State() != telemetry.StateUp {
 		t.Fatalf("backup path 1 state = %v, want up", probers[1].State())
 	}
-	if idx := scheduler.Pick(sched.ClassData, 1); idx != 1 {
-		t.Fatalf("scheduler Pick = %d after primary blackhole, want failover to backup 1", idx)
+	if got := upLanes(t, m, 0); !slices.Contains(got, uint8(1)) {
+		t.Fatalf("lanes = %v after primary blackhole, want the backup's among them", got)
 	}
 
-	// Failover is usable: the backup has a known remote, so a Send routes over it.
+	// The bond stays usable: a Send is accepted.
 	if err := m.Send([][]byte{[]byte("post-failover")}, m.virt); err != nil {
 		t.Fatalf("Send after failover: %v", err)
 	}
@@ -482,13 +417,13 @@ func TestMultipathProbeDrivesFailover(t *testing.T) {
 
 // TestMultipathEmitProbesCountsTxBytes is the D48 regression: a PROBE frame that
 // emitProbes writes to the wire must count into the path's txBytes, the same
-// true-wire-volume counter the DATA/PARITY send paths use — not just DATA/PARITY.
+// true-wire-volume counter the transport's send path uses — not just its frames.
 // Fails against the pre-D48 code, where emitProbes never touched ps.txBytes and
 // an idle standby's tx counter stayed flat despite genuinely transmitting probes.
 func TestMultipathEmitProbesCountsTxBytes(t *testing.T) {
 	psk := testKey(t, 0x26)
 	clk := newFakeClock()
-	m, _, _ := newProbingMultipath(t, loopbackPaths(1), psk, clk)
+	m, _ := newProbingMultipath(t, loopbackPaths(1), psk, clk)
 	if _, _, err := m.Open(0); err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -519,12 +454,12 @@ func TestMultipathEmitProbesCountsTxBytes(t *testing.T) {
 
 // TestMultipathEchoReflectionCountsTxBytes is the D48 regression for the receive
 // side: an inbound PROBE's echo, written back by dispatchInbound's reflection
-// path, must count into the path's txBytes exactly like a DATA/PARITY write.
+// path, must count into the path's txBytes exactly like a transport write.
 // Fails against the pre-D48 code, where the echo write never touched ps.txBytes.
 func TestMultipathEchoReflectionCountsTxBytes(t *testing.T) {
 	psk := testKey(t, 0x27)
 	clk := newFakeClock()
-	m, _, _ := newProbingMultipath(t, loopbackPaths(1), psk, clk)
+	m, _ := newProbingMultipath(t, loopbackPaths(1), psk, clk)
 	if _, _, err := m.Open(0); err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -568,7 +503,7 @@ func TestMultipathEchoReflectionCountsTxBytes(t *testing.T) {
 func TestMultipathEmitProbesCountsSendErrors(t *testing.T) {
 	psk := testKey(t, 0x28)
 	clk := newFakeClock()
-	m, _, _ := newProbingMultipath(t, loopbackPaths(2), psk, clk)
+	m, _ := newProbingMultipath(t, loopbackPaths(2), psk, clk)
 	if _, _, err := m.Open(0); err != nil {
 		t.Fatalf("Open: %v", err)
 	}

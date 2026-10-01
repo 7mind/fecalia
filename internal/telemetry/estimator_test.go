@@ -124,143 +124,59 @@ func TestLossWindowReordering(t *testing.T) {
 	}
 }
 
-// TestConnLossGlobalStream asserts the connection-scoped estimator, fed the
-// contiguous global outer-seq, converges to the injected connection loss.
-func TestConnLossGlobalStream(t *testing.T) {
-	const (
-		total     = 6000
-		dropMod   = 10 // 10% connection loss
-		wantLoss  = 0.10
-		tolerance = 0.02
-	)
-	c := NewConnLoss(0)
-	for seq := uint64(0); seq < total; seq++ {
-		if seq%dropMod == 0 {
-			continue
-		}
-		c.Observe(seq)
-	}
-	if got := c.Loss(); math.Abs(got-wantLoss) > tolerance {
-		t.Fatalf("connection loss = %.4f, want %.4f ± %.2f", got, wantLoss, tolerance)
-	}
-}
-
-// TestConnLossMidStreamAttach is the warmup regression: a receiver that attaches
-// mid-stream sees its FIRST observed outer-seq at a large value, then a contiguous
-// run. Loss must be ~0 (the never-seen prefix below the first observed seq is not
-// charged as loss), not ~1.0.
-func TestConnLossMidStreamAttach(t *testing.T) {
+// TestLossMidStreamAttach is the warmup regression: an estimator whose FIRST observed
+// echo carries a large ProbeSeq, followed by a contiguous run, reads loss 0 (the
+// never-seen prefix below the first observed seq is not charged as loss), not ~1.0.
+func TestLossMidStreamAttach(t *testing.T) {
 	const start = 100_000
-	c := NewConnLoss(0)
+	e := NewEstimator(0)
 	for seq := uint64(start); seq < start+2000; seq++ {
-		c.Observe(seq)
+		e.ObserveProbeEcho(seq)
 	}
-	if got := c.Loss(); got != 0 {
+	if got := e.Estimate().Loss; got != 0 {
 		t.Fatalf("mid-stream-attach loss = %.4f, want 0 (prefix before first seq must not count)", got)
 	}
 }
 
-// TestConnLossMisusedPerPathReadsStriping documents WHY per-path loss must not
-// use the outer-seq: feeding the connection estimator a single path's strided
-// subset (every other seq) reads ~50% loss. This is expected — ConnLoss is
-// connection-scoped and must be fed the global stream — and is the exact failure
-// that moving per-path loss to the probe stream avoids.
-func TestConnLossMisusedPerPathReadsStriping(t *testing.T) {
-	c := NewConnLoss(0)
-	for seq := uint64(0); seq < 8000; seq += 2 { // this path carries only even seqs
-		c.Observe(seq)
-	}
-	got := c.Loss()
-	if math.Abs(got-0.5) > 0.02 {
-		t.Fatalf("strided-subset loss = %.4f, want ~0.5 (documents connection scope)", got)
-	}
-}
-
-// TestLossSamplesGrowsThenSaturates asserts Estimate().LossSamples tracks the
-// loss window's denominator: it grows 1..win as echoes arrive on a fresh
-// window (early regime, window not yet full) and then holds at win once the
-// window saturates. This is the denominator the min-sample floor (D96) gates
-// on, so a single drop at a small n (e.g. 1/11) is not conflated with the same
-// drop at a saturated n (e.g. 1/512).
-func TestLossSamplesGrowsThenSaturates(t *testing.T) {
-	const win = 8
-	e := NewEstimator(win)
-	if got := e.Estimate().LossSamples; got != 0 {
-		t.Fatalf("LossSamples before any echo = %d, want 0", got)
-	}
-	for seq := uint64(0); seq < win; seq++ {
-		e.ObserveProbeEcho(seq)
-		want := int(seq) + 1 // early regime: denominator grows 1..win
-		if got := e.Estimate().LossSamples; got != want {
-			t.Fatalf("after seq %d: LossSamples = %d, want %d", seq, got, want)
-		}
-	}
-	// Window now saturated; further echoes must hold the denominator at win.
-	for seq := uint64(win); seq < win*4; seq++ {
-		e.ObserveProbeEcho(seq)
-		if got := e.Estimate().LossSamples; got != win {
-			t.Fatalf("after seq %d (saturated): LossSamples = %d, want %d", seq, got, win)
-		}
-	}
-}
-
-// TestLossSamplesMidStreamAttachClamp pins the first-observed clamp regime of
-// the denominator: when the first RECEIVED echo lands at seq > 0 (the initial
-// probes dropped — ObserveProbeEcho only ever sees received echoes), the
-// window's lower bound is clamped to the first observed seq, and LossSamples
-// must equal highest-first+1 exactly — including the single-echo n=1 case,
-// where an off-by-one denominator of 0 would make fraction() ill-defined
-// (0/0). Kills the `lower = w.first + 1` mutant, which
-// TestLossSamplesGrowsThenSaturates (seq starts at 0, clamp never binds)
-// cannot detect.
-func TestLossSamplesMidStreamAttachClamp(t *testing.T) {
+// TestLossMidStreamAttachClamp pins the first-observed clamp regime of the loss
+// denominator: when the first RECEIVED echo lands at seq > 0 (the initial probes
+// dropped — ObserveProbeEcho only ever sees received echoes), the window's lower
+// bound is clamped to the first observed seq, so the denominator is highest-first+1
+// exactly — including the single-echo n=1 case, where an off-by-one denominator of 0
+// would make the fraction ill-defined (0/0) — until the window bound takes over.
+func TestLossMidStreamAttachClamp(t *testing.T) {
 	const win = 8
 	const first = uint64(100) // echoes for seqs 0..99 lost; first received echo
 	e := NewEstimator(win)
-	// Single echo at seq=first: n must be exactly 1 (not 0), and the loss
-	// fraction over that one received sample must be a well-defined 0.
 	e.ObserveProbeEcho(first)
-	est := e.Estimate()
-	if est.LossSamples != 1 {
-		t.Fatalf("single echo at seq %d: LossSamples = %d, want 1", first, est.LossSamples)
+	if got := e.Estimate().Loss; got != 0 {
+		t.Fatalf("single echo at seq %d: Loss = %v, want 0 (must be well-defined)", first, got)
 	}
-	if est.Loss != 0 {
-		t.Fatalf("single echo at seq %d: Loss = %v, want 0 (must be well-defined)", first, est.Loss)
-	}
-	// Clamp regime: while highest-first+1 <= win the lower bound is first, so
-	// the denominator must equal highest-first+1 exactly.
-	for seq := first + 1; seq < first+win; seq++ {
+	// Clamp regime: one missing echo right after the first reads as 1 over
+	// highest-first+1 while that span is within the window.
+	for seq := first + 2; seq < first+win; seq++ {
 		e.ObserveProbeEcho(seq)
-		want := int(seq-first) + 1
-		if got := e.Estimate().LossSamples; got != want {
-			t.Fatalf("after seq %d (clamp regime): LossSamples = %d, want %d", seq, got, want)
+		want := 1 / float64(seq-first+1)
+		if got := e.Estimate().Loss; got != want {
+			t.Fatalf("after seq %d (clamp regime): Loss = %v, want %v", seq, got, want)
 		}
 	}
-	// Past the clamp regime the window bound takes over: denominator holds at win.
+	// Past the clamp regime the window bound takes over and the gap slides out.
 	for seq := first + win; seq < first+win*3; seq++ {
 		e.ObserveProbeEcho(seq)
-		if got := e.Estimate().LossSamples; got != win {
-			t.Fatalf("after seq %d (saturated): LossSamples = %d, want %d", seq, got, win)
-		}
+	}
+	if got := e.Estimate().Loss; got != 0 {
+		t.Fatalf("saturated window after the gap slid out: Loss = %v, want 0", got)
 	}
 }
 
-// TestSingleDropSmallSampleReadsLargeFraction is the D96 mechanism-3 / E4 telemetry-side
-// oracle: it pins the DENOMINATOR PRECONDITION the adaptive-FEC min-sample floor
-// (internal/bind.minAdaptiveLossSamples, 32) exists to guard against. A single dropped
-// probe at a SMALL window denominator (n=8, early regime, well below the floor) reads as a
-// large loss FRACTION (1/8 = 12.5%) — indistinguishable, from Loss alone, from a
-// genuinely lossy path, even though only one probe was ever lost. The IDENTICAL single
-// drop, diluted across a saturated 512-sample window (the telemetry default), reads as a
-// small, trustworthy fraction (1/512 ~= 0.195%). Estimate() exposes LossSamples precisely
-// so a caller can tell these two cases apart from Loss alone; this test pins the exact
-// numbers the floor is calibrated against — a single drop CANNOT, by itself, cross any
-// reasonable raise gate once the denominator has grown past the floor.
-func TestSingleDropSmallSampleReadsLargeFraction(t *testing.T) {
-	const floor = 32 // mirrors internal/bind.minAdaptiveLossSamples (D96 mechanism 3)
+// TestSingleDropFractionScalesWithDenominator: a single dropped probe at a SMALL
+// window denominator (n=8, early regime) reads as a large loss FRACTION (1/8), while
+// the IDENTICAL single drop diluted across a saturated 512-sample window reads as
+// 1/512.
+func TestSingleDropFractionScalesWithDenominator(t *testing.T) {
 	const dropSeq = 3
 
-	// n=8: one drop among the first 8 probes — early regime, well below the floor.
 	small := NewEstimator(512)
 	for seq := uint64(0); seq < 8; seq++ {
 		if seq == dropSeq {
@@ -268,19 +184,10 @@ func TestSingleDropSmallSampleReadsLargeFraction(t *testing.T) {
 		}
 		small.ObserveProbeEcho(seq)
 	}
-	smallEst := small.Estimate()
-	if smallEst.LossSamples != 8 {
-		t.Fatalf("small-sample LossSamples = %d, want 8", smallEst.LossSamples)
-	}
-	if smallEst.LossSamples >= floor {
-		t.Fatalf("setup: LossSamples = %d, want < floor %d (early regime)", smallEst.LossSamples, floor)
-	}
-	if got, want := smallEst.Loss, 1.0/8; got != want {
+	if got, want := small.Estimate().Loss, 1.0/8; got != want {
 		t.Fatalf("small-sample Loss = %v, want exactly %v (1 drop / 8 samples)", got, want)
 	}
 
-	// n=512 (saturated default window): the SAME single drop, diluted across a full window,
-	// reads as a small fraction — the precondition the floor exists to exploit.
 	full := NewEstimator(512)
 	for seq := uint64(0); seq < 512; seq++ {
 		if seq == dropSeq {
@@ -288,20 +195,8 @@ func TestSingleDropSmallSampleReadsLargeFraction(t *testing.T) {
 		}
 		full.ObserveProbeEcho(seq)
 	}
-	fullEst := full.Estimate()
-	if fullEst.LossSamples != 512 {
-		t.Fatalf("saturated LossSamples = %d, want 512", fullEst.LossSamples)
-	}
-	if got, want := fullEst.Loss, 1.0/512; got != want {
+	if got, want := full.Estimate().Loss, 1.0/512; got != want {
 		t.Fatalf("saturated Loss = %v, want exactly %v (1 drop / 512 samples)", got, want)
-	}
-
-	// The precondition itself: an IDENTICAL drop count (1) reads as a wildly different
-	// FRACTION purely as a function of the denominator — exactly what a caller must gate on
-	// (LossSamples), rather than trusting Loss alone, to avoid a small-sample spike crossing
-	// a raise gate that a saturated-window reading of the same single drop never would.
-	if !(smallEst.Loss > 10*fullEst.Loss) {
-		t.Fatalf("small-sample fraction %.4f is not >> saturated fraction %.4f; the denominator precondition is not exercised", smallEst.Loss, fullEst.Loss)
 	}
 }
 

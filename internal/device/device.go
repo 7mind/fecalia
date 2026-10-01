@@ -26,16 +26,12 @@ import (
 	awgdevice "github.com/amnezia-vpn/amneziawg-go/v3/device"
 	"github.com/amnezia-vpn/amneziawg-go/v3/tun"
 
-	"github.com/7mind/wanbond/internal/adaptivefec"
 	"github.com/7mind/wanbond/internal/bind"
-	"github.com/7mind/wanbond/internal/bond"
 	"github.com/7mind/wanbond/internal/config"
 	"github.com/7mind/wanbond/internal/dnsresolve"
-	"github.com/7mind/wanbond/internal/fec"
 	"github.com/7mind/wanbond/internal/log"
 	"github.com/7mind/wanbond/internal/metrics"
 	"github.com/7mind/wanbond/internal/monitor"
-	"github.com/7mind/wanbond/internal/sched"
 	"github.com/7mind/wanbond/internal/telemetry"
 )
 
@@ -64,21 +60,19 @@ const wgFingerprintLen = 10
 // paths, of each path's inner MTU — that path's declared MTU (T200, D85; 0 means
 // unset, falling back to bind.DefaultPathMTU) mapped through bind.InnerMTU. Sizing
 // to the smallest path keeps a full-MTU inner packet fragmentation-free no matter
-// which path the scheduler sends it over (see internal/bind mtu.go and
+// which lane the transport sends it over (see internal/bind mtu.go and
 // docs/p1-mtu.md). This is smaller than the plain-WireGuard 1420 because the
-// bonding layer adds its own outer DATA frame per datagram; with FEC enabled it is
-// a further bind.FECParityMTUPenalty smaller so a full-size PARITY frame also fits
-// the path MTU (T24) rather than fragmenting. A config with no paths (defensive;
-// validate() normally requires at least one) falls back to bind.DefaultPathMTU.
+// bonding layer adds its own outer frame per datagram. A config with no paths
+// (defensive; validate() normally requires at least one) falls back to
+// bind.DefaultPathMTU.
 func tunMTU(cfg *config.Config) int {
-	// When AmneziaWG obfuscation is configured, reserve the maximum junk-prefix length on
-	// top of the fixed outer overhead so wanbond0 is sized for the true obfuscated
-	// data-frame envelope (T225, D85 fix-direction 4). Subtracting it from each path's
-	// effective MTU before bind.InnerMTU keeps the FEC/overhead accounting intact; an
-	// unconfigured block yields 0, leaving the derived MTU byte-identical to plain WG.
-	junk := outerHeadroom(cfg)
+	// When AmneziaWG obfuscation is configured, reserve the maximum junk-prefix
+	// length on top of the fixed outer overhead, so wanbond0 is sized for the true
+	// data-frame envelope (T225, D85 fix-direction 4). It is subtracted from each
+	// path's effective MTU before bind.InnerMTU.
+	headroom := outerHeadroom(cfg)
 	if len(cfg.Paths) == 0 {
-		return bind.InnerMTU(bind.DefaultPathMTU-junk, cfg.FEC.Enabled)
+		return bind.InnerMTU(bind.DefaultPathMTU - headroom)
 	}
 	min := 0
 	for _, p := range cfg.Paths {
@@ -86,7 +80,7 @@ func tunMTU(cfg *config.Config) int {
 		if pathMTU == 0 {
 			pathMTU = bind.DefaultPathMTU
 		}
-		inner := bind.InnerMTU(pathMTU-junk, cfg.FEC.Enabled)
+		inner := bind.InnerMTU(pathMTU - headroom)
 		if min == 0 || inner < min {
 			min = inner
 		}
@@ -94,12 +88,11 @@ func tunMTU(cfg *config.Config) int {
 	return min
 }
 
+// outerHeadroom is the per-datagram allowance subtracted from a path's outer MTU
+// before bind.InnerMTU: the maximum AmneziaWG junk-prefix length (0 when
+// obfuscation is off).
 func outerHeadroom(cfg *config.Config) int {
-	headroom := cfg.Amnezia.MaxJunkPrefix()
-	if cfg.Scheduler.Policy == config.PolicyAdaptive {
-		headroom += bond.ExtraOverhead
-	}
-	return headroom
+	return cfg.Amnezia.MaxJunkPrefix()
 }
 
 // wgPublicKeyFingerprint derives the local WireGuard public key from the configured
@@ -117,37 +110,6 @@ func wgPublicKeyFingerprint(priv config.Key) (string, error) {
 	}
 	full := base64.StdEncoding.EncodeToString(sk.PublicKey().Bytes())
 	return full[:wgFingerprintLen], nil
-}
-
-// buildPathLinks builds the config-DECLARED per-path link parameters keyed by
-// monitor.PathKey, matching metrics.Source's (peer,path) naming rule (T222, R242): the
-// peer label is "" on a single-peer Source and each configured peer's name on a
-// multi-peer one (the same len(peers)>1 rule metrics.NewCollector applies). The declared
-// bottleneck bandwidth and baseline RTT are properties of the PATH, so a multi-peer
-// concentrator repeats each path's link params under every bound peer's key. Runtime-
-// resolved fields (bindMode/boundDevice) are deliberately absent here — they ride the
-// PathTraffic->metrics pass-through (T216/T220), not this config-derived seam (R242).
-func buildPathLinks(cfg *config.Config) map[monitor.PathKey]monitor.PathLink {
-	ids := cfg.PeerIdentities()
-	// Match the metrics peer-label rule: a single bound peer exposes peer="" (D58);
-	// two or more expose each peer's stable name.
-	peerLabels := []string{""}
-	if len(ids) > 1 {
-		peerLabels = make([]string, len(ids))
-		for i, id := range ids {
-			peerLabels[i] = id.Name
-		}
-	}
-	links := make(map[monitor.PathKey]monitor.PathLink, len(peerLabels)*len(cfg.Paths))
-	for _, peer := range peerLabels {
-		for _, p := range cfg.Paths {
-			links[monitor.PathKey{Peer: peer, Name: p.Name}] = monitor.PathLink{
-				LinkBandwidthBps: p.LinkBandwidthBitsPerSec,
-				LinkRttSeconds:   p.LinkRTT.Seconds(),
-			}
-		}
-	}
-	return links
 }
 
 // newEndpointsProvider returns the LIVE PER-PEER hub-endpoints provider the monitor
@@ -263,8 +225,6 @@ type Tunnel struct {
 	// engine teardown so no resize races the interface's destruction. Idempotent; nil on
 	// the up() test seam (the loop is Up()-only).
 	stopMTUResize func()
-	tunAQM        *tunAQMReconciler
-	stopTUNAQM    func()
 	// pmtuDiscoverers holds the per-path PMTU discovery machines (T228, D88), keyed by
 	// path name, that the metrics mapping (T229) reads for each path's discovered PMTU.
 	// Populated ONLY on the privileged Up() path (nil/empty on the up() test seam).
@@ -318,8 +278,8 @@ type Tunnel struct {
 	monitorHosts  []string
 	// monitorInfo is the identity/config/failover read seam (monitor.Info) the [monitor]
 	// endpoint is constructed with (T222): the daemon role/version, a LIVE uptime provider,
-	// the config-declared per-path link params, the truncated local WG public-key
-	// fingerprint (Q63 — never the full key), and a LIVE hub-endpoints provider (R242). It
+	// the truncated local WG public-key fingerprint (Q63 — never the full key), and a LIVE
+	// hub-endpoints provider (R242). It
 	// is built ONCE at up() and reused by every applyMonitorLocked (boot + reload rebind),
 	// so a rebound endpoint keeps the same identity; its Uptime/Endpoints closures stay
 	// live across rebinds because they close over stable device state, not captured values.
@@ -370,9 +330,9 @@ func Up(cfg *config.Config, lg log.Logger, version string) (*Tunnel, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := t.startTUNAQM(); err != nil {
+	if err := t.removeObsoleteTUNShaper(); err != nil {
 		t.Close()
-		return nil, fmt.Errorf("device: start TUN AQM: %w", err)
+		return nil, err
 	}
 	// Install the daemon-owned TCP MSS clamp for EDGE-ORIGINATED TCP egressing wanbond0
 	// (T208, D85, accepted decision 2): a mangle/OUTPUT-chain TCPMSS --clamp-mss-to-pmtu
@@ -453,7 +413,7 @@ func (t *Tunnel) startMTUResize() {
 		}
 		t.reloadMu.Unlock()
 	}
-	t.resizer = newMTUResizer(t.name, tunMTU(t.cfg), t.cfg.FEC.Enabled, mtuResizeDwell,
+	t.resizer = newMTUResizer(t.name, tunMTU(t.cfg), mtuResizeDwell,
 		telemetry.SystemClock{},
 		func(mtu int) error { return setLinkMTU(t.name, mtu) },
 		gauge, t.log)
@@ -518,37 +478,21 @@ func up(cfg *config.Config, clg log.Logger, tunDev tun.Device, name string, newR
 	// multi-peer concentrator each is that peer's own psk. Its order matches cfg.WireGuard.Peers
 	// (and thus uapiConfig's peer render), so the engine peer set and the Bind peer set agree.
 	ids := cfg.PeerIdentities()
-	// The primary peer (peers[0]) drives on-wire liveness through the SAME prober values that
-	// back its scheduler's PathHealth (T37). It is keyed on the FIRST identity's effective psk:
-	// the top-level psk for a single-peer config (byte-identical to pre-G4), or peer 0's own psk
-	// for a multi-peer concentrator.
-	scheduler, probers, newProber, err := buildScheduler(cfg, ids[0].PSK, sessionID, clg)
-	if err != nil {
-		_ = tunDev.Close()
-		return nil, fmt.Errorf("device: build scheduler: %w", err)
-	}
+	// The primary peer's (peers[0]) probers are keyed on the FIRST identity's effective psk:
+	// the top-level psk for a single-peer config, or peer 0's own psk for a multi-peer
+	// concentrator.
+	probers, newProber := buildProbers(cfg, ids[0].PSK, sessionID, clg)
 	// perPeerProbers holds each configured peer's OWN per-(peer,path) prober set, index-aligned with
 	// cfg.WireGuard.Peers / ids (primary at [0], each AddConcentratorPeer peer at its own index). The
 	// per-peer hub-failover controllers (T253) read each entry as that peer's liveness plane — hub loss
 	// is EVERY one of THAT peer's probers DOWN — so a multi-exit edge never derives one peer's hub-loss
-	// from the primary's flat prober slice (D100). Populated as each peer's scheduler is built below.
+	// from the primary's flat prober slice (D100). Populated as each peer's probers are built below.
 	perPeerProbers := make([][]*telemetry.Prober, len(ids))
 	perPeerProbers[0] = probers
-	var mpBind *bind.Multipath
-	if cfg.Scheduler.PerPathShapers != nil {
-		mpBind, err = bind.NewMultipathWithShapers(cfg.Paths, ids[0].PSK, scheduler, probers, newProber, fecConfig(cfg.FEC), adaptiveFECConfig(cfg.FEC), cfg.Amnezia, cfg.Scheduler.PerPathShapers, clg)
-	} else {
-		mpBind, err = bind.NewMultipath(cfg.Paths, ids[0].PSK, scheduler, probers, newProber, fecConfig(cfg.FEC), adaptiveFECConfig(cfg.FEC), cfg.Amnezia, clg)
-	}
+	mpBind, err := bind.NewMultipath(cfg.Paths, ids[0].PSK, probers, newProber, clg)
 	if err != nil {
 		_ = tunDev.Close()
 		return nil, fmt.Errorf("device: build multipath bind: %w", err)
-	}
-	if cfg.Scheduler.Policy == config.PolicyAdaptive {
-		if err := mpBind.EnableAdaptive(); err != nil {
-			_ = tunDev.Close()
-			return nil, err
-		}
 	}
 	// A multi-peer concentrator names its primary too (D58): NewMultipath always mints the
 	// primary as peers[0] with name="" (a single-peer edge/hub needs no name — there is only
@@ -565,18 +509,14 @@ func up(cfg *config.Config, clg log.Logger, tunDev tun.Device, name string, newR
 		}
 	}
 	// Concentrator per-peer wiring (G4/T93): register each ADDITIONAL configured peer with its
-	// OWN prober set, scheduler, and prober factory (all keyed on that peer's effective psk),
+	// OWN prober set and prober factory (both keyed on that peer's effective psk),
 	// BEFORE dev.Up drives the bind's Open — which builds each registered peer's per-(peer,path)
-	// view of every bound socket, reconciles its scheduler, and reports its stable virtual
+	// view of every bound socket and reports its stable virtual
 	// endpoint to the engine (A1). A single-peer config has exactly one identity, so this loop
-	// is empty and the wiring stays byte-identical to the pre-G4 single-peer path.
+	// is empty.
 	for k, id := range ids[1:] {
-		psched, pprobers, pfactory, perr := buildScheduler(cfg, id.PSK, sessionID, clg)
-		if perr != nil {
-			_ = tunDev.Close()
-			return nil, fmt.Errorf("device: build scheduler for peer %q: %w", id.Name, perr)
-		}
-		if perr := mpBind.AddConcentratorPeer(id.Name, id.PSK, psched, pprobers, pfactory); perr != nil {
+		pprobers, pfactory := buildProbers(cfg, id.PSK, sessionID, clg)
+		if perr := mpBind.AddConcentratorPeer(id.Name, id.PSK, pprobers, pfactory); perr != nil {
 			_ = tunDev.Close()
 			return nil, fmt.Errorf("device: wire concentrator peer %q: %w", id.Name, perr)
 		}
@@ -610,7 +550,7 @@ func up(cfg *config.Config, clg log.Logger, tunDev tun.Device, name string, newR
 	// Bind BEFORE the engine parses the UAPI config. The engine calls Bind.ParseEndpoint once per
 	// peer's endpoint= line and stores the returned virtual endpoint as THAT peer's send target; the
 	// seed lets ParseEndpoint return the OWNING peer's DISTINCT virt (and Open seed that peer's paths
-	// at its own hub), so each peer's DATA/PROBE frames egress to ITS concentrator rather than all
+	// at its own hub), so each peer's frames egress to ITS concentrator rather than all
 	// collapsing onto the primary's virt/remote. Edge-only and only with 2+ peers: a single-peer edge
 	// keeps the bind-global-default path byte-identical, and a concentrator learns remotes from
 	// inbound. An endpoint-less (unresolved-hostname) peer contributes a zero AddrPort — SeedEdge
@@ -677,7 +617,7 @@ func up(cfg *config.Config, clg log.Logger, tunDev tun.Device, name string, newR
 	// the bind's receive-path liveness sweep throttle (D15).
 	//
 	// UNLIKE the up/down thresholds (down_after + per-path ride_through, now config-driven
-	// via buildScheduler/proberConfigForPath — D86/T207), the probe cadence stays the fixed
+	// via buildProbers/proberConfigForPath — D86/T207), the probe cadence stays the fixed
 	// telemetry.DefaultProbeInterval this pass: it is a global loop period shared by every
 	// path AND every peer and it also gates the D15 receive-path sweep throttle, so making it
 	// configurable is a broader change deferred beyond T207. Detection latency is therefore
@@ -782,7 +722,7 @@ func up(cfg *config.Config, clg log.Logger, tunDev tun.Device, name string, newR
 	// Start the concentrator per-peer teardown monitor (D50/T126): in MULTI-PEER mode it
 	// level-checks each configured non-primary peer's WG session every poll and calls the bind's
 	// idempotent TearDownPeer on any peer whose session is gone (no handshake, or aged past
-	// RejectAfterTime), reclaiming its resequencer ring, FEC buffers, and demux cap slots — the
+	// RejectAfterTime), reclaiming its resequencer ring and demux cap slots — the
 	// leak the edge-triggered global monitor cannot catch (a valid-psk peer that binds via PROBE
 	// but never completes a handshake produces no 1->0 edge). concentratorMonitoredPeers returns
 	// an EMPTY peer set for a single-peer config, so the loop is a no-op there and the single-peer
@@ -818,8 +758,7 @@ func up(cfg *config.Config, clg log.Logger, tunDev tun.Device, name string, newR
 		monitorSrc: monitorSrc,
 		// The identity/config/failover read seam the [monitor] endpoint is constructed with
 		// (T222): daemon role + build version, a LIVE uptime provider (fresh per snapshot,
-		// R242), the config-declared per-path link params keyed to the metrics (peer,path)
-		// rule, the truncated local WG public-key fingerprint (Q63 — no full key), a LIVE
+		// R242), the truncated local WG public-key fingerprint (Q63 — no full key), a LIVE
 		// PER-PEER hub-endpoints provider over every eligible peer's own failover controller
 		// (empty when none — the concentrator/single-endpoint shapes, T257), and a LIVE
 		// active-exit provider over the exit selector (empty when it does not apply, T257),
@@ -829,7 +768,6 @@ func up(cfg *config.Config, clg log.Logger, tunDev tun.Device, name string, newR
 			Role:                   string(cfg.Role),
 			Version:                version,
 			Uptime:                 func() float64 { return time.Since(startTime).Seconds() },
-			PathLinks:              buildPathLinks(cfg),
 			WGPublicKeyFingerprint: fingerprint,
 			Endpoints:              newEndpointsProvider(ids, hubFailoverCtrls),
 			ExitCapablePeers:       exitCapablePeerNames(cfg, ids),
@@ -936,12 +874,12 @@ func warnOverBudgetLiveness(lg log.Logger, cfg *config.Config) {
 // its lifecycle is Open/Close, not session teardown.
 //
 // The D50 reclaim is CONCENTRATOR-ROLE ONLY: a concentrator sheds a dead EDGE's per-peer state
-// (resequencer ring, FEC buffers, demux cap slots) once that edge's WG session is gone. On the
+// (resequencer ring, demux cap slots) once that edge's WG session is gone. On the
 // EDGE role the additional peers are WARM-STANDBY CONCENTRATORS (T251/Q68b): each is healthy by
 // design even while carrying no data (kept warm by persistent keepalive), and its lifecycle is
 // Open/Close, not session teardown. Running the level check on the edge would tear down a warm
-// standby the moment its session momentarily aged, discarding its per-(peer,path) probers/
-// scheduler/FEC/reseq — so the monitored set is EMPTY on any non-concentrator role.
+// standby the moment its session momentarily aged, discarding its resequencer and demux
+// bindings — so the monitored set is EMPTY on any non-concentrator role.
 func concentratorMonitoredPeers(cfg *config.Config, ids []config.PeerIdentity) []monitoredPeer {
 	if cfg.Role != config.RoleConcentrator || len(cfg.WireGuard.Peers) <= 1 {
 		return nil
@@ -954,7 +892,7 @@ func concentratorMonitoredPeers(cfg *config.Config, ids []config.PeerIdentity) [
 // the engine's UAPI dump identifies it by (T256, G28, M106). It generalizes
 // concentratorMonitoredPeers' hex-pubkey parse machinery (which covers only the
 // concentrator-role NON-PRIMARY teardown set) to EVERY role, so the per-peer session
-// monitor (peerSessionMonitor) reports the SAME peer names FEC/Reseq/Aggregation already
+// monitor (peerSessionMonitor) reports the SAME peer names Reseq/Adaptive already
 // use — including on the edge role, where the additional peers are warm-standby
 // concentrators (T251/Q68b) rather than concentrator-side edges. Mirrors the D58
 // primary-naming rule bind.Multipath.SetPrimaryPeerName applies: the primary carries
@@ -990,7 +928,7 @@ func (t *Tunnel) applyMetricsLocked(listen string) error {
 		t.stopMetricsLocked()
 		return nil
 	}
-	srv, err := metrics.NewServer(listen, t.metricsSrc, t.cfg.WeightedCapacitySane, t.cfg.LivenessBudgetSane, t.log)
+	srv, err := metrics.NewServer(listen, t.metricsSrc, t.cfg.LivenessBudgetSane, t.log)
 	if err != nil {
 		return err
 	}
@@ -1103,9 +1041,9 @@ func (t *Tunnel) stopMonitorLocked() {
 // both sets is left untouched (its source/dest parameters are not re-read).
 //
 // A membership-only reload CANNOT apply every kind of change: a same-name path whose
-// source/dest changed, a path REORDER (index 0 is the preferred primary, so a reorder
-// is a priority change), and every non-path field (psk, wireguard, amnezia, role, log,
-// metrics) are all out of scope for T30. Rather than silently diverge from the file,
+// source/dest changed, a path REORDER, and every non-path field (psk, wireguard,
+// amnezia, role, log, metrics) are all out of scope for T30. Rather than silently
+// diverge from the file,
 // Reload logs an EXPLICIT WARNING per ignored change (reloadWarnings) so the operator
 // knows exactly what was dropped; only the path-membership add/remove is applied.
 func (t *Tunnel) Reload(cfg *config.Config) error {
@@ -1145,23 +1083,7 @@ func (t *Tunnel) Reload(cfg *config.Config) error {
 
 	add, remove := diffPaths(t.bind.PathNames(), cfg.Paths)
 	for _, def := range add {
-		var err error
-		if t.cfg.Scheduler.PerPathShapers != nil {
-			idx := -1
-			for i := range cfg.Paths {
-				if cfg.Paths[i].Name == def.Name {
-					idx = i
-					break
-				}
-			}
-			if idx < 0 || idx >= len(cfg.Scheduler.PerPathShapers) {
-				return fmt.Errorf("device: reload add path %q: reloaded config has no derived exact-byte shaper", def.Name)
-			}
-			err = t.bind.AddPathWithShaper(def, cfg.Scheduler.PerPathShapers[idx])
-		} else {
-			err = t.bind.AddPath(def)
-		}
-		if err != nil {
+		if err := t.bind.AddPath(def); err != nil {
 			return fmt.Errorf("device: reload add path %q: %w", def.Name, err)
 		}
 		t.log.Info("reload: path added", "path", def.Name)
@@ -1172,27 +1094,12 @@ func (t *Tunnel) Reload(cfg *config.Config) error {
 		}
 		t.log.Info("reload: path removed", "path", name)
 	}
-	// D74: recompute the config-derived weighted-capacity-sanity verdict from the reloaded
-	// config and re-set the retained gauge on the running /metrics endpoint, so a reload
-	// that changed the path set (add/remove) updates wanbond_weighted_capacity_sane instead
-	// of leaving it frozen at the boot value. WARN when the verdict diverges from the
-	// running one so the operator sees the sanity flip. Skipped when no endpoint runs, or
-	// under the active-backup policy (a nil verdict — the series is absent and the scheduler
-	// policy is fixed for the process, so a reload never introduces it).
-	if t.metricsSrv != nil && cfg.WeightedCapacitySane != nil {
-		newSane := *cfg.WeightedCapacitySane
-		if t.cfg.WeightedCapacitySane == nil || *t.cfg.WeightedCapacitySane != newSane {
-			t.log.Warn("reload: weighted-capacity-sanity verdict changed", "sane", newSane)
-		}
-		t.metricsSrv.SetWeightedCapacitySane(newSane)
-	}
-
 	// T211: recompute the config-derived failover-budget verdict from the reloaded config
-	// and re-set the retained gauge, mirroring the D74 weighted-capacity re-set above. An
+	// and re-set the retained gauge on the running /metrics endpoint. An
 	// applied path add/remove can change the worst-case ride_through (hence the budget
-	// verdict), so the gauge must not stay frozen at boot. The verdict is ALWAYS non-nil
-	// (the budget applies to every config), so — unlike the weighted gauge — no policy
-	// gate is needed; the endpoint-present check suffices.
+	// verdict), so the gauge must not stay frozen at boot. WARN when the verdict diverges
+	// from the running one so the operator sees the flip. The verdict is ALWAYS non-nil
+	// (the budget applies to every config); the endpoint-present check suffices.
 	if t.metricsSrv != nil && cfg.LivenessBudgetSane != nil {
 		newBudgetSane := *cfg.LivenessBudgetSane
 		if t.cfg.LivenessBudgetSane == nil || *t.cfg.LivenessBudgetSane != newBudgetSane {
@@ -1214,11 +1121,8 @@ func (t *Tunnel) Reload(cfg *config.Config) error {
 	t.cfg.Monitor.Token = t.monitorToken
 	t.cfg.Monitor.RevealAddressing = t.monitorReveal
 	t.cfg.Monitor.AllowedHosts = slices.Clone(t.monitorHosts)
-	// Carry the recomputed weighted-capacity verdict so a subsequent reload's divergence
-	// check compares against the value the gauge now holds (D74).
-	t.cfg.WeightedCapacitySane = cfg.WeightedCapacitySane
 	// Carry the recomputed failover-budget verdict so a subsequent reload's divergence
-	// check compares against the value the gauge now holds (T211, mirroring D74).
+	// check compares against the value the gauge now holds (T211).
 	t.cfg.LivenessBudgetSane = cfg.LivenessBudgetSane
 	return nil
 }
@@ -1260,12 +1164,6 @@ func reloadWarnings(live, desired *config.Config) []string {
 	// NOTE: neither a Metrics nor a Monitor change is warned here — unlike the other
 	// non-path fields, the reload APPLIES both by rebinding their endpoints (see Reload,
 	// T169). Warning about a change that is honoured would misinform the operator.
-	if !reflect.DeepEqual(live.Scheduler, desired.Scheduler) {
-		w = append(w, "scheduler section changed — the running scheduler keeps its original policy/parameters until restart")
-	}
-	if !reflect.DeepEqual(live.FEC, desired.FEC) {
-		w = append(w, "fec section changed — the running FEC parameters are unchanged until restart")
-	}
 	if !reflect.DeepEqual(live.DNS, desired.DNS) {
 		w = append(w, "dns section changed — the running resolver configuration is unchanged until restart")
 	}
@@ -1298,15 +1196,6 @@ func reloadWarnings(live, desired *config.Config) []string {
 		if l.Bind != d.Bind {
 			w = append(w, fmt.Sprintf("path %q bind mode changed — the running socket keeps its original binding", d.Name))
 		}
-		// D70: a same-name path's declared link capacity is NOT
-		// applied by a membership reload — the running path keeps its original pacing/weight
-		// — and the D52 catch-all zeroes Paths before its DeepEqual, so a change here is
-		// otherwise silent. Warn so the operator knows the new declaration is deferred.
-		if l.LinkBandwidthBitsPerSec != d.LinkBandwidthBitsPerSec ||
-			l.LinkBandwidthLimitBitsPerSec != d.LinkBandwidthLimitBitsPerSec ||
-			l.LinkRTT != d.LinkRTT {
-			w = append(w, fmt.Sprintf("path %q link_bandwidth/link_bandwidth_limit/link_rtt changed — the running path keeps its original capacity declaration; restart required", d.Name))
-		}
 	}
 
 	if reordered(live.Paths, desired.Paths) {
@@ -1319,7 +1208,8 @@ func reloadWarnings(live, desired *config.Config) []string {
 	// DeepEqual the copies. A Config field added later that nobody has taught this
 	// function to warn about falls through to this generic warning instead of being
 	// silently accepted, so the "SILENCE is not acceptable" invariant (D52) cannot
-	// regress by omission.
+	// regress by omission. Scheduler is deliberately NOT zeroed: it has one valid
+	// policy value today, so a change to it is reported here.
 	lc, dc := *live, *desired
 	lc.Role, dc.Role = "", ""
 	lc.Exit, dc.Exit = "", ""
@@ -1328,21 +1218,13 @@ func reloadWarnings(live, desired *config.Config) []string {
 	lc.Amnezia, dc.Amnezia = config.Amnezia{}, config.Amnezia{}
 	lc.Log, dc.Log = config.Log{}, config.Log{}
 	lc.TUNPersist, dc.TUNPersist = false, false
-	lc.Scheduler, dc.Scheduler = config.SchedulerConfig{}, config.SchedulerConfig{}
-	lc.FEC, dc.FEC = config.FEC{}, config.FEC{}
 	lc.DNS, dc.DNS = config.DNS{}, config.DNS{}
 	lc.Liveness, dc.Liveness = config.Liveness{}, config.Liveness{}
 	lc.Bind, dc.Bind = "", ""
 	lc.Paths, dc.Paths = nil, nil
 	lc.Metrics, dc.Metrics = config.Metrics{}, config.Metrics{}
 	lc.Monitor, dc.Monitor = config.Monitor{}, config.Monitor{}
-	// WeightedCapacitySane (T144) is a value COMPUTED from Scheduler+Paths, never an
-	// independent operator knob (toml:"-") — a change to it is always a symptom of a
-	// Scheduler or Paths change, both already compared above (or, for a same-name
-	// path's link_bandwidth specifically, a pre-existing gap outside T144's scope).
-	// Comparing it directly here would be redundant at best and could double-warn.
-	lc.WeightedCapacitySane, dc.WeightedCapacitySane = nil, nil
-	// LivenessBudgetSane (T211) is likewise a value COMPUTED from Liveness+Paths, never an
+	// LivenessBudgetSane (T211) is a value COMPUTED from Liveness+Paths, never an
 	// independent operator knob (toml:"-") — a change to it is always a symptom of a
 	// Liveness or Paths change, both already compared above. Comparing it directly here
 	// would be redundant and could double-warn; zero it out of the catch-all.
@@ -1429,52 +1311,6 @@ func diffPaths(live []string, desired []config.Path) (add []config.Path, remove 
 	return add, remove
 }
 
-// defaultFailbackDwell is how long a recovered higher-priority path must stay up
-// before egress fails BACK to it, damping flap-induced thrash (T15 hysteresis).
-// Unlike the probe-cadence/liveness thresholds (which are the shared
-// telemetry.Default* single source of truth, D16), the failback dwell is not part
-// of the failover-recovery budget — failover to a backup is instant — so it stays a
-// device-local constant.
-const defaultFailbackDwell = 5 * time.Second
-
-// fecConfig maps the validated [fec] config block onto the fec.Config the multipath
-// Bind consumes (T24), or returns nil when FEC is disabled so the Bind runs the
-// datapath with no parity plane. The ratio was already range-checked in config
-// validation; the Bind re-validates defensively.
-func fecConfig(f config.FEC) *fec.Config {
-	if !f.Enabled {
-		return nil
-	}
-	return &fec.Config{
-		DataShards:   f.DataShards,
-		ParityShards: f.ParityShards,
-		Deadline:     f.Deadline,
-	}
-}
-
-// adaptiveFECConfig maps the [fec] block onto the adaptive controller config the multipath
-// Bind drives (T29), or returns nil when FEC is disabled or the block did not opt into
-// adaptive mode — in which case the Bind runs the fixed-ratio plane (T24) unchanged. The
-// controller uses the simulation-proven default control law (internal/adaptivefec,
-// DefaultConfig), with only the group geometry pinned to the configured ratio: DataShards
-// (K) is the FEC data_shards and MaxParity (the parity CEILING) is the FEC parity_shards,
-// which the receiver's decoder is built at. The Bind re-validates and cross-checks these
-// against the FEC config defensively.
-func adaptiveFECConfig(f config.FEC) *adaptivefec.Config {
-	if !f.Enabled || !f.Adaptive {
-		return nil
-	}
-	c := adaptivefec.DefaultConfig()
-	c.DataShards = f.DataShards
-	c.MaxParity = f.ParityShards
-	// Exactly one sizing mode is active (config load enforces mutual exclusion): in the
-	// residual-SLA mode f.SafetyFactor is 0 and f.TargetResidual drives M; in the legacy
-	// mode f.TargetResidual is 0 and f.SafetyFactor (defaulted at load) drives M.
-	c.SafetyFactor = f.SafetyFactor
-	c.TargetResidual = f.TargetResidual
-	return &c
-}
-
 // proberConfigForPath builds ONE path's telemetry.ProberConfig from the loaded config
 // (D86/T207). DownAfter comes from the top-level cfg.Liveness.DownAfter (a single global
 // threshold, DEFAULTED at load by T203 to telemetry.DefaultDownAfter when the [liveness]
@@ -1496,97 +1332,34 @@ func proberConfigForPath(cfg *config.Config, rideThrough time.Duration) telemetr
 	}
 }
 
-// buildScheduler constructs ONE peer's boot-time per-path prober set, its runtime prober
-// factory, and the send scheduler over them — ALL keyed on that peer's effective psk (R72) —
-// in cfg.Paths' configured priority order (index 0 = the preferred primary path). The returned
-// probers ARE the scheduler's PathHealth sources (a *Prober is internally synchronized,
-// satisfying the PathHealth concurrency contract — a bare *Liveness would not) and are handed
-// to the bind so the probe transport drives the very same liveness the scheduler selects on
-// (T37 replaces the T15 sched.AlwaysUp placeholder with real on-wire failover).
+// buildProbers constructs ONE peer's boot-time per-path prober set and its runtime prober
+// factory — both keyed on that peer's effective psk (R72) — in cfg.Paths' configured order.
+// The probers are handed to the bind, whose probe transport drives their liveness and
+// carries the peer transport's hellos.
 //
-// The single-peer edge/hub/concentrator calls this once (psk = the top-level effective psk, so
-// the wiring is byte-identical to pre-G4); a multi-peer concentrator calls it once per
-// configured peer, each with that peer's OWN effective psk, so one peer's probers/reflector
-// authenticate under a DIFFERENT key and reject another peer's frames (T84). sessionID is the
-// per-boot probe session id — it identifies THIS boot, not a path or peer — shared by every
-// path AND every peer: each peer's reflector keys anti-replay under its own psk, so a shared
-// session id never conflates two peers' probe streams, and a runtime-added path (T30) reuses it
-// so its probes join this boot's stream and the peer's reflector adopts them without a
+// The single-peer edge/hub/concentrator calls this once (psk = the top-level effective psk);
+// a multi-peer concentrator calls it once per configured peer, each with that peer's OWN
+// effective psk, so one peer's probers/reflector authenticate under a DIFFERENT key and
+// reject another peer's frames (T84). sessionID is the per-boot probe session id — it
+// identifies THIS boot, not a path or peer — shared by every path AND every peer: each
+// peer's reflector keys anti-replay under its own psk, so a shared session id never
+// conflates two peers' probe streams, and a runtime-added path (T30) reuses it so its
+// probes join this boot's stream and the peer's reflector adopts them without a
 // challenge reset.
-func buildScheduler(cfg *config.Config, psk config.Key, sessionID uint64, lg log.Logger) (sched.Scheduler, []*telemetry.Prober, bind.ProberFactory, error) {
+func buildProbers(cfg *config.Config, psk config.Key, sessionID uint64, lg log.Logger) ([]*telemetry.Prober, bind.ProberFactory) {
 	clock := telemetry.SystemClock{}
 	// newProber mints one path's Prober with the shared session/clock, keyed on THIS peer's
 	// psk, and a PER-PATH ProberConfig (D86/T207): the global down_after threshold plus this
 	// path's own ride-through dwell. It is the single construction point for this peer's
-	// boot-time AND runtime (T30) paths, so both measure liveness identically. The runtime
-	// bind.ProberFactory carries the path's ride_through so a runtime-added path gets its
-	// configured dwell too — see proberConfigForPath.
+	// boot-time AND runtime (T30) paths, so both measure liveness identically.
 	newProber := func(name string, id uint8, rideThrough time.Duration) *telemetry.Prober {
 		return telemetry.NewProber(name, id, sessionID, psk, proberConfigForPath(cfg, rideThrough), clock, lg)
 	}
 	probers := make([]*telemetry.Prober, len(cfg.Paths))
-	health := make([]sched.PathHealth, len(cfg.Paths))
-	quality := make([]sched.PathQuality, len(cfg.Paths))
 	for i := range cfg.Paths {
 		probers[i] = newProber(cfg.Paths[i].Name, uint8(i), cfg.Paths[i].RideThrough)
-		health[i] = probers[i]
-		quality[i] = probers[i]
 	}
-	// Policy is a config choice: active-backup (P1, default) or the T21 weighted-
-	// aggregation policy. Both consume the SAME per-path *Prober set — a *Prober
-	// satisfies BOTH PathHealth (liveness) and PathQuality (RTT/loss Estimate) — so the
-	// probe transport drives the very liveness/quality the scheduler selects on, and the
-	// swap is behind config with no Bind change.
-	scheduler, err := selectScheduler(cfg, health, quality, clock, lg)
-	if err != nil {
-		return nil, nil, nil, err
-	}
-	return scheduler, probers, newProber, nil
-}
-
-// selectScheduler builds the send scheduler the configured policy names, over the
-// per-path health (and, for the weighted policy, quality) sources. active-backup is
-// the P1 default; weighted is T21. The weighted knobs are validated at config load,
-// so translating them here cannot fail on range — only NewWeighted's structural
-// checks (which the wiring satisfies) apply.
-func selectScheduler(cfg *config.Config, health []sched.PathHealth, quality []sched.PathQuality, clock telemetry.Clock, lg log.Logger) (sched.Scheduler, error) {
-	legacyPacing := cfg.Scheduler.PacingEnabled && cfg.Scheduler.PerPathShapers == nil
-	if cfg.Scheduler.Policy == config.PolicyAdaptive {
-		legacyPacing = false
-	}
-	switch cfg.Scheduler.Policy {
-	case config.PolicyWeighted:
-		sc := cfg.Scheduler
-		return sched.NewWeighted(health, quality, sched.WeightedConfig{
-			PerPathCapacity:   sc.PerPathCapacityFPS,
-			EngageFraction:    sc.EngageFraction,
-			DisengageFraction: sc.DisengageFraction,
-			CollapseDwell:     sc.CollapseDwell,
-			LoadTau:           sc.LoadTau,
-			Pacing:            legacyPacing,
-			PacingBurst:       sc.PacingBurstFrames,
-			WeightRTTFloor:    sc.WeightRTTFloor,
-			WeightLossFloor:   sc.WeightLossFloor,
-		}, clock, lg)
-	default:
-		// active-backup (and the empty default, normalized to it at config load).
-		// PerPathCapacities/PacingBursts are derived by config.derivePacingFromBDP
-		// (T152) index-aligned to cfg.Paths; buildScheduler builds health over
-		// cfg.Paths in that SAME order (no reorder/filter happens between there and
-		// here), so the pacing vectors line up with health index-for-index.
-		sc := cfg.Scheduler
-		return sched.NewActiveBackup(
-			health,
-			sched.Config{
-				FailbackAfter:     defaultFailbackDwell,
-				Pacing:            legacyPacing,
-				PerPathCapacities: sc.PerPathCapacities,
-				PacingBursts:      sc.PacingBursts,
-			},
-			clock,
-			lg,
-		)
-	}
+	return probers, newProber
 }
 
 // Name is the created TUN interface name (for external addressing/routing).
@@ -1644,9 +1417,6 @@ func (t *Tunnel) Close() {
 	// sink briefly takes reloadMu, so stopping it inside the block above would deadlock —
 	// and BEFORE the engine teardown so no setLinkMTU races the interface's destruction.
 	// nil on the up() test seam (the loop is Up()-only).
-	if t.stopTUNAQM != nil {
-		t.stopTUNAQM()
-	}
 	if t.stopMTUResize != nil {
 		t.stopMTUResize()
 	}

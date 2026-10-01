@@ -58,7 +58,6 @@ type Peer struct {
 	trieEntries                 list.List
 	persistentKeepaliveInterval AtomicUintRange
 	udpWindow                   atomic.Uint32
-	outboundAdmission           *outboundAdmission
 }
 
 func (device *Device) NewPeer(pk NoisePublicKey) (*Peer, error) {
@@ -88,7 +87,6 @@ func (device *Device) NewPeer(pk NoisePublicKey) (*Peer, error) {
 	peer.queue.outbound = newAutodrainingOutboundQueue(device)
 	peer.queue.inbound = newAutodrainingInboundQueue(device)
 	peer.queue.staged = make(chan *QueueOutboundElementsContainer, QueueStagedSize)
-	peer.outboundAdmission = newOutboundAdmission(device.outboundAdmissionLimit.Load())
 
 	// map public key
 	_, ok := device.peers.keyMap[pk]
@@ -120,18 +118,10 @@ func (device *Device) NewPeer(pk NoisePublicKey) (*Peer, error) {
 }
 
 func (peer *Peer) SendBuffers(buffers [][]byte) error {
-	return peer.sendBuffers(buffers, nil, nil)
+	return peer.sendBuffers(buffers, nil)
 }
 
-func (peer *Peer) sendBuffers(buffers [][]byte, metadata []conn.PacketMetadata, complete func()) error {
-	completionTransferred := false
-	if complete != nil {
-		defer func() {
-			if !completionTransferred {
-				complete()
-			}
-		}()
-	}
+func (peer *Peer) sendBuffers(buffers [][]byte, metadata []conn.PacketMetadata) error {
 	peer.device.net.RLock()
 	defer peer.device.net.RUnlock()
 
@@ -153,18 +143,7 @@ func (peer *Peer) sendBuffers(buffers [][]byte, metadata []conn.PacketMetadata, 
 
 	var err error
 	if metadata != nil {
-		if complete == nil {
-			complete = func() {}
-		}
-		completionTransferred = true
-		err = peer.device.packetBind.SendWithMetadata(buffers, metadata, endpoint, complete)
-	} else if complete != nil {
-		if completer, ok := peer.device.net.bind.(conn.BindBatchCompleter); ok {
-			completionTransferred = true
-			err = completer.SendWithCompletion(buffers, endpoint, complete)
-		} else {
-			err = peer.device.net.bind.Send(buffers, endpoint)
-		}
+		err = peer.device.packetBind.SendWithMetadata(buffers, metadata, endpoint)
 	} else {
 		err = peer.device.net.bind.Send(buffers, endpoint)
 	}
@@ -235,7 +214,6 @@ func (peer *Peer) Start() {
 
 	device.flushInboundQueue(peer.queue.inbound)
 	device.flushOutboundQueue(peer.queue.outbound)
-	peer.outboundAdmission.start()
 
 	// Use the device batch size, not the bind batch size, as the device size is
 	// the size of the batch pools.
@@ -298,7 +276,6 @@ func (peer *Peer) Stop() {
 	if !peer.isRunning.Swap(false) {
 		return
 	}
-	peer.outboundAdmission.stop()
 
 	peer.device.log.Verbosef("%v - Stopping", peer)
 

@@ -10,42 +10,23 @@ import (
 	"github.com/7mind/wanbond/internal/frame"
 )
 
-// The two sessionIDs a "restart" spans: the pre-restart boot and the post-restart boot.
-// Distinct values make the second adoption an epoch change (a new-sessionID adoption over
-// an already-adopted path), which is exactly what the reflector reports as epochChanged.
+// The two process epochs a "restart" spans: the pre-restart boot and the post-restart boot.
+// Each is both the probe session id and the boot its transport announces in its hellos, as
+// in production. Distinct values make the second adoption an epoch change (a new-session
+// adoption over an already-adopted path), on which the transport starts the peer's stream
+// over.
 const (
 	preRestartSession  uint64 = 0xAAAA0000AAAA0001
 	postRestartSession uint64 = 0xBBBB0000BBBB0002
-	// restartHighSeq is a release point far past resequencerWindow: the pre-restart
-	// boot's busy stream advanced `next` here, so the restarted boot's low outer-seq init is
-	// >1 window below it — the SUSPECT region that, before T119, blackholed the wrapped init.
-	restartHighSeq uint64 = 4*resequencerWindow + 808
 )
 
-// deliverDATA encodes one DATA frame under psk and pushes it through the FULL receive path
-// (handleInbound → dispatchInbound's DATA branch → the peer's resequencer), exactly as a
-// wire datagram would arrive on view. It exercises the per-peer routing rather than poking
-// the resequencer directly, so the assertions read the resequencer the wiring actually feeds.
-func deliverDATA(t testing.TB, m *Multipath, view *peerPathState, psk config.Key, seq uint64, payload []byte, src netip.AddrPort) {
-	t.Helper()
-	codec, err := frame.NewCodec(psk)
-	if err != nil {
-		t.Fatalf("build data codec: %v", err)
-	}
-	raw, err := codec.Encode(nil, frame.Data{OuterSeq: seq, PathID: view.id, Payload: payload})
-	if err != nil {
-		t.Fatalf("encode data seq %d: %v", seq, err)
-	}
-	m.handleInbound(view, raw, src)
-}
-
-// reflectProbeIssuedChallenge drives ONE inbound PROBE (encoded under psk) through
-// handleInbound → dispatchInbound's non-echo Probe branch — the reflector adopt/restart
-// path plus the T119 epochChanged→RebaselineToLow wiring — and returns the issued challenge
+// reflectProbeIssuedChallenge drives ONE inbound PROBE (encoded under psk, carrying hello)
+// through handleInbound → dispatchInbound's non-echo Probe branch — the reflector
+// adopt/restart path plus the transport's hello learning — and returns the issued challenge
 // carried in the reflected echo (read off the raw peer socket). Sending the reflector's own
 // live challenge back on the NEXT probe is what makes it adopt (the responder-contributed-
 // challenge protocol), so a caller learns the challenge here and echoes it next.
-func reflectProbeIssuedChallenge(t testing.TB, m *Multipath, view *peerPathState, psk config.Key, peer *net.UDPConn, peerAP netip.AddrPort, sessionID, probeSeq, echoedChallenge uint64) uint64 {
+func reflectProbeIssuedChallenge(t testing.TB, m *Multipath, view *peerPathState, psk config.Key, peer *net.UDPConn, peerAP netip.AddrPort, sessionID, probeSeq, echoedChallenge uint64, hello []byte) uint64 {
 	t.Helper()
 	raw, err := frame.Encode(psk, frame.Probe{
 		PathID:         view.id,
@@ -53,6 +34,7 @@ func reflectProbeIssuedChallenge(t testing.TB, m *Multipath, view *peerPathState
 		TimestampNanos: time.Now().UnixNano(),
 		SessionID:      sessionID,
 		Challenge:      echoedChallenge,
+		Payload:        hello,
 	})
 	if err != nil {
 		t.Fatalf("encode probe (session %#x seq %d): %v", sessionID, probeSeq, err)
@@ -67,111 +49,139 @@ func reflectProbeIssuedChallenge(t testing.TB, m *Multipath, view *peerPathState
 }
 
 // runPeerRestartRebaselineScenario is the shared body of the T119 acceptance. It drives one
-// peer through: bootstrap adoption (no re-baseline), a busy stream advancing `next` far past
-// one window, an authenticated RESTART (new-sessionID adopt → epochChanged=true → the wiring
-// low-anchor re-baselines THIS peer's resequencer), a STALE-HIGH old-boot straggler that must
-// NOT re-pin `next` high, the wrapped LOW-seq init that must then admit, and a same-epoch probe
-// that must NOT re-anchor — all while a second bound peer (witnessPeer) is left untouched.
+// peer through: first adoption (the transport starts the stream at its first datagram), a
+// stream advancing the release point, an authenticated RESTART (new-session adopt carrying
+// the new boot's hello → the transport re-baselines THIS peer's resequencer), a STALE
+// old-boot straggler that must NOT be delivered, the restarted boot's FIRST datagram that
+// must then be delivered, and a same-epoch probe that must NOT re-anchor — all while a
+// second bound peer (witnessPeer) is left untouched.
 //
-// It documents the failing-without-the-wiring contract: with the epochChanged→RebaselineToLow
-// call removed, the restart leaves `next` pinned high, Rebaselines stays 0, and the wrapped
-// low-seq init is SUSPECT-dropped — the delivery assertion below fails (the D36 repro).
+// It documents the failing-without-the-wiring contract: with the re-baseline on a changed
+// remote epoch removed, the restart leaves the release point where the old boot's stream
+// advanced it, and the restarted boot's first datagram is dropped as late — the delivery
+// assertion below fails (the D36 repro).
 func runPeerRestartRebaselineScenario(
 	t *testing.T,
 	m *Multipath,
 	targetView *peerPathState, targetPeer *peerState, targetPSK config.Key,
-	witnessView *peerPathState, witnessPeer *peerState, witnessPSK config.Key,
+	witnessView *peerPathState, witnessPeer *peerState,
 ) {
 	t.Helper()
 	peer, peerAP := rawPeer(t)
+	witnessSrc := netip.MustParseAddrPort("198.51.100.4:51820")
 
 	rq := targetPeer.resequencer.Load()
 	wrq := witnessPeer.resequencer.Load()
 	if rq == nil || wrq == nil {
 		t.Fatalf("resequencer not instantiated: target=%v witness=%v", rq != nil, wrq != nil)
 	}
+	restarts := make(chan string, 4)
+	m.SetOnPeerRestart(func(name string) { restarts <- name })
 
-	dataSrc := netip.MustParseAddrPort("203.0.113.9:51820")
-	lowSrc := netip.MustParseAddrPort("198.51.100.4:51820")
+	// --- First adoption (session preRestartSession): learn challenge, then adopt. The
+	//     transport learns the peer's process and starts its stream. A first-ever adoption
+	//     is NOT a restart. ---
+	oldBoot := newRemoteTransport(t, targetPeer, preRestartSession)
+	c := reflectProbeIssuedChallenge(t, m, targetView, targetPSK, peer, peerAP, preRestartSession, 0, 0, oldBoot.hello())
+	_ = reflectProbeIssuedChallenge(t, m, targetView, targetPSK, peer, peerAP, preRestartSession, 1, c, oldBoot.hello())
+	adopted := rq.Stats().Rebaselines
 
-	// --- Bootstrap adoption (session preRestartSession): learn challenge, then adopt. A
-	//     first-ever adoption is NOT a restart, so it must NOT re-baseline. ---
-	c := reflectProbeIssuedChallenge(t, m, targetView, targetPSK, peer, peerAP, preRestartSession, 0, 0)
-	_ = reflectProbeIssuedChallenge(t, m, targetView, targetPSK, peer, peerAP, preRestartSession, 1, c)
-	if got := rq.Stats().Rebaselines; got != 0 {
-		t.Fatalf("bootstrap adoption re-baselined the resequencer: Rebaselines=%d, want 0", got)
+	// --- The pre-restart boot's stream advances BOTH peers' release point (via the real
+	//     receive path). ---
+	witness := newRemoteTransport(t, witnessPeer, preRestartSession)
+	witness.join(witnessView, witnessSrc)
+	witnessBaseline := wrq.Stats().Rebaselines
+	for _, payload := range []string{"boot-1", "boot-2", "boot-3"} {
+		m.handleInbound(targetView, oldBoot.wire(oldBoot.bulk(targetView, []byte(payload))), peerAP)
+		if it, ok := rq.Pop(); !ok || string(it.Payload) != payload {
+			t.Fatalf("pre-restart datagram %q not delivered: ok=%v payload=%q", payload, ok, it.Payload)
+		}
+		m.handleInbound(witnessView, witness.wire(witness.bulk(witnessView, []byte("witness-"+payload))), witnessSrc)
+		if it, ok := wrq.Pop(); !ok || string(it.Payload) != "witness-"+payload {
+			t.Fatalf("witness datagram for %q not delivered: ok=%v payload=%q", payload, ok, it.Payload)
+		}
 	}
-
-	// --- The pre-restart boot's busy stream advances BOTH peers' release point far past one
-	//     window (via the real DATA receive path). ---
-	deliverDATA(t, m, targetView, targetPSK, restartHighSeq, []byte("boot-high"), dataSrc)
-	if _, ok := rq.Pop(); !ok {
-		t.Fatalf("high boot seq %d not delivered — release point did not advance", restartHighSeq)
-	}
-	deliverDATA(t, m, witnessView, witnessPSK, restartHighSeq, []byte("witness-high"), dataSrc)
-	if _, ok := wrq.Pop(); !ok {
-		t.Fatalf("witness high boot seq not delivered — its release point did not advance")
+	select {
+	case name := <-restarts:
+		t.Fatalf("first adoption of peer %q reported as a restart", name)
+	default:
 	}
 
 	// --- Authenticated PEER RESTART (session postRestartSession): learn the live challenge,
 	//     then adopt with it. This adoption is over an ALREADY-adopted path under a DIFFERENT
-	//     session → epochChanged=true → the T119 wiring low-anchor re-baselines THIS peer. ---
-	c2 := reflectProbeIssuedChallenge(t, m, targetView, targetPSK, peer, peerAP, postRestartSession, 0, 0)
-	_ = reflectProbeIssuedChallenge(t, m, targetView, targetPSK, peer, peerAP, postRestartSession, 1, c2)
-	if got := rq.Stats().Rebaselines; got != 1 {
-		t.Fatalf("peer restart did NOT re-baseline the target resequencer: Rebaselines=%d, want 1 "+
-			"(the epochChanged→RebaselineToLow wiring is the code under test)", got)
+	//     session, and its hello announces a new boot → the transport re-baselines THIS peer. ---
+	newBoot := newRemoteTransport(t, targetPeer, postRestartSession)
+	c2 := reflectProbeIssuedChallenge(t, m, targetView, targetPSK, peer, peerAP, postRestartSession, 0, 0, newBoot.hello())
+	if got := rq.Stats().Rebaselines; got != adopted {
+		t.Fatalf("a restarted boot's probe WITHOUT the live challenge re-baselined: Rebaselines %d → %d", adopted, got)
+	}
+	_ = reflectProbeIssuedChallenge(t, m, targetView, targetPSK, peer, peerAP, postRestartSession, 1, c2, newBoot.hello())
+	if got := rq.Stats().Rebaselines; got != adopted+1 {
+		t.Fatalf("peer restart did NOT re-baseline the target resequencer: Rebaselines=%d, want %d "+
+			"(the re-baseline on a changed remote epoch is the code under test)", got, adopted+1)
+	}
+	select {
+	case name := <-restarts:
+		if name != targetPeer.name {
+			t.Fatalf("restart reported for peer %q, want %q", name, targetPeer.name)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("restart of a known peer not reported")
 	}
 
-	// --- STALE-HIGH RACE: a stale OLD-boot high-seq straggler still draining from carrier/modem
-	//     queues lands BEFORE the low init. It must be SUSPECT-dropped and must NOT re-pin `next`
-	//     high (which a plain unpin-and-trust-next re-baseline would allow, blocking recovery). ---
-	beforeSuspect := rq.Stats().DroppedSuspect
-	deliverDATA(t, m, targetView, targetPSK, restartHighSeq+50, []byte("stale-high-straggler"), dataSrc)
+	// --- STALE RACE: an OLD-boot straggler still draining from carrier/modem queues lands
+	//     BEFORE the new boot's first datagram. It must be dropped and must NOT move the
+	//     release point (which would block recovery). ---
+	m.handleInbound(targetView, oldBoot.wire(oldBoot.bulk(targetView, []byte("stale-straggler"))), peerAP)
 	if it, ok := rq.Pop(); ok {
-		t.Fatalf("stale-high straggler was DELIVERED (%q) — it re-pinned next high (D36 race not closed)", it.Payload)
+		t.Fatalf("stale old-boot straggler was DELIVERED (%q) (D36 race not closed)", it.Payload)
 	}
-	if rq.Stats().DroppedSuspect <= beforeSuspect {
-		t.Fatalf("stale-high straggler not SUSPECT-dropped: DroppedSuspect stayed %d", beforeSuspect)
+	if got := rq.Buffered(); got != 0 {
+		t.Fatalf("stale old-boot straggler was buffered: Buffered=%d, want 0", got)
 	}
 
-	// --- The wrapped WG init (restarted stream, outer-seq ~1) now admits: it is >1 window below
-	//     the pre-rebaseline release point, so it re-anchors and DELIVERS, and it must NOT itself
-	//     count as a suspect drop. ---
+	// --- The restarted stream's FIRST datagram now admits: the release point is back at
+	//     the start of a stream, so it DELIVERS, and it must NOT count as a suspect drop. ---
 	suspectBeforeLow := rq.Stats().DroppedSuspect
-	deliverDATA(t, m, targetView, targetPSK, 1, []byte("wrapped-wg-init"), lowSrc)
+	m.handleInbound(targetView, newBoot.wire(newBoot.bulk(targetView, []byte("wrapped-wg-init"))), peerAP)
 	it, ok := rq.Pop()
 	if !ok || string(it.Payload) != "wrapped-wg-init" {
-		t.Fatalf("wrapped low-seq init NOT delivered after restart re-anchor: ok=%v payload=%q", ok, it.Payload)
+		t.Fatalf("restarted boot's first datagram NOT delivered after restart re-anchor: ok=%v payload=%q", ok, it.Payload)
 	}
 	if got := rq.Stats().DroppedSuspect; got != suspectBeforeLow {
-		t.Fatalf("the low-seq init was counted as a suspect drop: DroppedSuspect %d → %d", suspectBeforeLow, got)
+		t.Fatalf("the restarted boot's first datagram was counted as a suspect drop: DroppedSuspect %d → %d", suspectBeforeLow, got)
 	}
 
-	// --- A SAME-epoch (non-restart) probe must NOT re-anchor: a within-session probe reports
-	//     epochChanged=false, so the wiring leaves the release point alone. ---
+	// --- A SAME-epoch (non-restart) probe must NOT re-anchor: a within-session probe
+	//     repeats the same hello, so the transport leaves the release point alone. ---
 	rebBefore := rq.Stats().Rebaselines
-	_ = reflectProbeIssuedChallenge(t, m, targetView, targetPSK, peer, peerAP, postRestartSession, 2, 0)
+	_ = reflectProbeIssuedChallenge(t, m, targetView, targetPSK, peer, peerAP, postRestartSession, 2, 0, newBoot.hello())
 	if got := rq.Stats().Rebaselines; got != rebBefore {
 		t.Fatalf("a same-epoch (non-restart) probe re-baselined: Rebaselines %d → %d", rebBefore, got)
 	}
+	m.handleInbound(targetView, newBoot.wire(newBoot.bulk(targetView, []byte("second"))), peerAP)
+	if it, ok := rq.Pop(); !ok || string(it.Payload) != "second" {
+		t.Fatalf("restarted stream did not continue after a same-epoch probe: ok=%v payload=%q", ok, it.Payload)
+	}
 
-	// --- The other bound peer's resequencer is UNDISTURBED by the target's restart. ---
-	if got := wrq.Stats().Rebaselines; got != 0 {
-		t.Fatalf("witness peer re-baselined by the target's restart: Rebaselines=%d, want 0", got)
+	// --- The other bound peer's resequencer is UNDISTURBED by the target's restart: it was
+	//     not re-baselined, and its stream continues at its own release point. ---
+	if got := wrq.Stats().Rebaselines; got != witnessBaseline {
+		t.Fatalf("witness peer re-baselined by the target's restart: Rebaselines %d → %d", witnessBaseline, got)
 	}
-	wSuspectBefore := wrq.Stats().DroppedSuspect
-	deliverDATA(t, m, witnessView, witnessPSK, 1, []byte("witness-should-drop"), lowSrc)
-	if it, ok := wrq.Pop(); ok {
-		t.Fatalf("witness delivered a low seq (%q) — its release point was disturbed by the target's restart", it.Payload)
+	m.handleInbound(witnessView, witness.wire(witness.bulk(witnessView, []byte("witness-next"))), witnessSrc)
+	if it, ok := wrq.Pop(); !ok || string(it.Payload) != "witness-next" {
+		t.Fatalf("witness stream did not continue (its release point was disturbed by the target's restart): ok=%v payload=%q", ok, it.Payload)
 	}
-	if got := wrq.Stats().DroppedSuspect; got <= wSuspectBefore {
-		t.Fatalf("witness did not reject the low seq as suspect (its next moved): DroppedSuspect stayed %d", wSuspectBefore)
+	select {
+	case name := <-restarts:
+		t.Fatalf("a second restart was reported for peer %q", name)
+	default:
 	}
 }
 
 // TestPeerRestartRebaselinesPrimaryResequencer restarts the PRIMARY (edge single-concentrator)
-// peer and asserts the wrapped low-seq init re-anchors while a second bound peer is untouched.
+// peer and asserts the restarted stream re-anchors while a second bound peer is untouched.
 func TestPeerRestartRebaselinesPrimaryResequencer(t *testing.T) {
 	pskA := testKey(t, 0x11)
 	pskB := testKey(t, 0x22)
@@ -180,7 +190,7 @@ func TestPeerRestartRebaselinesPrimaryResequencer(t *testing.T) {
 	primary := m.peerState
 	runPeerRestartRebaselineScenario(t, m,
 		m.paths[0], primary, pskA,
-		peerPathByName(beta, "a"), beta, pskB)
+		peerPathByName(beta, "a"), beta)
 }
 
 // TestPeerRestartRebaselinesConcentratorPeerResequencer restarts an AddConcentratorPeer peer
@@ -194,21 +204,21 @@ func TestPeerRestartRebaselinesConcentratorPeerResequencer(t *testing.T) {
 	primary := m.peerState
 	runPeerRestartRebaselineScenario(t, m,
 		peerPathByName(beta, "a"), beta, pskB,
-		m.paths[0], primary, pskA)
+		m.paths[0], primary)
 }
 
 // newConcentratorPairForRestart builds an Open 2-peer concentrator over one shared socket: the
 // primary keyed on pskA and a beta peer registered via AddConcentratorPeer keyed on pskB, with
-// beta's heavy receive datapath (its resequencer) instantiated so a test can drive DATA at it
+// beta's heavy receive datapath (its resequencer) instantiated so a test can drive data at it
 // directly rather than waiting for the demux to lazily bind its first PROBE.
 func newConcentratorPairForRestart(t *testing.T, pskA, pskB config.Key) (*Multipath, *peerState) {
 	t.Helper()
 	clk := newFakeClock()
 	paths := loopbackPaths(1) // one shared socket, path "a"
-	m, _, _ := newProbingMultipath(t, paths, pskA, clk)
+	m, _ := newProbingMultipath(t, paths, pskA, clk)
 
-	betaSched, betaProbers, betaFactory := concPeerWiring(t, paths, pskB, 0x0BEEF, clk)
-	if err := m.AddConcentratorPeer("beta", pskB, betaSched, betaProbers, betaFactory); err != nil {
+	betaProbers, betaFactory := concPeerWiring(t, paths, pskB, 0x0BEEF, clk)
+	if err := m.AddConcentratorPeer("beta", pskB, betaProbers, betaFactory); err != nil {
 		t.Fatalf("AddConcentratorPeer: %v", err)
 	}
 	if _, _, err := m.Open(0); err != nil {

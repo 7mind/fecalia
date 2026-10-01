@@ -39,9 +39,7 @@ class StubSocket extends EventTarget {
 function makeSnapshot(): MonitorSnapshot {
   return {
     paths: [],
-    fec: [],
     reseq: [],
-    aggregation: [],
     session: { established: true, lastHandshakeSeconds: 1 },
     peerNames: [],
     multiPeer: false,

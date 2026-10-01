@@ -17,7 +17,7 @@ import (
 // Wire model (requirement-6 groundwork — no plaintext magic bytes, no fixed
 // offsets). Every frame on the wire is:
 //
-//	nonce[nonceLen] || obf(body) [ || tag[tagLen] ]
+//	nonce[nonceLen] || obf(body) || tag[tagLen]
 //
 //   - nonce is nonceLen fresh random bytes (high entropy, never constant).
 //   - body is (kind byte || kind-specific header || opaque payload). It is
@@ -25,30 +25,22 @@ import (
 //     obfuscation subkey and the per-frame nonce, so the type discriminant and
 //     header never sit at a constant offset — a byte-histogram over many random
 //     encodings shows no constant byte position.
-//   - tag is present ONLY for authenticated kinds (CONTROL, PROBE): an
-//     Encrypt-then-MAC HMAC-SHA256 (truncated to tagLen) over nonce||obf(body)
-//     keyed by a distinct PSK-bound auth subkey. Decode verifies it and rejects
-//     tampered or PSK-mismatched frames. DATA and PARITY are unauthenticated by
-//     design (DoS-grade forgery accepted — the inner WireGuard layer
-//     authenticates the real payload); they carry no tag but are still
-//     keystream-obfuscated so the no-fixed-offset property holds and the peer,
-//     sharing the PSK, derives the same keystream to decode them.
+//   - tag is an Encrypt-then-MAC HMAC-SHA256 (truncated to tagLen) over
+//     nonce||obf(body) keyed by a distinct PSK-bound auth subkey. Decode
+//     verifies it and rejects tampered or PSK-mismatched frames. Both kinds
+//     (CONTROL, PROBE) are authenticated.
 //
 // The two subkeys are derived from the PSK with HKDF-SHA256 under distinct info
 // labels, so the obfuscation stream and the authentication MAC never share key
 // material. All primitives are vetted (crypto/hkdf, x/crypto/chacha20,
 // crypto/hmac) — no hand-rolled crypto.
-//
-// The outer-seq DATA field is this codec's OWN sequence space (see
-// docs/p0-findings.md §6); it is never the inner WireGuard counter, and this
-// codec never inspects the opaque WG payload (§4).
 
 const (
 	// nonceLen is the XChaCha20 nonce length carried in the clear at the head of
 	// every frame.
 	nonceLen = chacha20.NonceSizeX // 24
 	// tagLen is the truncated HMAC-SHA256 authentication tag length appended to
-	// authenticated frames.
+	// every frame.
 	tagLen = 16
 	// subkeyLen is the length of each HKDF-derived subkey.
 	subkeyLen = 32
@@ -57,62 +49,34 @@ const (
 	infoAuth = "wanbond outer-frame authentication v1"
 )
 
-// DataOverhead is the number of bytes a KindData frame adds on top of its opaque
-// payload on the wire: the clear nonce plus the DATA header (kind || outer-seq ||
-// path-id || fec-group || fec-index || flags). DATA frames are unauthenticated
-// (see the wire model above), so they carry no tag; this figure is therefore exact
-// and is what the multipath Bind subtracts from the path MTU when sizing the inner
-// tunnel (see internal/bind mtu.go). The fec-index byte is carried on every DATA
-// frame — 0 and inert when FEC is disabled (T24) — so the codec's wire layout is
-// invariant to the FEC toggle.
-const DataOverhead = nonceLen + // clear nonce
+// ControlOverhead is the number of bytes a KindControl frame adds on top of its
+// payload on the wire: the clear nonce, the CONTROL header (kind || control-type
+// || seq) and the authentication tag.
+const ControlOverhead = nonceLen + // clear nonce
 	1 + // kind discriminant
-	8 + // outer-seq (uint64)
-	1 + // path-id (uint8)
-	4 + // fec-group (uint32)
-	1 + // fec-index (uint8): shard position within the FEC group (T24)
-	1 // flags (uint8)
-
-// ParityOverhead is the number of bytes a KindParity frame adds on top of its
-// shard payload on the wire: the clear nonce plus the PARITY header (kind ||
-// fec-group || parity-index || data-count || path-id). PARITY, like DATA, is
-// unauthenticated and carries no tag, so this figure is exact. The multipath Bind
-// uses it to size the FEC parity-overhead MTU penalty (T24): a full-size parity
-// frame is 5 bytes larger on the wire than a full-size DATA frame carrying the same
-// inner payload, so with FEC enabled the inner MTU is reduced so BOTH fit the path
-// MTU without fragmentation (see internal/bind mtu.go).
-const ParityOverhead = nonceLen + // clear nonce
-	1 + // kind discriminant
-	4 + // fec-group (uint32)
-	2 + // parity-index (uint16)
-	1 + // data-count (uint8)
-	1 // path-id (uint8)
+	1 + // control-type (uint8)
+	8 + // seq (uint64)
+	tagLen
 
 // Kind is the outer frame discriminant. Values are nonzero so a zeroed buffer
-// never decodes to a valid kind.
+// never decodes to a valid kind. Values 1 and 2 were the unauthenticated DATA
+// and PARITY kinds of the removed static transports; they are rejected as
+// unknown and must not be reassigned.
 type Kind uint8
 
 const (
-	// KindData wraps one opaque WireGuard datagram with multipath/FEC metadata.
-	KindData Kind = 1
-	// KindParity carries an FEC parity symbol for a fec-group.
-	KindParity Kind = 2
 	// KindProbe is an authenticated path-probe (RTT / liveness) frame.
 	KindProbe Kind = 3
-	// KindControl is an authenticated out-of-band control frame.
+	// KindControl is an authenticated control frame; the bonding transport's
+	// data and acknowledgement datagrams travel in it.
 	KindControl Kind = 4
 )
 
 func (k Kind) valid() bool {
-	return k == KindData || k == KindParity || k == KindProbe || k == KindControl
-}
-
-// authenticated reports whether frames of this kind append (and verify) a MAC.
-func (k Kind) authenticated() bool {
 	return k == KindProbe || k == KindControl
 }
 
-// Frame is the closed sum over the four outer frame kinds. The unexported
+// Frame is the closed sum over the outer frame kinds. The unexported
 // marker method prevents other packages from adding kinds.
 type Frame interface {
 	// Kind returns the frame's discriminant.
@@ -120,34 +84,6 @@ type Frame interface {
 	// appendBody appends the plaintext body (kind byte || header || payload).
 	appendBody(dst []byte) []byte
 	isFrame()
-}
-
-// Data wraps a single opaque WireGuard datagram. OuterSeq is this codec's own
-// sequence space (never the inner WG counter); PathID/FECGroup/FECIndex/Flags feed
-// the multipath scheduler (T12), FEC (T14/T24), and resequencer (T18). FECIndex is
-// the data shard's position within its FEC group (0..M-1); it is 0 and inert when
-// FEC is disabled. The receiver reconstructs the FEC data-shard bytes as
-// OuterSeq || Payload, so a shard recovered from parity carries its own outer-seq
-// (T24) — no separate per-group base state is needed to resequence a recovered
-// frame.
-type Data struct {
-	OuterSeq uint64
-	PathID   uint8
-	FECGroup uint32
-	FECIndex uint8
-	Flags    uint8
-	Payload  []byte
-}
-
-// Parity carries one FEC parity symbol for a fec-group. DataCount is the group
-// cardinality M (the number of data shards the parity protects); the decoder learns
-// M from any surviving parity frame, so it must ride the wire (T24).
-type Parity struct {
-	FECGroup    uint32
-	ParityIndex uint16
-	DataCount   uint8
-	PathID      uint8
-	Payload     []byte
 }
 
 // Probe is an authenticated path probe used for RTT and liveness estimation.
@@ -220,9 +156,6 @@ const (
 // flags(1) || sessionID(8) || challenge(8).
 const probeFixedBody = 1 + 1 + 8 + 8 + 1 + 8 + 8 // 35
 
-// UnpaddedProbeOnWire is the exact encoded length of an ordinary liveness probe.
-const UnpaddedProbeOnWire = nonceLen + probeFixedBody + tagLen // 24 + 35 + 16 = 75
-
 // ProbeBaseOnWire is the on-wire datagram size of a PADDED probe carrying zero pad
 // bytes: the clear nonce, the fixed probe body, the 2-byte PadLen field, and the
 // authentication tag. A padded probe cannot be smaller than this, so it is the
@@ -286,34 +219,11 @@ type Control struct {
 	Payload     []byte
 }
 
-func (Data) isFrame()    {}
-func (Parity) isFrame()  {}
 func (Probe) isFrame()   {}
 func (Control) isFrame() {}
 
-func (Data) Kind() Kind    { return KindData }
-func (Parity) Kind() Kind  { return KindParity }
 func (Probe) Kind() Kind   { return KindProbe }
 func (Control) Kind() Kind { return KindControl }
-
-func (f Data) appendBody(dst []byte) []byte {
-	dst = append(dst, byte(KindData))
-	dst = binary.BigEndian.AppendUint64(dst, f.OuterSeq)
-	dst = append(dst, f.PathID)
-	dst = binary.BigEndian.AppendUint32(dst, f.FECGroup)
-	dst = append(dst, f.FECIndex)
-	dst = append(dst, f.Flags)
-	return append(dst, f.Payload...)
-}
-
-func (f Parity) appendBody(dst []byte) []byte {
-	dst = append(dst, byte(KindParity))
-	dst = binary.BigEndian.AppendUint32(dst, f.FECGroup)
-	dst = binary.BigEndian.AppendUint16(dst, f.ParityIndex)
-	dst = append(dst, f.DataCount)
-	dst = append(dst, f.PathID)
-	return append(dst, f.Payload...)
-}
 
 func (f Probe) appendBody(dst []byte) []byte {
 	dst = append(dst, byte(KindProbe))
@@ -357,7 +267,7 @@ func (f Control) appendBody(dst []byte) []byte {
 // invalid to be a frame.
 var ErrMalformed = errors.New("frame: malformed input")
 
-// ErrAuth is returned by Decode when an authenticated frame fails its MAC check
+// ErrAuth is returned by Decode when a frame fails its MAC check
 // (tampered ciphertext or PSK mismatch).
 var ErrAuth = errors.New("frame: authentication failed")
 
@@ -415,29 +325,21 @@ func (c *Codec) Encode(dst []byte, f Frame) ([]byte, error) {
 	obfuscate(c.obfKey, nonce, body)
 	dst = append(dst, body...)
 
-	if f.Kind().authenticated() {
-		// After the append above, nonce and obfBody are contiguous in dst's
-		// (possibly reallocated) backing array; tag over nonce||obfBody.
-		nonce = dst[start : start+nonceLen]
-		obfBody := dst[start+nonceLen:]
-		dst = append(dst, tag(c.authKey, nonce, obfBody)...)
-	}
-	return dst, nil
+	// After the append above, nonce and obfBody are contiguous in dst's
+	// (possibly reallocated) backing array; tag over nonce||obfBody.
+	nonce = dst[start : start+nonceLen]
+	obfBody := dst[start+nonceLen:]
+	return append(dst, tag(c.authKey, nonce, obfBody)...), nil
 }
 
-// Decode parses a wire frame. It verifies the MAC of authenticated frames and
-// rejects tampered or PSK-mismatched ones. It never panics on malformed input.
+// Decode parses a wire frame. It verifies the MAC and
+// rejects tampered or PSK-mismatched frames. It never panics on malformed input.
 // The returned frame's payload is a fresh copy, so the caller may reuse raw and
 // the Codec's scratch immediately.
 //
-// Authentication guarantee: a frame is accepted as an authenticated kind
-// (CONTROL/PROBE) only if its MAC verifies under the PSK, so tampered or
-// PSK-mismatched authenticated frames are rejected. Flipping the (obfuscated)
-// kind byte can re-label an authenticated frame as an unauthenticated kind
-// (DATA/PARITY), which then decodes without a MAC — this is not a downgrade
-// break, because DATA/PARITY are forgeable by design (the inner WireGuard layer
-// authenticates the real payload). No mutation can make a frame decode as an
-// authentic CONTROL/PROBE.
+// Authentication guarantee: a frame is accepted only if its MAC verifies under
+// the PSK. Every kind carries a MAC, so no mutation of the (obfuscated) kind
+// byte can make a frame decode without one.
 func (c *Codec) Decode(raw []byte) (Frame, error) {
 	// Need at least the nonce plus one body byte (the kind discriminant).
 	if len(raw) < nonceLen+1 {
@@ -464,17 +366,14 @@ func (c *Codec) Decode(raw []byte) (Frame, error) {
 		return nil, fmt.Errorf("%w: unknown kind %d", ErrMalformed, uint8(kind))
 	}
 
-	obfBody := rest
-	if kind.authenticated() {
-		if len(rest) < tagLen+1 {
-			return nil, fmt.Errorf("%w: authenticated frame too short", ErrMalformed)
-		}
-		obfBody = rest[:len(rest)-tagLen]
-		gotTag := rest[len(rest)-tagLen:]
-		wantTag := tag(c.authKey, nonce, obfBody)
-		if !hmac.Equal(gotTag, wantTag) {
-			return nil, ErrAuth
-		}
+	if len(rest) < tagLen+1 {
+		return nil, fmt.Errorf("%w: frame too short for its tag", ErrMalformed)
+	}
+	obfBody := rest[:len(rest)-tagLen]
+	gotTag := rest[len(rest)-tagLen:]
+	wantTag := tag(c.authKey, nonce, obfBody)
+	if !hmac.Equal(gotTag, wantTag) {
+		return nil, ErrAuth
 	}
 
 	// Reconstruct the plaintext body in reusable scratch. Byte 0 is the kind we
@@ -514,25 +413,6 @@ func Decode(psk config.Key, raw []byte) (Frame, error) {
 func decodeBody(kind Kind, b []byte) (Frame, error) {
 	r := reader{b: b}
 	switch kind {
-	case KindData:
-		seq, e1 := r.u64()
-		pathID, e2 := r.u8()
-		group, e3 := r.u32()
-		fecIndex, e4 := r.u8()
-		flags, e5 := r.u8()
-		if err := firstErr(e1, e2, e3, e4, e5); err != nil {
-			return nil, err
-		}
-		return Data{OuterSeq: seq, PathID: pathID, FECGroup: group, FECIndex: fecIndex, Flags: flags, Payload: r.rest()}, nil
-	case KindParity:
-		group, e1 := r.u32()
-		idx, e2 := r.u16()
-		dataCount, e3 := r.u8()
-		pathID, e4 := r.u8()
-		if err := firstErr(e1, e2, e3, e4); err != nil {
-			return nil, err
-		}
-		return Parity{FECGroup: group, ParityIndex: idx, DataCount: dataCount, PathID: pathID, Payload: r.rest()}, nil
 	case KindProbe:
 		pathID, e1 := r.u8()
 		probeSeq, e2 := r.u64()
@@ -649,15 +529,6 @@ func (r *reader) u16() (uint16, error) {
 	}
 	v := binary.BigEndian.Uint16(r.b[r.off:])
 	r.off += 2
-	return v, nil
-}
-
-func (r *reader) u32() (uint32, error) {
-	if err := r.need(4); err != nil {
-		return 0, err
-	}
-	v := binary.BigEndian.Uint32(r.b[r.off:])
-	r.off += 4
 	return v, nil
 }
 

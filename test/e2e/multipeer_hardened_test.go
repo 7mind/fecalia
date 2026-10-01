@@ -46,10 +46,6 @@ import (
 //   - D42 (deferred-path add/remove, where reachable): with 3 configured peers bound, a
 //     runtime SIGHUP config reload that adds, then removes, a path on ONE peer's edge must not
 //     panic the concentrator (nor disturb the other two peers' live sessions).
-//   - D44 (deadline FEC parity for a non-primary peer, where reachable): with the FEC plane
-//     configured, a NON-PRIMARY peer's light traffic — too little to ever fill a full K-sized
-//     group — still gets its partial group's parity flushed by the deadline timer, exactly
-//     like the primary's.
 //
 // EXECUTION IS DEFERRED (G2 pattern), like every other netns e2e file: this must COMPILE and
 // vet clean under -tags e2e and SKIPS (requireNetAdmin) without CAP_NET_ADMIN or
@@ -69,13 +65,13 @@ const (
 
 	// hwMetricsPort is the CONCENTRATOR's /metrics port (see the metricsPortRegistry table in
 	// netns.go). This fixture's concentrator runs in the PEER netns (Topology.pid, like
-	// p2_aggregation_test.go's / p3_fec_test.go's concentrator), so — like every wanbond
+	// p2_aggregation_test.go's concentrator), so — like every wanbond
 	// /metrics endpoint — it binds LOOPBACK (hwMetricsHost, 127.0.0.1): the T17 requireLoopback
 	// invariant (internal/metrics/server.go, docs/design.md:740) UNCONDITIONALLY refuses any
 	// non-loopback bind, so binding the uplink IP would fail the daemon at NewServer before the
 	// TUN is created. 127.0.0.1 is reachable from WITHIN the concentrator's own netns, so the
 	// test scrapes it by dialing INTO that netns (fetchMetricsInNetns / netnsMetricsClient), the
-	// same mechanism p2/p3/p4 use for their peer-netns concentrators.
+	// same mechanism p2_aggregation_test.go uses for its peer-netns concentrator.
 	hwMetricsHost = "127.0.0.1"
 	hwMetricsPort = 9107
 
@@ -100,14 +96,6 @@ const (
 	hwA2PortP   = "wbHwA2p"
 	hwA2PortE   = "wbHwA2e"
 
-	// hwFECDataShards/hwFECParityShards/hwFECDeadlineTOML configure the GLOBAL FEC plane
-	// (D44): K=8 is well above what a handful of pings ever fills, so a non-primary peer's
-	// partial group only closes via the deadline path, never the size-triggered one — exactly
-	// what D44 guards.
-	hwFECDataShards   = 8
-	hwFECParityShards = 2
-	hwFECDeadlineTOML = "80ms" // < maxFECDeadline (125ms); mirrored by hwFECDeadline below
-
 	// hwFloodPackets mirrors multipeer_test.go's spoofed-flood packet count.
 	hwFloodPackets = 3000
 
@@ -119,16 +107,6 @@ const (
 	// mirroring multipeer_test.go's mpFloodSrcIP.
 	hwFloodSrcIP = "10.106.1.9"
 )
-
-// hwFECDeadline is the Go-side time.Duration mirror of hwFECDeadlineTOML, used to size the
-// wait after driving light traffic before scraping for the deadline-flushed parity (D44).
-const hwFECDeadline = 80 * time.Millisecond
-
-// hwFECBlock is the [fec] TOML block shared verbatim by the concentrator and every edge config
-// (matching test/e2e/p3_fec_test.go's convention — both ends of a connection need the SAME
-// K/M/deadline to interoperate), built from the const trio above so they cannot drift apart.
-var hwFECBlock = fmt.Sprintf("[fec]\nenabled = true\ndata_shards = %d\nparity_shards = %d\ndeadline = %q\n\n",
-	hwFECDataShards, hwFECParityShards, hwFECDeadlineTOML)
 
 // hwTeardownBudget bounds D50's wait for the concentrator's LEVEL-TRIGGERED peer-teardown
 // monitor (T126) to reclaim a dead peer's heavy state: it is gated on WireGuard's own
@@ -145,7 +123,7 @@ var hwPaths = []pathSpec{
 }
 
 // TestMultiPeerHardenedDatapath is the T128 acceptance. It stands up the concentrator (3
-// configured peers, FEC on) plus edges A1+A2 (NATed behind one apparent IP, D47) once, then
+// configured peers) plus edges A1+A2 (NATed behind one apparent IP, D47) once, then
 // runs the hardening phases against the shared fixture — edge C's daemon is started partway
 // through (inside the D49 subtest) so its FIRST bootstrap can be exercised under flood.
 func TestMultiPeerHardenedDatapath(t *testing.T) {
@@ -175,10 +153,6 @@ func TestMultiPeerHardenedDatapath(t *testing.T) {
 
 	t.Run("d49-flood-does-not-block-fresh-bootstrap", func(t *testing.T) {
 		testD49FloodDuringBootstrap(t, hw)
-	})
-
-	t.Run("d44-nonprimary-peer-deadline-fec-parity", func(t *testing.T) {
-		testD44DeadlineFECParity(t, hw)
 	})
 
 	t.Run("d42-deferred-path-add-remove-multi-peer-no-panic", func(t *testing.T) {
@@ -267,33 +241,6 @@ func testD49FloodDuringBootstrap(t *testing.T, hw *hwFixture) {
 	if !hw.a2.pingUntil(concInner, mpBringUpDeadline) {
 		t.Fatalf("edge A2 (hw-beta) disturbed by the spoofed-source flood\n--- conc ---\n%s", hw.conc.log())
 	}
-}
-
-// testD44DeadlineFECParity drives a HANDFUL of pings (far below hwFECDataShards) from the
-// NON-PRIMARY peer hw-beta, waits past several hwFECDeadline ticks, and asserts the
-// concentrator's per-peer FEC repair-packet counter for hw-beta advanced — proving the
-// deadline flush applies to a non-primary peer's partial group, not only the primary's (D44).
-func testD44DeadlineFECParity(t *testing.T, hw *hwFixture) {
-	before := hw.scrapeMetrics(t)
-	repairBefore, _ := before.PeerValue(metrics.MetricFECRepair, hwPeerBetaName)
-
-	for i := 0; i < 3; i++ {
-		_ = hw.a2.tryRun("ping", "-c", "1", "-W", "1", concInner) // best-effort: even a lost ping attempted a DATA frame
-		time.Sleep(10 * time.Millisecond)
-	}
-	time.Sleep(6 * hwFECDeadline) // several deadline ticks so a partial group is FLUSHED, not merely opened
-
-	after := hw.scrapeMetrics(t)
-	repairAfter, ok := after.PeerValue(metrics.MetricFECRepair, hwPeerBetaName)
-	if !ok {
-		t.Fatalf("no %s{peer=%q} series — the concentrator is not exposing per-peer FEC for the non-primary peer", metrics.MetricFECRepair, hwPeerBetaName)
-	}
-	if repairAfter <= repairBefore {
-		t.Fatalf("peer %q (non-primary) %s did not advance (%v -> %v) after light traffic + %s — the deadline flush did not reach a non-primary peer's partial group (D44)",
-			hwPeerBetaName, metrics.MetricFECRepair, repairBefore, repairAfter, 6*hwFECDeadline)
-	}
-	t.Logf("D44: non-primary peer %q's deadline-flushed FEC repair counter advanced %v -> %v from a handful of pings (well under K=%d)",
-		hwPeerBetaName, repairBefore, repairAfter, hwFECDataShards)
 }
 
 // testD42DeferredPathAddRemove reloads (SIGHUP) the concentrator and edge C's configs to ADD
@@ -463,7 +410,7 @@ bind = "source"
 %s[metrics]
 listen = %q
 
-%s[wireguard]
+[wireguard]
 private_key = %q
 listen_port = %d
 
@@ -487,7 +434,7 @@ allowed_ips = ["%s/32"]
 
 [log]
 level = "info"
-`, hw.topPSK, pb.String(), hw.metricsAddr(), hwFECBlock, hw.concPriv, listenPort,
+`, hw.topPSK, pb.String(), hw.metricsAddr(), hw.concPriv, listenPort,
 		hw.edgeAPub, hwPeerAlphaName, hw.pskAlpha, hwInnerAlpha,
 		hw.edgeBPub, hwPeerBetaName, hw.pskBeta, hwInnerBeta,
 		hw.edgeCPub, hwPeerGammaName, hw.pskGamma, hwInnerGamma)
@@ -503,7 +450,7 @@ func (hw *hwFixture) metricsAddr() string {
 
 // scrapeMetrics is a one-shot scrape of the concentrator's loopback /metrics from INSIDE its
 // peer netns (fatal on error) — the in-netns analogue of the package-level scrapeMetrics,
-// which assumes a base-netns-reachable endpoint. Mirrors p2/p3/p4's fetchMetricsInNetns.
+// which assumes a base-netns-reachable endpoint.
 func (hw *hwFixture) scrapeMetrics(t *testing.T) metrics.Exposition {
 	t.Helper()
 	return fetchMetricsInNetns(t, hw.top.pid, hw.metricsURL)
@@ -544,7 +491,7 @@ func (hw *hwFixture) edgeCConfig(paths []pathSpec) string {
 	return fmt.Sprintf(`role = "edge"
 psk = %q
 
-%s%s[wireguard]
+%s[wireguard]
 private_key = %q
 
 [[wireguard.peers]]
@@ -554,7 +501,7 @@ allowed_ips = ["%s/32"]
 
 [log]
 level = "info"
-`, hw.pskGamma, pb.String(), hwFECBlock, hw.edgeCPriv, hw.concPub, paths[0].concIP, listenPort, concInner)
+`, hw.pskGamma, pb.String(), hw.edgeCPriv, hw.concPub, paths[0].concIP, listenPort, concInner)
 }
 
 // natEdgeConfig renders a NATed edge's (A1/A2) TOML: ONE path on hw1, source_addr the edge's
@@ -569,7 +516,7 @@ name = %q
 source_addr = %q
 dest_addr = "%s:%d"
 
-%s[wireguard]
+[wireguard]
 private_key = %q
 
 [[wireguard.peers]]
@@ -579,11 +526,11 @@ allowed_ips = ["%s/32"]
 
 [log]
 level = "info"
-`, psk, hwPath1Name, privAddr, hwPaths[0].concIP, listenPort, hwFECBlock, edgePriv, concPub, hwPaths[0].concIP, listenPort, concInner)
+`, psk, hwPath1Name, privAddr, hwPaths[0].concIP, listenPort, edgePriv, concPub, hwPaths[0].concIP, listenPort, concInner)
 }
 
 // setupHardenedMultiPeer builds the T128 fixture: the two-path Topology (hw1 live, hw2 wired
-// but unused), the concentrator (3 peers, FEC on) in the peer netns, the NAT gateway + two
+// but unused), the concentrator (3 peers) in the peer netns, the NAT gateway + two
 // NATed edges (A1/A2, D47) up and started. Edge C's daemon is NOT started here (D49 starts it
 // under flood); its config is rendered so the D42 reload helpers have it from the start.
 func setupHardenedMultiPeer(t *testing.T) *hwFixture {

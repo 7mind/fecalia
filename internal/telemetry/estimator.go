@@ -1,9 +1,6 @@
 package telemetry
 
-import (
-	"sync"
-	"time"
-)
+import "time"
 
 // Smoothing constants for the RTT/jitter estimator. They mirror the RFC 6298
 // SRTT/RTTVAR recursion (alpha = 1/8, beta = 1/4): srtt tracks the smoothed
@@ -13,17 +10,16 @@ const (
 	rttAlpha = 0.125
 	rttBeta  = 0.25
 
-	// defaultLossWindow is the sequence-space width of the windowed loss estimator
-	// (per-path over probe-echo ProbeSeq gaps; connection-scoped over the outer-seq
-	// in ConnLoss) when a caller passes a non-positive window.
+	// defaultLossWindow is the sequence-space width of the windowed per-path loss
+	// estimator (over probe-echo ProbeSeq gaps) when a caller passes a non-positive
+	// window.
 	defaultLossWindow = 512
 )
 
 // Estimate is a point-in-time snapshot of a path's measured quality. RTT,
 // Jitter, and Loss all derive from the path's ACTIVE probe stream: RTT/Jitter
 // from probe-echo timings, and Loss from gaps in the probe-echo ProbeSeq (NOT
-// the connection-global outer DATA sequence — see the Estimator doc below and
-// ConnLoss).
+// the connection-global data sequence — see the Estimator doc below).
 type Estimate struct {
 	// RTT is the smoothed round-trip time.
 	RTT time.Duration
@@ -32,25 +28,16 @@ type Estimate struct {
 	// Loss is the per-path loss fraction in [0,1] over the current probe-echo
 	// ProbeSeq window.
 	Loss float64
-	// LossSamples is the denominator Loss was computed over: the width of the
-	// window actually filled so far (highest-lower+1, per lossWindow.fraction),
-	// 0 when no probe echo has ever been observed. It grows 1..win as echoes
-	// arrive on a fresh window, then holds at win once saturated. Callers (e.g.
-	// a controller's min-sample floor) use it to distinguish "one drop in a
-	// small sample" from "one drop in a full window" — the same Loss fraction
-	// means very different things at n=11 versus n=512.
-	LossSamples int
 }
 
 // Estimator fuses per-path quality signals: an EWMA RTT and jitter estimator
 // (ObserveRTT) and a windowed per-path loss estimator, BOTH fed by the path's
 // active probe stream. Per-path loss is derived from gaps in the ProbeSeq of
-// received probe echoes (ObserveProbeEcho), NOT from the outer DATA sequence:
-// the outer-seq is connection-global — a single sequence the send scheduler
-// stripes across all paths (T12) and the receiver resequences into one global
-// order (T18) — so counting a single path's outer-seq gaps would read scheduler
-// striping (and a mid-stream path attach) as loss. Connection-scoped outer-seq
-// loss is a separate, correctly-scoped metric: see ConnLoss.
+// received probe echoes (ObserveProbeEcho), NOT from the transport's data sequence:
+// that sequence is connection-global — a single sequence the transport
+// spreads across all lanes and the receiver resequences into one global
+// order (T18) — so counting a single path's gaps in it would read lane
+// spreading (and a mid-stream path attach) as loss.
 //
 // Estimator holds no clock, does no I/O, and is NOT safe for concurrent use; its
 // owner (Prober) serializes access. It is exercised directly on synthetic traces.
@@ -99,10 +86,9 @@ func (e *Estimator) ObserveProbeEcho(seq uint64) {
 // Estimate returns the current fused snapshot.
 func (e *Estimator) Estimate() Estimate {
 	return Estimate{
-		RTT:         time.Duration(e.srtt),
-		Jitter:      time.Duration(e.rttvar),
-		Loss:        e.loss.fraction(),
-		LossSamples: e.loss.samples(),
+		RTT:    time.Duration(e.srtt),
+		Jitter: time.Duration(e.rttvar),
+		Loss:   e.loss.fraction(),
 	}
 }
 
@@ -194,51 +180,4 @@ func (w *lossWindow) fraction() float64 {
 		}
 	}
 	return float64(missing) / float64(n)
-}
-
-// samples returns the current window denominator (n): the number of sequence
-// slots fraction() is dividing over, i.e. highest-lower+1. It is 0 when no
-// probe echo has ever been observed, and grows 1..win as echoes arrive on a
-// fresh window before holding at win once the window saturates.
-func (w *lossWindow) samples() int {
-	lower, ok := w.bounds()
-	if !ok {
-		return 0
-	}
-	return int(w.highest - lower + 1)
-}
-
-// ConnLoss estimates CONNECTION-SCOPED loss from the connection-global outer-seq
-// DATA stream. The outer-seq is a single sequence the send scheduler stripes
-// across every path (T12) and the receiver resequences into one global order
-// (T18), so this is explicitly NOT a per-path metric: feeding it a single path's
-// frames would read scheduler striping as loss. Feed it EVERY received DATA
-// frame's OuterSeq regardless of which path delivered it. For per-path loss use
-// Estimator/Prober, which measures the active probe stream instead.
-//
-// ConnLoss is safe for concurrent use by the per-path receive goroutines.
-type ConnLoss struct {
-	mu sync.Mutex
-	w  *lossWindow
-}
-
-// NewConnLoss builds a ConnLoss over a trailing window of window outer-sequence
-// numbers (defaultLossWindow when non-positive).
-func NewConnLoss(window int) *ConnLoss {
-	return &ConnLoss{w: newLossWindow(window)}
-}
-
-// Observe folds one received DATA frame's connection-global OuterSeq into the
-// loss estimate.
-func (c *ConnLoss) Observe(outerSeq uint64) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.w.observe(outerSeq)
-}
-
-// Loss returns the current connection loss fraction in [0,1].
-func (c *ConnLoss) Loss() float64 {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.w.fraction()
 }

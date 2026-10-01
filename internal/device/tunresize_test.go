@@ -17,9 +17,7 @@ import (
 type stubMTUSource struct{ paths []metrics.PathSnapshot }
 
 func (s stubMTUSource) Paths() []metrics.PathSnapshot               { return s.paths }
-func (s stubMTUSource) FEC() []metrics.FECSnapshot                  { return nil }
 func (s stubMTUSource) Reseq() []metrics.ReseqSnapshot              { return nil }
-func (s stubMTUSource) Aggregation() []metrics.AggregationSnapshot  { return nil }
 func (s stubMTUSource) Session() metrics.SessionSnapshot            { return metrics.SessionSnapshot{} }
 func (s stubMTUSource) PeerSessions() []metrics.PeerSessionSnapshot { return nil }
 func (s stubMTUSource) PeerNames() []string                         { return []string{""} }
@@ -46,7 +44,7 @@ func TestSampleMTUReservesJunkPrefix(t *testing.T) {
 func TestAdaptiveRuntimeMTUMatchesBoot(t *testing.T) {
 	cfg := &config.Config{Paths: []config.Path{{Name: "wan", MTU: 1500}}, Scheduler: config.SchedulerConfig{Policy: config.PolicyAdaptive}}
 	src := stubMTUSource{paths: []metrics.PathSnapshot{{Name: "wan", State: telemetry.StateUp, PMTU: 1500}}}
-	got, ok := minInnerMTU(sampleMTU(src, cfg), false)
+	got, ok := minInnerMTU(sampleMTU(src, cfg))
 	if !ok || got != tunMTU(cfg) {
 		t.Fatalf("runtime MTU %d differs from safe boot MTU %d", got, tunMTU(cfg))
 	}
@@ -56,7 +54,7 @@ func TestAdaptiveRuntimeMTUMatchesBoot(t *testing.T) {
 // recording apply, so the recompute-and-decide logic is exercised with no netlink
 // socket (the netlink apply itself is e2e-covered, T212). It returns the resizer, the
 // clock, and a pointer to the slice of MTUs the apply recorded in order.
-func newTestResizer(t *testing.T, bootMTU int, fecEnabled bool, dwell time.Duration) (*mtuResizer, *fakeClock, *[]int) {
+func newTestResizer(t *testing.T, bootMTU int, dwell time.Duration) (*mtuResizer, *fakeClock, *[]int) {
 	t.Helper()
 	lg, err := log.New("error", io.Discard)
 	if err != nil {
@@ -64,71 +62,66 @@ func newTestResizer(t *testing.T, bootMTU int, fecEnabled bool, dwell time.Durat
 	}
 	clk := &fakeClock{now: time.Unix(1000, 0)}
 	var applied []int
-	r := newMTUResizer("wanbond0", bootMTU, fecEnabled, dwell, clk,
+	r := newMTUResizer("wanbond0", bootMTU, dwell, clk,
 		func(mtu int) error { applied = append(applied, mtu); return nil },
 		nil, lg)
 	return r, clk, &applied
 }
 
 // TestMinInnerMTURecompute is the T209/D85 acceptance: the pure recompute-and-decide
-// logic sizes wanbond0 to min(bind.InnerMTU(pmtu, fec)) across the UP paths and
+// logic sizes wanbond0 to min(bind.InnerMTU(pmtu)) across the UP paths and
 // DEBOUNCES a loosening change (a constraining path leaving) by the failback-style
-// dwell. Sequence, for FEC off and on: paths {UP:1500, UP:1400} hold the boot
-// InnerMTU(1400); the 1400 path going DOWN raises the target to InnerMTU(1500) but it
-// is not applied until the dwell elapses.
+// dwell. Sequence: paths {UP:1500, UP:1400} hold the boot InnerMTU(1400); the 1400
+// path going DOWN raises the target to InnerMTU(1500) but it is not applied until the
+// dwell elapses.
 func TestMinInnerMTURecompute(t *testing.T) {
-	for _, fec := range []bool{false, true} {
-		fec := fec
-		t.Run(map[bool]string{false: "fec_off", true: "fec_on"}[fec], func(t *testing.T) {
-			want1400 := bind.InnerMTU(1400, fec)
-			want1500 := bind.InnerMTU(1500, fec)
-			const dwell = 5 * time.Second
+	want1400 := bind.InnerMTU(1400)
+	want1500 := bind.InnerMTU(1500)
+	const dwell = 5 * time.Second
 
-			// Boot: both paths configured, so the applied MTU starts at InnerMTU(1400)
-			// (the min across all paths, T205).
-			r, clk, applied := newTestResizer(t, want1400, fec, dwell)
+	// Boot: both paths configured, so the applied MTU starts at InnerMTU(1400)
+	// (the min across all paths, T205).
+	r, clk, applied := newTestResizer(t, want1400, dwell)
 
-			// Both UP: min inner MTU == InnerMTU(1400) == the applied value -> no change.
-			bothUp := []pathMTUSample{
-				{state: telemetry.StateUp, pmtu: 1500},
-				{state: telemetry.StateUp, pmtu: 1400},
-			}
-			r.recompute(bothUp)
-			if len(*applied) != 0 {
-				t.Fatalf("fec=%v: applied %v with both paths up, want no resize", fec, *applied)
-			}
-			if got := r.currentMTU(); got != want1400 {
-				t.Fatalf("fec=%v: currentMTU=%d, want %d (min across both up paths)", fec, got, want1400)
-			}
+	// Both UP: min inner MTU == InnerMTU(1400) == the applied value -> no change.
+	bothUp := []pathMTUSample{
+		{state: telemetry.StateUp, pmtu: 1500},
+		{state: telemetry.StateUp, pmtu: 1400},
+	}
+	r.recompute(bothUp)
+	if len(*applied) != 0 {
+		t.Fatalf("applied %v with both paths up, want no resize", *applied)
+	}
+	if got := r.currentMTU(); got != want1400 {
+		t.Fatalf("currentMTU=%d, want %d (min across both up paths)", got, want1400)
+	}
 
-			// The 1400 path goes DOWN: only the 1500 path is UP, so the target rises to
-			// InnerMTU(1500). A loosening change is debounced -> NOT applied yet.
-			down := []pathMTUSample{
-				{state: telemetry.StateUp, pmtu: 1500},
-				{state: telemetry.StateDown, pmtu: 1400},
-			}
-			r.recompute(down)
-			if len(*applied) != 0 {
-				t.Fatalf("fec=%v: applied %v immediately on loosen, want debounced until the dwell", fec, *applied)
-			}
+	// The 1400 path goes DOWN: only the 1500 path is UP, so the target rises to
+	// InnerMTU(1500). A loosening change is debounced -> NOT applied yet.
+	down := []pathMTUSample{
+		{state: telemetry.StateUp, pmtu: 1500},
+		{state: telemetry.StateDown, pmtu: 1400},
+	}
+	r.recompute(down)
+	if len(*applied) != 0 {
+		t.Fatalf("applied %v immediately on loosen, want debounced until the dwell", *applied)
+	}
 
-			// A recompute part-way through the dwell still holds.
-			clk.advance(dwell - time.Nanosecond)
-			r.recompute(down)
-			if len(*applied) != 0 {
-				t.Fatalf("fec=%v: applied %v before the dwell elapsed, want none", fec, *applied)
-			}
+	// A recompute part-way through the dwell still holds.
+	clk.advance(dwell - time.Nanosecond)
+	r.recompute(down)
+	if len(*applied) != 0 {
+		t.Fatalf("applied %v before the dwell elapsed, want none", *applied)
+	}
 
-			// Once the dwell has elapsed, the loosening target is applied.
-			clk.advance(time.Nanosecond)
-			r.recompute(down)
-			if len(*applied) != 1 || (*applied)[0] != want1500 {
-				t.Fatalf("fec=%v: applied=%v after the dwell, want exactly [%d]", fec, *applied, want1500)
-			}
-			if got := r.currentMTU(); got != want1500 {
-				t.Fatalf("fec=%v: currentMTU=%d after loosen, want %d", fec, got, want1500)
-			}
-		})
+	// Once the dwell has elapsed, the loosening target is applied.
+	clk.advance(time.Nanosecond)
+	r.recompute(down)
+	if len(*applied) != 1 || (*applied)[0] != want1500 {
+		t.Fatalf("applied=%v after the dwell, want exactly [%d]", *applied, want1500)
+	}
+	if got := r.currentMTU(); got != want1500 {
+		t.Fatalf("currentMTU=%d after loosen, want %d", got, want1500)
 	}
 }
 
@@ -138,11 +131,11 @@ func TestMinInnerMTURecompute(t *testing.T) {
 // not wait out the dwell.
 func TestMTUResizeTightenIsImmediate(t *testing.T) {
 	const dwell = 5 * time.Second
-	want1500 := bind.InnerMTU(1500, false)
-	want1400 := bind.InnerMTU(1400, false)
+	want1500 := bind.InnerMTU(1500)
+	want1400 := bind.InnerMTU(1400)
 
 	// Boot with a single 1500 path up.
-	r, _, applied := newTestResizer(t, want1500, false, dwell)
+	r, _, applied := newTestResizer(t, want1500, dwell)
 	r.recompute([]pathMTUSample{{state: telemetry.StateUp, pmtu: 1500}})
 	if len(*applied) != 0 {
 		t.Fatalf("applied %v at the boot MTU, want no resize", *applied)
@@ -161,8 +154,8 @@ func TestMTUResizeTightenIsImmediate(t *testing.T) {
 // TestMTUResizeNoUpPathKeepsMTU confirms a fully-down tunnel (no UP path) keeps its
 // current link MTU rather than resizing to a degenerate value.
 func TestMTUResizeNoUpPathKeepsMTU(t *testing.T) {
-	want1400 := bind.InnerMTU(1400, false)
-	r, clk, applied := newTestResizer(t, want1400, false, 5*time.Second)
+	want1400 := bind.InnerMTU(1400)
+	r, clk, applied := newTestResizer(t, want1400, 5*time.Second)
 
 	allDown := []pathMTUSample{
 		{state: telemetry.StateDown, pmtu: 1500},
@@ -184,8 +177,8 @@ func TestMTUResizeNoUpPathKeepsMTU(t *testing.T) {
 // target returns to the applied value, so a flapping path does not thrash the link.
 func TestMTUResizeFlapDoesNotThrash(t *testing.T) {
 	const dwell = 5 * time.Second
-	want1400 := bind.InnerMTU(1400, false)
-	r, clk, applied := newTestResizer(t, want1400, false, dwell)
+	want1400 := bind.InnerMTU(1400)
+	r, clk, applied := newTestResizer(t, want1400, dwell)
 
 	down := []pathMTUSample{
 		{state: telemetry.StateUp, pmtu: 1500},

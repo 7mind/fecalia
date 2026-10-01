@@ -14,6 +14,7 @@ import (
 	"github.com/amnezia-vpn/amneziawg-go/v3/tun/tuntest"
 	"go.uber.org/goleak"
 
+	"github.com/7mind/wanbond/internal/bond"
 	"github.com/7mind/wanbond/internal/frame"
 )
 
@@ -49,7 +50,7 @@ func ipv4Packet(src, dst [4]byte) []byte {
 // Multipath Bind using a channel-based TUN (no root, no real interface) and
 // asserts that AFTER device.Up() the bind can actually transmit: an outbound
 // packet fed into the TUN triggers a handshake initiation, which must arrive at
-// the peer endpoint wrapped in an outer DATA frame.
+// the peer endpoint wrapped in a transport data frame.
 //
 // This FAILS on the pre-fix code: device.Up() runs BindUpdate → Close (pre-open,
 // sets the sticky closed flag) → Open (never resets it), so every Send returns
@@ -64,7 +65,7 @@ func TestMultipathEngineUpCanTransmit(t *testing.T) {
 	// once the send gains a done-channel escape.
 	defer goleak.VerifyNone(t)
 
-	psk := testKey(t, 0x7E) // outer DATA-frame PSK
+	psk := testKey(t, 0x7E) // outer frame PSK
 
 	// Stand-in remote (the concentrator's listen socket): the engine sends its
 	// handshake initiation here, framed by the Multipath's outer codec.
@@ -104,6 +105,9 @@ func TestMultipathEngineUpCanTransmit(t *testing.T) {
 	if err := dev.Up(); err != nil {
 		t.Fatalf("device.Up: %v", err)
 	}
+	// The transport sends only over a lane a hello established; a datagram the engine
+	// sent before it waits in the transport's queue.
+	newRemoteTransport(t, m.peerState, 987).join(m.paths[0], peerAP)
 
 	// Feed an outbound packet so the engine routes it to the peer and initiates a
 	// handshake (→ Multipath.Send → the peer socket below). The send races the
@@ -123,26 +127,33 @@ func TestMultipathEngineUpCanTransmit(t *testing.T) {
 	if err := peer.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
 		t.Fatalf("set read deadline: %v", err)
 	}
-	buf := make([]byte, maxDatagram)
-	n, _, err := peer.ReadFromUDPAddrPort(buf)
-	if err != nil {
-		var nerr net.Error
-		if errors.As(err, &nerr) && nerr.Timeout() {
-			t.Fatalf("no datagram transmitted within deadline after device.Up(): the bind-lifecycle defect makes Send return net.ErrClosed: %v", err)
-		}
-		t.Fatalf("peer read: %v", err)
-	}
-
-	// What arrived must be our outer DATA frame carrying the WG handshake.
 	codec, err := frame.NewCodec(psk)
 	if err != nil {
 		t.Fatalf("new codec: %v", err)
 	}
-	fr, err := codec.Decode(buf[:n])
-	if err != nil {
-		t.Fatalf("decode transmitted datagram as outer frame: %v", err)
-	}
-	if _, ok := fr.(frame.Data); !ok {
-		t.Fatalf("transmitted frame is %T, want frame.Data (a wrapped WG handshake)", fr)
+	buf := make([]byte, maxDatagram)
+	for {
+		n, _, err := peer.ReadFromUDPAddrPort(buf)
+		if err != nil {
+			var nerr net.Error
+			if errors.As(err, &nerr) && nerr.Timeout() {
+				t.Fatalf("no datagram transmitted within deadline after device.Up(): the bind-lifecycle defect makes Send return net.ErrClosed: %v", err)
+			}
+			t.Fatalf("peer read: %v", err)
+		}
+
+		// What arrived must be our outer frame; the one carrying the WG handshake is a
+		// transport data frame with a datagram in it (a lane keepalive carries none).
+		fr, err := codec.Decode(buf[:n])
+		if err != nil {
+			t.Fatalf("decode transmitted datagram as outer frame: %v", err)
+		}
+		control, ok := fr.(frame.Control)
+		if !ok {
+			t.Fatalf("transmitted frame is %T, want frame.Control (a wrapped WG handshake)", fr)
+		}
+		if control.ControlType == bond.DataType && n > bond.Overhead {
+			return
+		}
 	}
 }

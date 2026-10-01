@@ -87,7 +87,7 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 table { width: 100%; border-collapse: collapse; font-size: 12px; font-variant-numeric: tabular-nums; }
 td { padding: 4px 6px 4px 0; border-top: 1px solid var(--rule); vertical-align: middle; overflow-wrap: anywhere; }
 tr:first-child td { border-top: 0; }
-td:first-child, .fec-card td:nth-child(3), .reseq-card td:nth-child(3) { color: var(--muted); }
+td:first-child, .reseq-card td:nth-child(3) { color: var(--muted); }
 td:first-child { white-space: nowrap; }
 .path-card td:nth-child(2) { font-weight: 600; }
 .path-card td:last-child svg { display: block; max-width: 100%; margin-left: auto; }
@@ -95,8 +95,7 @@ td:first-child { white-space: nowrap; }
 .path-details { margin-top: 4px; border-top: 1px solid var(--rule); }
 .path-details summary { display: list-item; padding: 7px 0 3px; cursor: pointer; color: var(--accent); font-size: 12px; font-weight: 600; }
 .path-details table { margin-top: 4px; }
-.fec-card, .reseq-card, .aggregation-card { min-width: 0; }
-.aggregation-card { font-size: 12px; line-height: 1.7; }
+.reseq-card { min-width: 0; }
 .session-card, .peer-session-card { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 6px; font-size: 12px; font-variant-numeric: tabular-nums; }
 .session-label, .session-handshake { color: var(--muted); }
 .session-handshake::before { content: '·'; margin-right: 6px; }

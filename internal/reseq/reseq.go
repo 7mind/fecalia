@@ -3,7 +3,6 @@ package reseq
 import (
 	"net/netip"
 	"sync"
-	"sync/atomic"
 	"time"
 )
 
@@ -21,83 +20,10 @@ type SystemClock struct{}
 // Now returns the current monotonic time.
 func (SystemClock) Now() time.Time { return time.Now() }
 
-// RecoveryAuthorityState is one coherent peer topology transition. TransitionAt
-// is the exact injected-clock instant Generation became authoritative.
-type RecoveryAuthorityState struct {
-	Generation   uint64
-	TransitionAt time.Time
-}
-
-type recoveryAuthoritySignal struct {
-	signal chan<- struct{}
-}
-
-// RecoveryAuthority is the lock-free peer topology epoch shared by the Bind's
-// recovery-contract coordinator and its receive resequencer. The coordinator
-// advances it before clearing evidence, so receive decisions cannot continue
-// using an older fast window while an explicit publication is still in flight.
-// Its optional signal is non-blocking and coalescing; consumers always read the
-// latest coherent State after waking.
-type RecoveryAuthority struct {
-	state  atomic.Pointer[RecoveryAuthorityState]
-	signal atomic.Pointer[recoveryAuthoritySignal]
-}
-
-// AdvanceTo publishes a newer topology generation. Older or equal values are
-// idempotent, allowing lifecycle paths to converge without lock coupling.
-func (a *RecoveryAuthority) AdvanceTo(generation uint64, transitionAt time.Time) {
-	for {
-		current := a.state.Load()
-		if current != nil && generation <= current.Generation {
-			return
-		}
-		next := &RecoveryAuthorityState{
-			Generation:   generation,
-			TransitionAt: transitionAt,
-		}
-		if a.state.CompareAndSwap(current, next) {
-			if notification := a.signal.Load(); notification != nil {
-				select {
-				case notification.signal <- struct{}{}:
-				default:
-				}
-			}
-			return
-		}
-	}
-}
-
-// State returns the latest coherent authority state.
-func (a *RecoveryAuthority) State() RecoveryAuthorityState {
-	if a == nil {
-		return RecoveryAuthorityState{}
-	}
-	if state := a.state.Load(); state != nil {
-		return *state
-	}
-	return RecoveryAuthorityState{}
-}
-
-// TopologyGeneration returns the current authoritative topology generation.
-func (a *RecoveryAuthority) TopologyGeneration() uint64 {
-	return a.State().Generation
-}
-
-// SetChangeSignal installs the Bind Open generation's coalescing wake channel.
-// Nil detaches a retired Open; channels are never closed by the authority.
-func (a *RecoveryAuthority) SetChangeSignal(signal chan<- struct{}) {
-	if signal == nil {
-		a.signal.Store(nil)
-		return
-	}
-	a.signal.Store(&recoveryAuthoritySignal{signal: signal})
-}
-
-// Discontinuity/resync guard tuning. A DATA frame is UNAUTHENTICATED by design
-// (internal/frame/frame.go: "DATA/PARITY forgeable by design"), so a garbage
-// datagram decoding as KindData (p ~ 1/256) delivers a uniformly-random uint64
-// OuterSeq, and a genuine peer PROCESS RESTART resets the peer's outerSeq counter
-// to 1. Neither may be trusted to move the release point arbitrarily.
+// Discontinuity/resync guard tuning. The resequencer does not assume its caller
+// authenticated the sequence it is handed, and a genuine peer PROCESS RESTART
+// resets the peer's sequence counter to 1. Neither may be trusted to move the
+// release point arbitrarily.
 const (
 	// resyncFactor (K) bounds how far AHEAD of the release point a single
 	// unauthenticated frame is trusted to advance the window as a plausible loss
@@ -125,33 +51,14 @@ const (
 	resyncCorroborate = 3
 )
 
-// singleSourceTrailingWindow is the trailing look-back over which the resequencer
-// counts DISTINCT delivering-path keys to decide whether immediate release is
-// safe (D93). When exactly one delivering path has been observed within this
-// window a head-of-line gap is genuine loss (a single path preserves order, so a
-// straggler cannot be in flight) and its successors are released with ~0 hold; a
-// second distinct key seen within the window re-arms the full timeout hold, and
-// the window itself IS the re-arm dwell (immediate release resumes only once a
-// whole window has elapsed with a single key).
-//
-// It is sized to EXCEED the failback straggler horizon so the single→multi
-// transition cannot fast-release a straggler: the receive gap hold is capped at
-// resequencerTimeout (250 ms, internal/bind/multipath.go), which bounds how long
-// a genuine cross-path straggler can trail its head, so a 2x margin (500 ms)
-// guarantees that when a second path first appears its key is still inside the
-// window that governs any straggler the first path left behind. A larger window
-// is strictly more conservative (holds longer); a smaller one risks releasing a
-// straggler past its gap at the transition, so 2x is the minimum sound multiple.
-const singleSourceTrailingWindow = 2 * (250 * time.Millisecond)
-
 // holdBoundFloor is the smallest dynamic per-gap hold SetHoldBound will accept
 // (T241, D93). Even an ultra-low-RTT multi-path bond can reorder by a few
 // milliseconds of scheduler/queue jitter that the path RTT does not capture, so
-// the RTT-derived bound is never allowed to shrink the reorder cushion below
+// the installed bound is never allowed to shrink the reorder cushion below
 // this; the construction timeout remains the upper cap.
 const holdBoundFloor = 10 * time.Millisecond
 
-// Item is one released inner datagram plus the outer source address of the DATA
+// Item is one released inner datagram plus the outer source address of the
 // frame that carried it. The source travels with the payload so the multipath
 // Bind can pin its single virtual endpoint to the FIRST delivered frame's
 // source even when that frame was buffered and released out of arrival order.
@@ -160,22 +67,8 @@ type Item struct {
 	Src     netip.AddrPort
 }
 
-// RecoveryWindow is the authenticated, receiver-local evidence that may shorten
-// one FEC-active gap. Revision identifies the exact adopted contract/delivery
-// generation; PathKey and Source bind it to the delivery venue that was ACKed.
-// ValidUntil must retain at least the resequencer's conservative timeout when a
-// gap arms.
-type RecoveryWindow struct {
-	Enabled    bool
-	Revision   uint64
-	PathKey    uint32
-	Source     netip.AddrPort
-	Hold       time.Duration
-	ValidUntil time.Time
-}
-
-// slot is one ring cell. A live cell (occupied) holds exactly one buffered DATA
-// frame whose OuterSeq maps to this index; seq is retained so a stale cell (an
+// slot is one ring cell. A live cell (occupied) holds exactly one buffered
+// datagram whose sequence maps to this index; seq is retained so a stale cell (an
 // already-drained seq that shares the index modulo window) is never mistaken for
 // a live one.
 type slot struct {
@@ -187,8 +80,8 @@ type slot struct {
 }
 
 // Resequencer is a bounded-window, timeout-based receive resequencing buffer. It
-// consumes DATA frames tagged with the multipath codec's OWN outer sequence
-// number (frame.Data.OuterSeq — never WireGuard's inner counter) arriving out of
+// consumes datagrams tagged with the bonding transport's OWN outer sequence
+// number (never WireGuard's inner counter) arriving out of
 // order across paths, and releases the decoded inner datagrams in strictly
 // ascending outer-seq order before they reach the WireGuard engine. This absorbs
 // multipath reorder entirely in the outer layer so WG's RFC 6479 anti-replay
@@ -224,19 +117,13 @@ type slot struct {
 // only for in-memory bookkeeping — never across a syscall — so it does not
 // perturb the Bind's lock-free virtual-endpoint fast path or its
 // syscall-outside-mutex send discipline.
-//
-// FEC seam (T24): Observe is the sole ingestion point and is keyed purely by
-// outer-seq. An FEC decoder inserted on the receive path recovers missing DATA
-// frames from PARITY and feeds each recovered frame's ORIGINAL outer-seq through
-// Observe, identically to a natively-received frame — so FEC recovery slots in
-// BEFORE resequencing with no change to this type.
 type Resequencer struct {
 	window  uint64
 	timeout time.Duration
 	clock   Clock
 
 	mu      sync.Mutex
-	started bool   // false until the first Observe pins the initial next
+	started bool   // false until the first Observe or RebaselineAt pins the release point
 	next    uint64 // lowest outer-seq not yet released
 	ring    []slot // len == window; indexed by seq % window
 	buf     int    // number of occupied slots
@@ -252,12 +139,6 @@ type Resequencer struct {
 	deadline    time.Time
 	armedAt     time.Time
 	armedWindow time.Duration
-	// recoveryArmed records that the current deadline was shortened from the
-	// conservative timeout by one exact authenticated RecoveryWindow snapshot.
-	// A topology/evidence change can only lengthen that live gap back to a fresh
-	// conservative timeout; later evidence never shortens a gap retrospectively.
-	recoveryArmed    bool
-	recoveryRevision uint64
 
 	// Discontinuity/resync guard: the current run of out-of-band (suspect) frames.
 	// resyncSeqs holds the DISTINCT suspect seqs seen in the run (a repeated
@@ -269,43 +150,6 @@ type Resequencer struct {
 	resyncLo   uint64
 	resyncHi   uint64
 
-	// Pending low-anchor re-baseline (peer restart, T119). After RebaselineToLow the
-	// release point is UNPINNED but NOT re-anchored on the next arbitrary frame:
-	// pendingLow keeps `next` held at pendingLowAnchor (the pre-rebaseline release
-	// point) so a stale HIGH-seq straggler still draining from the OLD boot is
-	// SUSPECT-dropped, and `next` re-anchors ONLY when a genuine restarted-stream
-	// low-seq — a frame more than one window BELOW pendingLowAnchor — arrives. This
-	// closes the D36 re-pin race the plain Rebaseline leaves open (plan review R126).
-	pendingLow       bool
-	pendingLowAnchor uint64
-
-	// pendingLowDrops counts consecutive SUSPECT drops taken while the low-anchor gate
-	// is armed. It BOUNDS the gate so it can never permanently blackhole (round-3 FIX 3,
-	// review R150): at anchor == window+2 the only in-budget re-anchor frame is seq 1, so
-	// if that lone wrapped-init frame is LOST every later new-boot frame fails
-	// `anchor - seq > window` and would be SUSPECT-dropped forever. After O(window) such
-	// drops the gate FALLS BACK to a plain unpin (started=false), which self-heals via the
-	// existing resync-corroboration path. Reset to 0 whenever the gate is (re-)armed or
-	// cleared.
-	pendingLowDrops uint64
-
-	// pendingSrc / pendingSrcActive arm a SOURCE-IDENTITY gate after a plain Rebaseline (D34,
-	// the D32 hub-failover path): the release point re-anchors only on a frame from the EXPECTED
-	// new standby hub endpoint, so a stale straggler still draining from the OLD hub (a DIFFERENT
-	// source) cannot re-pin `next` to a wrong value before the standby's stream arrives. The
-	// ordered failover endpoints are PUBLIC hub addresses (the edge is the NAT'd side, not the
-	// hub), so the standby's inbound frames carry src == the endpoint the edge failed over to.
-	// Armed only when Rebaseline is given a valid expected source; a zero source leaves it off
-	// (re-anchor on the next frame — the pre-D34 trust-next behaviour). Cleared when next re-anchors.
-	pendingSrc       netip.AddrPort
-	pendingSrcActive bool
-	// pendingSrcDrops BOUNDS the source gate the same way pendingLowDrops bounds the low-anchor
-	// gate: it counts consecutive wrong-source frames SUSPECT-dropped while the gate is armed, and
-	// after O(window) of them (the expected source never arriving — a mis-config or a further
-	// failover) the gate FALLS BACK to re-anchoring on the next frame, so it can never permanently
-	// blackhole the stream. Reset to 0 whenever the gate is (re-)armed or cleared.
-	pendingSrcDrops uint64
-
 	// Diagnostics (read via the accessors; useful for the bounded-memory asserts).
 	highWater   int    // max occupied slots ever held
 	dropDup     uint64 // frames dropped as duplicates
@@ -314,71 +158,24 @@ type Resequencer struct {
 	skipped     uint64 // seqs skipped (treated lost) by window-advance or timeout
 	releasedN   uint64 // frames released for delivery
 	resyncs     uint64 // release-point re-pins after a corroborated discontinuity
-	rebaselines uint64 // release-point re-baselines forced by a trusted control event (e.g. hub failover, peer restart)
+	rebaselines uint64 // release-point re-baselines forced by a trusted control event (the peer's epoch changed)
 
-	// HoL-stall / hold accounting (T242, D93) — the observability leg of the D93
-	// single-path immediate release. holds counts head-of-line gaps that armed a
-	// hold; holdNanos is the cumulative time such gaps spent held before the hold
-	// ended (by a timeout skip, a single-path immediate release, a fill, or a
-	// discontinuity re-pin), measured via the injected Clock; immediateReleases
-	// counts the gaps whose successors were released via the D93 fast path.
-	//
-	// An immediate release ALSO increments skipped (by the lost gap's seq count):
-	// skipped's meaning is UNCHANGED and backward-consistent — total seqs treated as
-	// lost, whether by window-advance, timeout, or fast-path skip. The fast-path-vs-
-	// timeout distinction is recoverable WITHOUT redefining skipped, because
-	// immediateReleases separately counts the fast-path release EVENTS: a rising
-	// immediateReleases with skipped means the D93 amplifier is disarmed (single
-	// path), whereas skipped rising while immediateReleases stays flat is a genuine
-	// timeout HoL stall (the amplifier armed).
-	holds              uint64
-	holdNanos          uint64
-	immediateReleases  uint64
-	deadlineWakeups    uint64
-	gapFills           uint64
-	fastWindowArms     uint64
-	fallbackWindowArms uint64
+	// HoL-stall / hold accounting (T242). holds counts head-of-line gaps that armed
+	// a hold; holdNanos is the cumulative time such gaps spent held before the hold
+	// ended (by a timeout skip, a fill, a window advance, or a re-pin), measured via
+	// the injected Clock.
+	holds           uint64
+	holdNanos       uint64
+	deadlineWakeups uint64
+	gapFills        uint64
 
-	// Single-delivering-path immediate release (D93). A head-of-line gap normally
-	// waits the full timeout in case a straggler reordered across paths fills it.
-	// When the frames are provably arriving over ONE delivering path, a gap is
-	// genuine loss (that path preserves order) and its successors may release with
-	// ~0 hold. These fields track the trailing distinct-path evidence that gates it.
-	//
-	// pathKnown is ORTHOGONAL to any particular pathKey value (R251): the legacy
-	// Observe ingests with UNKNOWN identity and forces the conservative full hold,
-	// while ObserveFromPath supplies a known, OPAQUE delivering-path key — and a
-	// real path may legitimately compose to key 0, so "unknown" must never be
-	// conflated with key == 0. It reflects the identity of the most recent ingest.
-	// holdBound is the DYNAMIC per-gap hold (T241, D93): the bind derives it from
-	// the measured path RTT (k*SRTT) and installs it via SetHoldBound, already
-	// clamped to [holdBoundFloor, timeout]. Zero means "unset" — arm() then uses
-	// the full construction timeout, so behaviour is byte-identical until the
-	// bind wires a bound in. While fecActive this unauthenticated bound is
-	// IGNORED: a parity reconstruction may still fill the gap. FEC uses the full
-	// timeout unless exact authenticated RecoveryWindow evidence supplies a
-	// shorter service-plus-RTT bound.
+	// holdBound is the per-gap hold (T241): the bind installs it via SetHoldBound,
+	// already clamped to [holdBoundFloor, timeout]. Zero means "unset" — arm() then
+	// uses the full construction timeout.
 	holdBound time.Duration
 
-	fecActive                   bool // SetFECActive: FEC on ⇒ suppress immediate release (a parity repair may still fill a gap)
-	recoveryAuthority           *RecoveryAuthority
-	recoveryGeneration          uint64
-	recoveryPublicationRevision uint64
-	recoveries                  []RecoveryWindow
-	notify                      func()
-	lossObserver                func(uint64, uint64)
-	closed                      bool
-	// multiPathExpected (SetMultiPathExpected): the sender runs an aggregating (weighted)
-	// scheduler — suppress immediate release entirely (see SetMultiPathExpected for the
-	// retained-pending-measurement rationale, defect D95, tasks:T293 branch 4).
-	multiPathExpected bool
-	pathKnown         bool   // the most recent ingest carried a known delivering-path identity (ObserveFromPath); legacy Observe ⇒ false
-	trailKey          uint32 // the most recently observed known pathKey (the current single-path candidate)
-	trailKeyValid     bool   // trailKey holds a value (at least one known observation since the last reset)
-	trailSrc          netip.AddrPort
-	trailSrcValid     bool
-	multiKeyUntil     time.Time // immediate release stays suppressed until this instant (a second distinct key, or a rebaseline, was seen within the trailing window)
-	multiKeyValid     bool      // multiKeyUntil holds a live suppression deadline
+	notify func()
+	closed bool
 }
 
 // New returns a resequencer buffering at most window outer-seq positions and
@@ -400,109 +197,9 @@ func New(window uint64, timeout time.Duration, clock Clock) *Resequencer {
 	}
 }
 
-// Observe ingests one DATA frame's inner payload under its outer-seq with UNKNOWN
-// delivering-path identity — the conservative legacy ingest. An unknown identity
-// never enables single-path immediate release, so every existing call site and
-// test behaves EXACTLY as before D93: a head-of-line gap always waits the full
-// timeout. It is a thin wrapper over ingest; ObserveFromPath is the new primary
-// ingest that carries a known delivering-path key.
-//
-// It takes ownership of payload (the caller must not mutate it afterwards); the
-// multipath Bind passes the freshly-decoded frame.Data.Payload, which aliases
-// nothing else. src is the outer source address the frame arrived from. Any
-// frames that become deliverable are appended to the ready FIFO for Pop.
-func (r *Resequencer) Observe(seq uint64, payload []byte, src netip.AddrPort) {
-	_ = r.ingest(seq, payload, src, false, 0, nil)
-}
-
-// ObserveFromPath ingests one DATA frame carrying an OPAQUE delivering-path
-// discriminator pathKey (D93). reseq imposes NO structure on pathKey: any distinct
-// value is a distinct delivering path (the bind composes it from the local
-// receiving-path id and the sender-stamped frame PathID). When frames arrive over
-// a single delivering path a head-of-line gap is genuine loss and its successors
-// release with ~0 hold; a second distinct key re-arms the full hold. Semantics are
-// otherwise identical to Observe. A real path may compose to key 0, so key 0 is a
-// perfectly valid KNOWN path — distinct from Observe's unknown identity. It returns
-// true only when this outer sequence was admitted as a new native outcome; duplicates,
-// stale frames, and suspect discontinuities return false.
-func (r *Resequencer) ObserveFromPath(seq uint64, payload []byte, src netip.AddrPort, pathKey uint32) bool {
-	return r.ingest(seq, payload, src, true, pathKey, nil)
-}
-
-// ObserveFromPathWithAdmissionObserver behaves like ObserveFromPath and invokes
-// observeAdmission exactly once for a newly admitted native outcome. The
-// lock-leaf observer runs under the resequencer lock so external accounting
-// preserves the same total order as gap finalization.
-func (r *Resequencer) ObserveFromPathWithAdmissionObserver(
-	seq uint64,
-	payload []byte,
-	src netip.AddrPort,
-	pathKey uint32,
-	observeAdmission func(),
-) bool {
-	if observeAdmission == nil {
-		panic("reseq: admission observer must not be nil")
-	}
-	return r.ingest(seq, payload, src, true, pathKey, observeAdmission)
-}
-
-// SetFECActive toggles whether an FEC decoder is repairing this stream. While FEC
-// is active a head-of-line gap may still be filled by a parity-reconstructed
-// frame (ObserveRecovered), so immediate release is suppressed entirely. The
-// full hold gives recovery time to land unless exact authenticated recovery
-// evidence supplies a shorter window. The bind calls this at FEC setup/teardown.
-func (r *Resequencer) SetFECActive(active bool) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	now := r.clock.Now()
-	r.syncRecoveryAuthorityLocked(now)
-	if r.fecActive == active {
-		return
-	}
-	r.fecActive = active
-	if !active {
-		r.expire(now)
-	} else if _, eligible := r.recoveryEligibleLocked(now); r.waiting && !eligible {
-		r.rearmConservativeLocked(now)
-	}
-	r.notifyLocked()
-}
-
-// SetMultiPathExpected marks this stream as one whose sender runs an AGGREGATING
-// (weighted) scheduler, suppressing single-path immediate release entirely (D93 follow-up;
-// the o3 TestP2Aggregation regression). Immediate release is a SINGLE-PATH optimization,
-// and this suppression is RETAINED PENDING a link-bound-venue A/B — unmeasured,
-// default-under-uncertainty (defect D95, decisions:K35, tasks:T293 branch 4), NOT the
-// earlier burstiness-coupling theory (that gate-engagement narrative is superseded by the
-// frame-accurate offered-load fix, decisions:K35 §2). Whether the resequencer's reordering
-// buffer is load-bearing for genuine two-path striping on a weighted bond was left
-// unanswered: the only available measurement venue could not be caught link-bound in both
-// arms of the suppression A/B, so no controlled comparison exists either way. Removing this
-// suppression is authorised only by a link-bound-venue A/B where BOTH arms are link-bound
-// (a beefier host, or the real two-host setup) that shows it safe to remove.
-// Active-backup — the D93 field target — never sets this and keeps the full fast path.
-func (r *Resequencer) SetMultiPathExpected(expected bool) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.syncRecoveryAuthorityLocked(r.clock.Now())
-	if r.multiPathExpected == expected {
-		return
-	}
-	r.multiPathExpected = expected
-	if expected && r.waiting && r.recoveryArmed {
-		r.rearmConservativeLocked(r.clock.Now())
-	}
-	r.notifyLocked()
-}
-
-// SetHoldBound installs the dynamic per-gap hold (T241, D93): the bind derives it
-// from the measured delivering-path RTT (k*SRTT) so a low-RTT bond pays only a
-// small multiple of its real reorder horizon per genuine multi-path gap instead
-// of the fixed construction timeout. The bound is clamped to
-// [holdBoundFloor, timeout] — the construction timeout stays the worst-case cap —
-// and is IGNORED while FEC is active (see holdBound); FEC recovery windows use
-// separate authenticated evidence. Safe to call at any cadence from the bind's
-// telemetry loop.
+// SetHoldBound installs the per-gap hold (T241, D93). The bound is clamped to
+// [holdBoundFloor, timeout] — the construction timeout stays the worst-case cap.
+// Safe to call at any cadence.
 func (r *Resequencer) SetHoldBound(d time.Duration) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -515,191 +212,6 @@ func (r *Resequencer) SetHoldBound(d time.Duration) {
 	r.holdBound = d
 }
 
-// SetRecoveryWindow publishes the current authenticated recovery evidence.
-// Evidence that arrives after a conservative gap armed never shortens that gap.
-// Invalidating or changing the evidence of a fast-armed gap re-arms it from now
-// for the full conservative timeout.
-func (r *Resequencer) SetRecoveryWindow(window RecoveryWindow) {
-	r.SetRecoveryGeneration(window.Revision, []RecoveryWindow{window})
-}
-
-// SetRecoveryWindows publishes the current per-venue authenticated recovery
-// evidence. Multiple paths may successfully carry the same peer-scoped ACK;
-// each remains independently usable without the most recent ACK displacing the
-// others.
-func (r *Resequencer) SetRecoveryWindows(windows []RecoveryWindow) {
-	var generation uint64
-	for _, window := range windows {
-		if window.Revision > generation {
-			generation = window.Revision
-		}
-	}
-	if len(windows) == 0 {
-		r.mu.Lock()
-		generation = r.recoveryGeneration
-		r.mu.Unlock()
-	}
-	r.SetRecoveryGeneration(generation, windows)
-}
-
-// SetRecoveryGeneration is the compatibility publication API. It allocates the
-// next local publication revision within an equal topology generation; the Bind
-// uses SetRecoveryPublication with its coordinator-owned revision.
-func (r *Resequencer) SetRecoveryGeneration(generation uint64, windows []RecoveryWindow) bool {
-	now := r.clock.Now()
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.syncRecoveryAuthorityLocked(now)
-	publicationRevision := uint64(0)
-	if generation == r.recoveryGeneration {
-		publicationRevision = r.recoveryPublicationRevision + 1
-		if publicationRevision == 0 {
-			publicationRevision++
-		}
-	}
-	return r.setRecoveryPublicationLocked(generation, publicationRevision, windows, now)
-}
-
-// SetRecoveryPublication conditionally installs the exact recovery venues for
-// one topology generation and one coordinator-ordered evidence publication.
-// Ordering is lexicographic: an older topology, or an older publication within
-// the same topology, cannot replace newer evidence. An equal publication is
-// accepted only when its exact window set matches (idempotent replay).
-func (r *Resequencer) SetRecoveryPublication(
-	generation uint64,
-	publicationRevision uint64,
-	windows []RecoveryWindow,
-) bool {
-	now := r.clock.Now()
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.syncRecoveryAuthorityLocked(now)
-	return r.setRecoveryPublicationLocked(generation, publicationRevision, windows, now)
-}
-
-func (r *Resequencer) setRecoveryPublicationLocked(
-	generation uint64,
-	publicationRevision uint64,
-	windows []RecoveryWindow,
-	now time.Time,
-) bool {
-	if r.closed || generation < r.recoveryGeneration ||
-		(generation == r.recoveryGeneration &&
-			publicationRevision < r.recoveryPublicationRevision) {
-		return false
-	}
-	if r.recoveryAuthority != nil &&
-		generation > r.recoveryAuthority.TopologyGeneration() {
-		return false
-	}
-	for _, window := range windows {
-		if window.Revision != generation {
-			return false
-		}
-	}
-	generationChanged := generation > r.recoveryGeneration
-	if !generationChanged && publicationRevision == r.recoveryPublicationRevision {
-		return recoveryWindowsEqual(r.recoveries, windows)
-	}
-	changed := generationChanged ||
-		publicationRevision != r.recoveryPublicationRevision ||
-		!recoveryWindowsEqual(r.recoveries, windows)
-	if generationChanged && r.waiting && r.fecActive {
-		r.recoveries = nil
-		r.endHoldLocked(now)
-		r.arm(now)
-	}
-	r.recoveryGeneration = generation
-	r.recoveryPublicationRevision = publicationRevision
-	r.recoveries = append(r.recoveries[:0], windows...)
-	if changed {
-		r.notifyLocked()
-	}
-	return true
-}
-
-func recoveryWindowsEqual(left, right []RecoveryWindow) bool {
-	if len(left) != len(right) {
-		return false
-	}
-	for i := range left {
-		if left[i] != right[i] {
-			return false
-		}
-	}
-	return true
-}
-
-// SetRecoveryAuthority installs the peer's authoritative topology epoch. The
-// authority is read only while r.mu is held and never calls back into Bind.
-func (r *Resequencer) SetRecoveryAuthority(authority *RecoveryAuthority) {
-	now := r.clock.Now()
-	r.mu.Lock()
-	r.recoveryAuthority = authority
-	r.syncRecoveryAuthorityLocked(now)
-	r.mu.Unlock()
-}
-
-func (r *Resequencer) syncRecoveryAuthorityLocked(now time.Time) bool {
-	if r.closed || r.recoveryAuthority == nil {
-		return false
-	}
-	authority := r.recoveryAuthority.State()
-	if authority.Generation <= r.recoveryGeneration {
-		return false
-	}
-	r.recoveryGeneration = authority.Generation
-	r.recoveryPublicationRevision = 0
-	r.recoveries = nil
-	if r.waiting && r.fecActive {
-		transitionAt := authority.TransitionAt
-		if transitionAt.IsZero() || transitionAt.After(now) {
-			transitionAt = now
-		}
-		r.endHoldLocked(transitionAt)
-		deadline, expired := recoveryTransitionDeadline(transitionAt, now, r.timeout)
-		r.armConservativeDeadlineLocked(transitionAt, deadline)
-		if expired {
-			r.expire(now)
-		}
-	} else {
-		r.notifyLocked()
-	}
-	return true
-}
-
-func recoveryTransitionDeadline(
-	transitionAt time.Time,
-	now time.Time,
-	timeout time.Duration,
-) (time.Time, bool) {
-	elapsed := now.Sub(transitionAt)
-	if elapsed >= timeout {
-		return now, true
-	}
-	if elapsed <= 0 {
-		return transitionAt.Add(timeout), false
-	}
-	return now.Add(timeout - elapsed), false
-}
-
-func (r *Resequencer) armConservativeDeadlineLocked(armedAt, deadline time.Time) {
-	cell := &r.ring[r.next%r.window]
-	headPresent := cell.occupied && cell.seq == r.next
-	if !headPresent && r.buf > 0 {
-		r.floorBufferedObservations(armedAt)
-		r.waiting = true
-		r.deadline = deadline
-		r.armedAt = armedAt
-		r.armedWindow = deadline.Sub(armedAt)
-		r.recoveryArmed = false
-		r.recoveryRevision = 0
-		r.holds++
-		r.fallbackWindowArms++
-		r.notifyLocked()
-	}
-}
-
 // SetNotifier installs the non-blocking change notification used by the Bind's
 // single receive drainer. The callback must not call back into this Resequencer.
 func (r *Resequencer) SetNotifier(notify func()) {
@@ -708,20 +220,10 @@ func (r *Resequencer) SetNotifier(notify func()) {
 	r.mu.Unlock()
 }
 
-// SetLossObserver installs the lock-leaf callback for final gap expiries. The
-// callback receives the first sequence and count of each finalized range, runs
-// under the resequencer lock, and must not call back into it.
-func (r *Resequencer) SetLossObserver(observe func(uint64, uint64)) {
-	r.mu.Lock()
-	r.lossObserver = observe
-	r.mu.Unlock()
-}
-
 // ArmedDeadline returns the exact deadline of the current head-of-line gap.
 func (r *Resequencer) ArmedDeadline() (time.Time, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.syncRecoveryAuthorityLocked(r.clock.Now())
 	if !r.waiting {
 		return time.Time{}, false
 	}
@@ -732,12 +234,6 @@ func (r *Resequencer) ArmedDeadline() (time.Time, bool) {
 func (r *Resequencer) Close() {
 	r.mu.Lock()
 	if !r.closed {
-		r.recoveryGeneration++
-		if r.recoveryGeneration == 0 {
-			r.recoveryGeneration++
-		}
-		r.recoveryPublicationRevision = 0
-		r.recoveries = nil
 		r.closed = true
 		r.endHoldLocked(r.clock.Now())
 		r.notifyLocked()
@@ -753,88 +249,28 @@ func (r *Resequencer) notifyLocked() {
 	}
 }
 
-func (r *Resequencer) recoveryEligibleLocked(now time.Time) (RecoveryWindow, bool) {
-	if !r.fecActive || r.multiPathExpected || !r.pathKnown ||
-		!r.trailKeyValid || !r.trailSrcValid {
-		return RecoveryWindow{}, false
-	}
-	if r.multiKeyValid && now.Before(r.multiKeyUntil) {
-		return RecoveryWindow{}, false
-	}
-	for _, window := range r.recoveries {
-		if !window.Enabled || window.Revision == 0 ||
-			window.Hold < 0 || window.Hold >= r.timeout ||
-			r.trailKey != window.PathKey || r.trailSrc != window.Source ||
-			window.ValidUntil.Before(now.Add(r.timeout)) {
-			continue
-		}
-		return window, true
-	}
-	return RecoveryWindow{}, false
-}
-
-// effectiveHoldLocked returns the per-gap hold arm() applies and whether the
-// exact authenticated recovery window supplied it. Caller holds r.mu.
-func (r *Resequencer) effectiveHoldLocked(now time.Time) (time.Duration, bool) {
-	if r.fecActive {
-		if recovery, eligible := r.recoveryEligibleLocked(now); eligible {
-			return recovery.Hold, true
-		}
-		return r.timeout, false
-	}
+// effectiveHoldLocked returns the per-gap hold arm() applies. Caller holds r.mu.
+func (r *Resequencer) effectiveHoldLocked() time.Duration {
 	if r.holdBound == 0 {
-		return r.timeout, false
+		return r.timeout
 	}
-	return r.holdBound, false
+	return r.holdBound
 }
 
-// ingest is the shared body of Observe (known == false, unknown identity) and
-// ObserveFromPath (known == true, carrying pathKey). It records the trailing
-// delivering-path evidence before classifying the frame so the head-of-line
-// timeout logic sees the up-to-date single-vs-multi-path state.
-func (r *Resequencer) ingest(
-	seq uint64,
-	payload []byte,
-	src netip.AddrPort,
-	known bool,
-	pathKey uint32,
-	observeAdmission func(),
-) bool {
+// Observe ingests one inner payload under its outer-seq. It takes ownership of
+// payload (the caller must not mutate it afterwards). src is the outer source
+// address the frame arrived from. Any frames that become deliverable are appended
+// to the ready FIFO for Pop. It returns true only when this outer sequence was
+// newly admitted; duplicates, stale frames, and suspect discontinuities return
+// false.
+func (r *Resequencer) Observe(seq uint64, payload []byte, src netip.AddrPort) bool {
 	now := r.clock.Now()
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.syncRecoveryAuthorityLocked(now)
-
-	// Record the delivering-path identity FIRST, so a second distinct key arriving
-	// with this frame re-arms the full hold before expire() decides the gap below.
-	if known {
-		r.trackPathKey(pathKey, src, now)
-	} else {
-		r.pathKnown = false
-		r.trailSrcValid = false
-		if r.waiting && r.recoveryArmed {
-			r.rearmConservativeLocked(now)
-		}
-	}
 
 	if !r.started {
-		if r.pendingSrcActive && src != r.pendingSrc {
-			// D34: a hub-failover Rebaseline armed the source-identity gate — re-anchor only on
-			// a frame from the expected new standby hub, so a stale old-hub straggler (a
-			// different source) cannot re-pin the release point. Bounded self-heal: after
-			// O(window) wrong-source frames the expected source is presumed gone (mis-config or
-			// a further failover) and we re-anchor on the next frame, so the gate never
-			// blackholes the stream.
-			r.pendingSrcDrops++
-			if r.pendingSrcDrops <= r.window {
-				r.dropSuspect++
-				return false
-			}
-		}
 		r.started = true
 		r.next = seq
-		r.pendingSrcActive = false
-		r.pendingSrcDrops = 0
 	}
 
 	// Give up on any head-of-line gap whose hold time has elapsed before deciding
@@ -870,123 +306,6 @@ func (r *Resequencer) ingest(
 
 	r.drain()
 	r.arm(now)
-	if observeAdmission != nil {
-		observeAdmission()
-	}
-	return true
-}
-
-// ObserveRecovered ingests a payload the FEC decoder reconstructed from parity (T24).
-// Unlike Observe it NEVER moves or re-pins the release point: a recovered frame is a
-// REPAIR for a past gap, so if it has already fallen below the release point it is
-// dropped as too-late, and it can neither window-advance nor corroborate a resync — so
-// FEC recovery can never CAUSE the burst loss it exists to prevent (a late batch of K
-// recovered seqs below `next` must not be able to dump the live buffer via a backward
-// resync). It returns whether the frame was PLACED (landed at or above the release
-// point and will be delivered in order); a dropped-late recovered frame returns false,
-// which the datapath uses to keep the /metrics recovered counter honest — counting
-// frames actually delivered ahead of the release point, not merely reconstructed.
-func (r *Resequencer) ObserveRecovered(seq uint64, payload []byte, src netip.AddrPort) bool {
-	return r.observeRecovered(seq, payload, src, nil)
-}
-
-// ObserveRecoveredWithAdmissionObserver behaves like ObserveRecovered and
-// invokes observeAdmission exactly once for a newly admitted recovered outcome.
-// The same lock-leaf ordering contract as ObserveFromPathWithAdmissionObserver
-// applies.
-func (r *Resequencer) ObserveRecoveredWithAdmissionObserver(
-	seq uint64,
-	payload []byte,
-	src netip.AddrPort,
-	observeAdmission func(),
-) bool {
-	if observeAdmission == nil {
-		panic("reseq: admission observer must not be nil")
-	}
-	return r.observeRecovered(seq, payload, src, observeAdmission)
-}
-
-func (r *Resequencer) observeRecovered(
-	seq uint64,
-	payload []byte,
-	src netip.AddrPort,
-	observeAdmission func(),
-) bool {
-	now := r.clock.Now()
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.syncRecoveryAuthorityLocked(now)
-
-	if r.pendingLow {
-		// A low-anchor re-baseline (peer restart) is armed: a parity-RECOVERED frame is
-		// by definition part of the PRE-restart stream — the gate is up precisely because
-		// a restart re-anchor is pending, and a frame recoverable from the old boot's
-		// parity belongs to that old boot. Seating it would place a stale old-boot cell in
-		// [anchor, anchor+window) that keeps the head-of-line timeout live and lets
-		// expire() jump `next` high past the restarted stream (round-3 FIX 4b, review
-		// R150). ObserveRecovered otherwise bypasses admit entirely, so without this it
-		// never consults the gate. Drop it — FEC recovery must not seat state while the
-		// gate arbitrates the restart. Returns false so the /metrics recovered counter
-		// stays honest (nothing was delivered).
-		r.dropSuspect++
-		return false
-	}
-
-	if !r.started {
-		// D64: a recovered (parity-reconstructed) frame must NEVER establish or re-pin the
-		// release point — that is Observe's job, and this method's documented contract is that
-		// it "NEVER moves or re-pins the release point". Before the first LIVE Observe (a fresh
-		// ring, or a plain Rebaseline that cleared `started` without arming the pendingLow
-		// gate), seating a recovered frame here would re-pin `next` to a repaired PAST seq and
-		// dump the live buffer. Drop it as too-early; a live Observe pins `next` normally.
-		r.dropSuspect++
-		return false
-	}
-	r.expire(now)
-
-	// The placement window is EXACTLY [next, next+window). A recovered frame below next
-	// is too late (drop, and — crucially — never feed the resync guard). One at or beyond
-	// next+window would require a window-advance we refuse to perform for a reconstructed
-	// frame, since that would skip live seqs on the strength of a repair. Neither branch
-	// touches next or the corroboration run.
-	if seq < r.next {
-		if r.next-seq > r.window {
-			r.dropSuspect++
-		} else {
-			r.dropLate++
-		}
-		return false
-	}
-	if seq-r.next >= r.window {
-		r.dropLate++
-		return false
-	}
-
-	cell := &r.ring[seq%r.window]
-	if cell.occupied && cell.seq == seq {
-		r.dropDup++
-		return false // already buffered (a received frame or a prior recovery)
-	}
-	fillsGap := r.waiting && seq == r.next
-	cell.seq = seq
-	cell.src = src
-	cell.payload = payload
-	cell.observedAt = now
-	cell.occupied = true
-	r.buf++
-	if r.buf > r.highWater {
-		r.highWater = r.buf
-	}
-	if fillsGap {
-		r.gapFills++
-		r.endHoldLocked(now)
-	}
-
-	r.drain()
-	r.arm(now)
-	if observeAdmission != nil {
-		observeAdmission()
-	}
 	return true
 }
 
@@ -997,51 +316,6 @@ func (r *Resequencer) observeRecovered(
 // bounded amount on a plausible loss burst, or re-pin next on a corroborated
 // discontinuity. Caller holds r.mu.
 func (r *Resequencer) admit(seq uint64, now time.Time) bool {
-	if r.pendingLow {
-		// A low-anchor re-baseline (peer restart, T119) is in effect: re-anchor the
-		// release point ONLY on the genuine restarted-stream low-seq — a frame more
-		// than one window BELOW the pre-rebaseline release point. A stale HIGH-seq
-		// straggler still draining from the OLD boot (at or near the old release
-		// point) is an ordinary SUSPECT-drop and must NOT re-pin `next` high, so
-		// recovery is not blocked once-per-epoch (defect D36 re-pin race). The
-		// seq < anchor guard is load-bearing: without it a straggler at or above the
-		// anchor would underflow the unsigned subtraction and spuriously re-anchor.
-		if seq < r.pendingLowAnchor && r.pendingLowAnchor-seq > r.window {
-			r.pendingLow = false
-			r.pendingLowDrops = 0
-			r.resyncReset()
-			// CLEAR the ring/buf on re-anchor (mirror resync, round-3 FIX 4a, review
-			// R150): a stale occupied cell left from the OLD boot — e.g. a parity-
-			// recovered old-boot frame seated in [anchor, anchor+window) — must NOT
-			// survive the re-anchor to next=seq. If it did, its cell would keep the
-			// head-of-line timeout live and expire() would jump `next` high past the
-			// restarted stream, suspect-dropping the new boot and delivering the stale
-			// frame; a surviving occupied cell also corrupts buf accounting on the next
-			// same-index placement (occupied-cell overwrite still does buf++).
-			for i := range r.ring {
-				r.ring[i] = slot{}
-			}
-			r.buf = 0
-			r.waiting = false
-			r.next = seq
-			return true
-		}
-		// BOUND the gate so a LOST re-anchor init frame can never permanently blackhole
-		// the restarted stream (round-3 FIX 3, review R150). After O(window) consecutive
-		// pendingLow suspect-drops, FALL BACK to a plain unpin (started=false): the next
-		// Observe re-anchors `next` and the existing resync-corroboration guard self-heals
-		// thereafter, exactly as the D32 hub-failover Rebaseline does — bounded loss
-		// instead of a permanent blackhole.
-		r.pendingLowDrops++
-		if r.pendingLowDrops > r.window {
-			r.pendingLow = false
-			r.pendingLowDrops = 0
-			r.started = false
-			r.resyncReset()
-		}
-		r.dropSuspect++
-		return false
-	}
 	if seq < r.next {
 		// Below the release point. A frame more than one window below next is
 		// impossibly late under bounded reorder — treat it as SUSPECT (a peer
@@ -1088,7 +362,6 @@ func (r *Resequencer) Pop() (Item, bool) {
 	now := r.clock.Now()
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.syncRecoveryAuthorityLocked(now)
 
 	r.expire(now)
 
@@ -1136,22 +409,15 @@ func (r *Resequencer) advanceTo(target uint64) {
 		if cell.occupied && cell.seq == r.next {
 			r.release(cell)
 		} else {
-			r.skipLocked(r.next, 1)
+			r.skipped++
 		}
 		r.next++
 	}
 	if r.next < target {
 		// The remaining gap [next, target) is entirely empty — no occupied cell can
 		// live a full window ahead of the old release point. Close it by arithmetic.
-		r.skipLocked(r.next, target-r.next)
+		r.skipped += target - r.next
 		r.next = target
-	}
-}
-
-func (r *Resequencer) skipLocked(first, count uint64) {
-	r.skipped += count
-	if r.lossObserver != nil {
-		r.lossObserver(first, count)
 	}
 }
 
@@ -1166,29 +432,10 @@ func (r *Resequencer) release(cell *slot) {
 	r.releasedN++
 }
 
-// singleSourceImmediate reports whether a head-of-line gap may be released with
-// ~0 hold instead of waiting the full timeout (D93). It holds ONLY when the frames
-// are provably arriving over ONE delivering path — a known identity (not the legacy
-// unknown ingest), FEC not active (a parity repair could still fill the gap), and
-// exactly one distinct pathKey observed within the trailing window (no second key
-// re-armed the hold and no rebaseline cold-start is in force). Over a single path a
-// gap is genuine loss, not reorder, so releasing its successors immediately is
-// sound; every other case degrades to the conservative full hold, never unsafe.
-// Caller holds r.mu.
-func (r *Resequencer) singleSourceImmediate(now time.Time) bool {
-	if r.fecActive || r.multiPathExpected || !r.pathKnown || !r.trailKeyValid {
-		return false
-	}
-	if r.multiKeyValid && now.Before(r.multiKeyUntil) {
-		return false
-	}
-	return true
-}
-
 // endHoldLocked accrues the elapsed time of the currently-armed head-of-line hold
-// into holdNanos and disarms it (T242, D93). It is the SINGLE accounting point for a
-// hold ENDING — whether by a timeout skip, a single-path immediate release, a fill,
-// or a discontinuity re-pin — so holdNanos stays a faithful sum of every armed hold's
+// into holdNanos and disarms it (T242). It is the SINGLE accounting point for a
+// hold ENDING — whether by a timeout skip, a fill, a window advance, or a re-pin —
+// so holdNanos stays a faithful sum of every armed hold's
 // arm→end lifetime. A no-op when no hold is armed. The now-armedAt guard tolerates a
 // non-advancing fake clock (contributes 0) and never adds a negative interval. Caller
 // holds r.mu.
@@ -1201,46 +448,18 @@ func (r *Resequencer) endHoldLocked(now time.Time) {
 	}
 	r.waiting = false
 	r.armedWindow = 0
-	r.recoveryArmed = false
-	r.recoveryRevision = 0
 	r.notifyLocked()
 }
 
-func (r *Resequencer) rearmConservativeLocked(now time.Time) {
-	if !r.waiting {
-		return
-	}
-	r.floorBufferedObservations(now)
-	r.deadline = now.Add(r.timeout)
-	r.armedWindow = r.timeout
-	if r.recoveryArmed {
-		r.fallbackWindowArms++
-	}
-	r.recoveryArmed = false
-	r.recoveryRevision = 0
-	r.notifyLocked()
-}
-
-// expire skips a head-of-line gap whose hold time has elapsed — or, over a single
-// delivering path, whose successors may release immediately (D93) — by jumping next
-// to the smallest buffered seq (treating the intervening seqs as lost) and releasing
+// expire skips a head-of-line gap whose hold time has elapsed by jumping next to
+// the smallest buffered seq (treating the intervening seqs as lost) and releasing
 // the now-contiguous run. Caller holds r.mu.
 func (r *Resequencer) expire(now time.Time) {
 	for r.waiting {
-		// A gap proceeds either because its hold elapsed (a timeout skip) OR — while the
-		// deadline is still in the future — because the single-delivering-path fast path
-		// permits an immediate release (D93). A deadline that has already elapsed is a
-		// timeout skip even if the fast path would also apply, so immediate is set ONLY on
-		// the pre-deadline fast-path branch.
-		immediate := false
 		if now.Before(r.deadline) {
-			if !r.singleSourceImmediate(now) {
-				return
-			}
-			immediate = true
-		} else {
-			r.deadlineWakeups++
+			return
 		}
+		r.deadlineWakeups++
 		minSeq, ok := r.smallestBuffered()
 		if !ok {
 			r.endHoldLocked(now)
@@ -1248,16 +467,10 @@ func (r *Resequencer) expire(now time.Time) {
 		}
 		// Skip the lost gap [next, minSeq), then release from minSeq onward.
 		if r.next < minSeq {
-			r.skipLocked(r.next, minSeq-r.next)
+			r.skipped += minSeq - r.next
 			r.next = minSeq
 		}
 		r.drain()
-		if immediate {
-			// D93 fast-path release EVENT (distinct from a timeout skip; NOT folded into
-			// skipped — see the counter comments). skipped above still counted the lost
-			// gap's seqs, keeping that counter's meaning unchanged.
-			r.immediateReleases++
-		}
 		r.endHoldLocked(now)
 		r.arm(now)
 	}
@@ -1274,7 +487,7 @@ func (r *Resequencer) arm(now time.Time) {
 	if !headPresent && r.buf > 0 {
 		if !r.waiting {
 			r.waiting = true
-			hold, recoveryArmed := r.effectiveHoldLocked(now)
+			hold := r.effectiveHoldLocked()
 			observedAt, ok := r.oldestBufferedObservation()
 			if !ok {
 				panic("reseq: buffered count has no occupied slot")
@@ -1282,14 +495,6 @@ func (r *Resequencer) arm(now time.Time) {
 			r.deadline = observedAt.Add(hold)
 			r.armedAt = now
 			r.armedWindow = hold
-			r.recoveryArmed = recoveryArmed
-			if recoveryArmed {
-				recovery, _ := r.recoveryEligibleLocked(now)
-				r.recoveryRevision = recovery.Revision
-				r.fastWindowArms++
-			} else {
-				r.fallbackWindowArms++
-			}
 			r.holds++
 			r.notifyLocked()
 		}
@@ -1298,56 +503,6 @@ func (r *Resequencer) arm(now time.Time) {
 		// this hold's elapsed time and disarm (T242). A no-op when no hold was armed.
 		r.endHoldLocked(now)
 	}
-}
-
-// trackPathKey folds one known delivering-path key into the trailing single-path
-// evidence (D93). The first key after a reset becomes the current single-path
-// candidate; a key DIFFERENT from the candidate re-arms the full hold for a whole
-// trailing window from now (the window IS the re-arm dwell) and adopts the new key
-// as the candidate, so a return to a single key re-enables immediate release only
-// once the window elapses with no further foreign key. Sustained interleave keeps
-// pushing the deadline forward, so immediate release never flaps on. A garbled or
-// spoofed sender PathID can only ADD distinct keys, which only ever FORCES the
-// conservative full hold — DoS-neutral, never unsafe. Caller holds r.mu.
-func (r *Resequencer) trackPathKey(key uint32, src netip.AddrPort, now time.Time) {
-	r.pathKnown = true
-	if !r.trailKeyValid {
-		r.trailKey = key
-		r.trailKeyValid = true
-		r.trailSrc = src
-		r.trailSrcValid = true
-		return
-	}
-	if key != r.trailKey {
-		r.multiKeyUntil = now.Add(singleSourceTrailingWindow)
-		r.multiKeyValid = true
-		r.trailKey = key
-	}
-	if !r.trailSrcValid || src != r.trailSrc {
-		r.trailSrc = src
-		r.trailSrcValid = true
-	}
-	if r.waiting && r.recoveryArmed {
-		if _, eligible := r.recoveryEligibleLocked(now); !eligible {
-			r.rearmConservativeLocked(now)
-		}
-	}
-}
-
-// resetPathTracking clears the trailing single-path evidence after a rebaseline
-// (hub failover / peer restart) and holds immediate release suppressed for a full
-// trailing window from now (D93). A control-event rebaseline is exactly when the
-// delivering topology is in flux and reorder is likeliest, so the stream must
-// re-establish single-path confidence before the fast path re-engages rather than
-// inheriting the pre-rebaseline candidate. Caller holds r.mu.
-func (r *Resequencer) resetPathTracking(now time.Time) {
-	r.pathKnown = false
-	r.trailKeyValid = false
-	r.trailKey = 0
-	r.trailSrc = netip.AddrPort{}
-	r.trailSrcValid = false
-	r.multiKeyUntil = now.Add(singleSourceTrailingWindow)
-	r.multiKeyValid = true
 }
 
 // tryResync feeds one out-of-band (suspect) seq into the discontinuity guard. It
@@ -1437,186 +592,28 @@ func (r *Resequencer) resyncReset() {
 	r.resyncHi = 0
 }
 
-// Rebaseline discards the buffered (pre-switch) frames and UNPINS the release
-// point so the NEXT Observe re-anchors `next` to that frame's outer-seq, exactly as
-// if the stream had just started. It exists for the edge-side HUB FAILOVER (T57): a
-// concentrator switch changes the DATA-frame SENDER, and the standby is a separate
-// process whose outer-seq restarts near 1 — far below the release point the prior
-// hub's high-rate stream advanced `next` to. The unauthenticated tryResync path
-// cannot rescue this in time: it needs resyncCorroborate (3) distinct low seqs
-// within one window, but a freshly re-handshaking standby emits only ~1 DATA frame
-// (the handshake response) per RekeyTimeout, so corroboration falls outside the
-// failover window and the response is dropped as SUSPECT — the tunnel never
-// re-establishes (defect D32). Unlike a DATA frame (forgeable by design, hence the
-// corroboration guard), THIS re-pin is driven by a TRUSTED control event — the
-// operator-configured ordered-endpoint switch, above the unauthenticated wire — so
-// re-anchoring on the next single frame is sound. Buffered frames (from the dead
-// prior hub) are discarded in O(window); the already-released FIFO of prior
-// legitimate deliveries is untouched. Idempotent and safe before the first Observe
-// (started stays false). Takes r.mu; the caller must NOT hold it.
-func (r *Resequencer) Rebaseline(expectedSrc netip.AddrPort) {
-	r.rebaseline(expectedSrc, 0, true, 0)
-}
-
-// RebaselineGeneration applies a trusted rebaseline in an externally owned
-// peer receiver/topology generation. Older generations are ignored.
-func (r *Resequencer) RebaselineGeneration(expectedSrc netip.AddrPort, generation uint64) {
-	r.rebaseline(expectedSrc, generation, false, 0)
-}
-
-// RebaselineAt starts a trusted, generation-fenced stream at its known first sequence.
+// RebaselineAt starts a trusted stream at its known first sequence: it discards
+// the buffered frames (they belong to the previous stream) in O(window), ends any
+// armed hold and pins the release point at next. The bind calls it when the
+// peer's epoch changes — a TRUSTED control event, so it bypasses the tryResync
+// corroboration guard. The already-released FIFO of prior legitimate deliveries
+// is untouched. Takes r.mu; the caller must NOT hold it.
 func (r *Resequencer) RebaselineAt(next uint64) {
 	if next == 0 {
 		panic("reseq: explicit first sequence must be nonzero")
 	}
-	r.rebaseline(netip.AddrPort{}, 0, true, next)
-}
-
-func (r *Resequencer) rebaseline(expectedSrc netip.AddrPort, generation uint64, advance bool, next uint64) {
 	now := r.clock.Now()
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.syncRecoveryAuthorityLocked(now)
-	if advance {
-		generation = r.recoveryGeneration + 1
-		if generation == 0 {
-			generation++
-		}
-		if r.recoveryAuthority != nil {
-			r.recoveryAuthority.AdvanceTo(generation, now)
-		}
-	} else if generation < r.recoveryGeneration {
-		return
-	}
-	r.recoveryGeneration = generation
-	r.recoveryPublicationRevision = 0
-	r.resetPathTracking(now) // D93: a rebaseline resets the trailing single-path evidence.
-	r.recoveries = nil
 	for i := range r.ring {
 		r.ring[i] = slot{}
 	}
 	r.buf = 0
-	r.started = next != 0
+	r.started = true
 	r.next = next
 	r.endHoldLocked(now) // T242: account the discarded hold's elapsed time, then disarm.
-	// A full unpin SUPERSEDES any pending low-anchor re-baseline (T119). If a peer
-	// restart had armed pendingLow (via RebaselineToLow) and the restarted low-seq
-	// init had not yet re-anchored `next`, a subsequent D32 hub failover must NOT
-	// leave the stale pendingLow gate in force: admit would keep classifying every
-	// fail-back frame against the now-stale pendingLowAnchor and blackhole the
-	// standby's stream, violating this method's documented "next Observe re-anchors
-	// next" postcondition. Clearing it restores the plain unpin-and-trust-next path.
-	r.pendingLow = false
-	r.pendingLowDrops = 0
-	// Arm the D34 source-identity gate when the caller supplies the expected new hub endpoint:
-	// the next re-anchor accepts only a frame from that source (a stale old-hub straggler is
-	// SUSPECT-dropped, bounded by pendingSrcDrops). A zero/unknown expected source leaves the gate
-	// off — re-anchor on the next frame, the pre-D34 behaviour idempotence/metrics callers rely on.
-	r.pendingSrc = expectedSrc
-	r.pendingSrcActive = expectedSrc.IsValid()
-	r.pendingSrcDrops = 0
 	r.resyncReset()
 	r.rebaselines++
-	r.notifyLocked()
-}
-
-// RebaselineToLow re-baselines the release point for a PEER RESTART (T119) using a
-// LOW-ANCHOR rule the plain Rebaseline lacks. Like Rebaseline it discards the
-// buffered pre-restart frames in O(window) and leaves the already-released FIFO
-// untouched, but instead of unpinning `next` and trusting the NEXT frame to
-// re-anchor, it PINS a pending low-anchor at the current release point: `next`
-// re-anchors ONLY when a frame more than one window BELOW that point arrives — the
-// genuine restarted-stream low-seq (the wrapped WG init, outer-seq ~1). Any stale
-// HIGH-seq straggler still draining from the OLD boot lands at or near the old
-// release point and is SUSPECT-dropped, so it can never re-pin `next` high and
-// block recovery (the D36 re-pin race under the saturation precondition that a
-// plain Rebaseline — which re-anchors on the first frame, high straggler included —
-// cannot survive; plan review R126). Idempotent across repeated restart signals: a
-// second call while a re-anchor is still pending keeps the ORIGINAL (high) anchor.
-// Safe before the first Observe (an UNSTARTED ring needs no re-anchor — the first
-// Observe pins next normally).
-//
-// The low-anchor gate is armed ONLY when the pre-rebaseline release point is high
-// enough for it to be satisfiable: the re-anchor predicate is
-// `seq < pendingLowAnchor && pendingLowAnchor - seq > window`, and the restarted
-// sender's first DATA is outer-seq ~1, so it can only re-anchor when
-// pendingLowAnchor >= window+2 (i.e. next > window+1). For a SMALL anchor
-// (next <= window+1) the predicate is UNSATISFIABLE for any low seq — nothing would
-// ever clear pendingLow and every subsequent frame would be SUSPECT-dropped forever
-// (a permanent blackhole; the pre-T119 code self-heals here via resync corroboration,
-// so pinning would be a regression). This is the realistic light-traffic / early-
-// restart / crash-loop case. So when the anchor is small we fall back to a PLAIN
-// unpin (started=false), re-anchoring on the next frame exactly as the D32
-// Rebaseline does — bounded, self-healing loss instead of a blackhole. Takes r.mu;
-// the caller must NOT hold it.
-//
-// Even a correctly-armed gate (anchor >= window+2) is BOUNDED so LOSS cannot blackhole
-// it (round-3 FIX 3): the sole in-budget re-anchor frame at anchor == window+2 is
-// outer-seq 1, and if that lone init frame is lost every later new-boot frame fails the
-// predicate; admit therefore counts consecutive pending-low suspect-drops and, after
-// O(window) of them, falls back to a plain unpin that self-heals via resync corroboration.
-func (r *Resequencer) RebaselineToLow() {
-	r.rebaselineToLow(0, true)
-}
-
-// RebaselineToLowGeneration applies the peer-restart low-anchor transition in
-// an externally owned peer receiver/topology generation.
-func (r *Resequencer) RebaselineToLowGeneration(generation uint64) {
-	r.rebaselineToLow(generation, false)
-}
-
-func (r *Resequencer) rebaselineToLow(generation uint64, advance bool) {
-	now := r.clock.Now()
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.syncRecoveryAuthorityLocked(now)
-	if advance {
-		generation = r.recoveryGeneration + 1
-		if generation == 0 {
-			generation++
-		}
-		if r.recoveryAuthority != nil {
-			r.recoveryAuthority.AdvanceTo(generation, now)
-		}
-	} else if generation < r.recoveryGeneration {
-		return
-	}
-	r.recoveryGeneration = generation
-	r.recoveryPublicationRevision = 0
-	r.resetPathTracking(now) // D93: a rebaseline resets the trailing single-path evidence.
-	r.recoveries = nil
-	for i := range r.ring {
-		r.ring[i] = slot{}
-	}
-	r.buf = 0
-	r.endHoldLocked(now) // T242: account the discarded hold's elapsed time, then disarm.
-	// A peer-restart low-anchor re-baseline SUPERSEDES any pending hub-failover source gate
-	// (D34): the low-anchor gate below arbitrates the re-anchor now, so a stale pendingSrc must
-	// not also gate it.
-	r.pendingSrc = netip.AddrPort{}
-	r.pendingSrcActive = false
-	r.pendingSrcDrops = 0
-	r.resyncReset()
-	r.rebaselines++
-	switch {
-	case r.pendingLow:
-		// Already pending from an earlier restart signal this epoch: keep the ORIGINAL
-		// (high) anchor — idempotent under repeated restart signals for the same epoch.
-	case r.started && r.next > r.window+1:
-		// The release point is high enough for the low-anchor gate to be satisfiable:
-		// hold `next` at the pre-rebaseline release point so stale-high stragglers
-		// SUSPECT-drop until the restarted low-seq re-anchors it.
-		r.pendingLow = true
-		r.pendingLowAnchor = r.next
-		r.pendingLowDrops = 0
-	default:
-		// UNSTARTED ring, or a small release point (next <= window+1) where a low-anchor
-		// gate would be UNSATISFIABLE and permanently blackhole the restarted stream.
-		// Fall back to a plain unpin: the next Observe re-anchors next, self-healing
-		// exactly as the D32 hub-failover Rebaseline does. On an unstarted ring this is
-		// a no-op (started is already false).
-		r.started = false
-	}
 	r.notifyLocked()
 }
 
@@ -1652,17 +649,6 @@ func (r *Resequencer) oldestBufferedObservation() (time.Time, bool) {
 	return oldest, found
 }
 
-// floorBufferedObservations prevents frames already buffered across an evidence
-// or topology transition from inheriting pre-transition recovery time.
-func (r *Resequencer) floorBufferedObservations(floor time.Time) {
-	for i := range r.ring {
-		cell := &r.ring[i]
-		if cell.occupied && cell.observedAt.Before(floor) {
-			cell.observedAt = floor
-		}
-	}
-}
-
 // Buffered reports the number of frames currently held (not yet released). It is
 // always <= window, which the bounded-memory tests assert.
 func (r *Resequencer) Buffered() int {
@@ -1691,21 +677,17 @@ type Stats struct {
 	DroppedDup     uint64 // frames dropped as duplicates
 	DroppedOld     uint64 // frames dropped as already-past the release point
 	DroppedSuspect uint64 // out-of-band frames dropped while (not yet) corroborating
-	Skipped        uint64 // seqs skipped (lost) by window-advance or timeout — INCLUDING those skipped by a D93 immediate release; ImmediateReleases separately counts the fast-path release EVENTS so the two are distinguishable
+	Skipped        uint64 // seqs skipped (lost) by window-advance or timeout
 	Resyncs        uint64 // release-point re-pins after a corroborated discontinuity
-	Rebaselines    uint64 // release-point re-baselines forced by a trusted control event (e.g. hub failover, peer restart)
+	Rebaselines    uint64 // release-point re-baselines forced by a trusted control event (the peer's epoch changed)
 
-	// HoL-stall / hold accounting (T242, D93 observability leg).
-	Holds              uint64 // head-of-line gaps that armed a hold
-	HoldNanos          uint64 // cumulative nanoseconds gaps spent held before a timeout skip, a single-path immediate release, a fill, or a discontinuity re-pin
-	ImmediateReleases  uint64 // gaps released via the D93 single-delivering-path fast path — NOT folded into Skipped (see Skipped): a rising ImmediateReleases means the amplifier is disarmed
-	RecoveryArmed      bool
-	ArmedDeadline      time.Time
-	ArmedWindow        time.Duration
-	DeadlineWakeups    uint64
-	GapFills           uint64
-	FastWindowArms     uint64
-	FallbackWindowArms uint64
+	// HoL-stall / hold accounting (T242).
+	Holds           uint64 // head-of-line gaps that armed a hold
+	HoldNanos       uint64 // cumulative nanoseconds gaps spent held before a timeout skip, a fill, a window advance, or a re-pin
+	ArmedDeadline   time.Time
+	ArmedWindow     time.Duration
+	DeadlineWakeups uint64
+	GapFills        uint64
 }
 
 // Stats returns a snapshot of the cumulative counters.
@@ -1721,14 +703,10 @@ func (r *Resequencer) Stats() Stats {
 		Resyncs:        r.resyncs,
 		Rebaselines:    r.rebaselines,
 
-		Holds:              r.holds,
-		HoldNanos:          r.holdNanos,
-		ImmediateReleases:  r.immediateReleases,
-		RecoveryArmed:      r.recoveryArmed,
-		DeadlineWakeups:    r.deadlineWakeups,
-		GapFills:           r.gapFills,
-		FastWindowArms:     r.fastWindowArms,
-		FallbackWindowArms: r.fallbackWindowArms,
+		Holds:           r.holds,
+		HoldNanos:       r.holdNanos,
+		DeadlineWakeups: r.deadlineWakeups,
+		GapFills:        r.gapFills,
 	}
 	if r.waiting {
 		stats.ArmedDeadline = r.deadline

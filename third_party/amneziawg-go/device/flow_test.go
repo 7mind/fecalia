@@ -148,8 +148,7 @@ func FuzzPacketMetadata(f *testing.F) {
 
 func (b *flowCaptureBind) PacketMetadataEnabled() bool { return b.enabled }
 
-func (b *flowCaptureBind) SendWithMetadata(bufs [][]byte, metadata []conn.PacketMetadata, ep conn.Endpoint, complete func()) error {
-	defer complete()
+func (b *flowCaptureBind) SendWithMetadata(bufs [][]byte, metadata []conn.PacketMetadata, ep conn.Endpoint) error {
 	b.mu.Lock()
 	b.metadata = append(b.metadata, metadata...)
 	b.mu.Unlock()

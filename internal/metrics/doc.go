@@ -5,8 +5,6 @@
 // counters, loss ratio, RTT, jitter, throughput, and liveness (up) — read from a
 // Source at scrape time; the telemetry-derived signals (RTT/jitter/loss/state)
 // come verbatim from the telemetry plane's Estimate/Prober, not re-measured here.
-// It also registers the FEC counters (repair/recovered/unrecoverable) now, with a
-// constant zero placeholder, to be populated when the FEC codec lands (P3).
 //
 // Binding to any non-loopback or wildcard address is refused at construction
 // (ErrNonLoopbackBind): the endpoint carries per-path operational data and must

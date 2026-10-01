@@ -7,9 +7,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/7mind/wanbond/internal/frame"
-	"github.com/7mind/wanbond/internal/reseq"
-	"github.com/7mind/wanbond/internal/shaper"
 	"github.com/7mind/wanbond/internal/telemetry"
 )
 
@@ -20,63 +17,8 @@ func mapPMTUProbeWriteError(err error) error {
 	return err
 }
 
-type probeOfferRecord struct {
-	contract *recoveryContractCoordinator
-	offered  recoveryOfferSnapshot
-}
-
-func (m *Multipath) emitProbePayload(
-	ps *peerPathState,
-	prober *telemetry.Prober,
-	remote netip.AddrPort,
-	payload []byte,
-	offer probeOfferRecord,
-) {
-	probeSize := frame.UnpaddedProbeOnWire + len(payload)
-	if shaped, ok := ps.shaper.(recoveryPathShaper); ok {
-		var sent frame.Probe
-		admitted, done, writeErr := shaped.TryWritePriorityGenerated(
-			probeSize,
-			func() ([]byte, shaper.WriteFunc, error) {
-				raw, probe, generateErr := prober.SendProbePayload(payload)
-				if generateErr != nil {
-					return nil, nil, generateErr
-				}
-				sent = probe
-				return raw, func(encoded []byte) error {
-					if _, err := ps.writeToUDPAddrPort(encoded, remote); err != nil {
-						ps.socketWriteErrors.Add(1)
-						return m.accountSendError(ps, err)
-					}
-					return nil
-				}, nil
-			},
-		)
-		switch {
-		case writeErr != nil:
-			ps.probeSendErrors.Add(1)
-		case !admitted:
-			ps.probePriorityCoalesced.Add(1)
-		default:
-			go func(completion <-chan error) {
-				if err := <-completion; err != nil {
-					ps.probeSendErrors.Add(1)
-					return
-				}
-				ps.recordOuterWrite(probeSize)
-				if offer.contract != nil {
-					offer.contract.recordOffer(ps.id, telemetryProbeHeader{
-						sessionID: sent.SessionID,
-						probeSeq:  sent.ProbeSeq,
-						challenge: sent.Challenge,
-					}, offer.offered)
-				}
-			}(done)
-		}
-		return
-	}
-
-	raw, probe, err := prober.SendProbePayload(payload)
+func (m *Multipath) emitProbePayload(ps *peerPathState, prober *telemetry.Prober, remote netip.AddrPort, payload []byte) {
+	raw, _, err := prober.SendProbePayload(payload)
 	if err != nil {
 		ps.probeSendErrors.Add(1)
 		return
@@ -91,29 +33,19 @@ func (m *Multipath) emitProbePayload(
 		return
 	}
 	// True-wire-volume accounting (D48): a PROBE frame is real egress
-	// traffic, so it counts toward txBytes exactly like a DATA/PARITY
-	// write — only on a nil write error, matching the Send hot path.
+	// traffic, so it counts toward txBytes — only on a nil write error.
 	ps.recordOuterWrite(len(raw))
-	m.accountGeneratedPriorityAfterWrite(ps, len(raw))
-	if offer.contract != nil {
-		offer.contract.recordOffer(ps.id, telemetryProbeHeader{
-			sessionID: probe.SessionID,
-			probeSeq:  probe.ProbeSeq,
-			challenge: probe.Challenge,
-		}, offer.offered)
-	}
 }
 
 // emitProbes performs one probe cadence step: for every currently-open path it
-// emits an authenticated local PROBE frame (IsEcho=false) to that path's
-// learned/configured remote, plus a separate feedback-only probe when a receiver
-// DATA-loss report is ready, then Ticks that path's Prober so liveness advances
-// against the injected clock. A pending PMTU probe occupies this local slot
-// instead of emitting an ordinary liveness probe, but the following slot is
-// always ordinary before another PMTU request can run; a reactive echo remains
-// an immediate write outside this cadence. A path without a known remote yet is
-// still Ticked (so a silent path is detected Down) but nothing is sent — there
-// is nowhere to send.
+// emits an authenticated local PROBE frame (IsEcho=false) carrying the peer
+// transport's hello to that path's learned/configured remote, then Ticks that
+// path's Prober so liveness advances against the injected clock. A pending PMTU
+// probe occupies this local slot instead of emitting an ordinary liveness probe,
+// but the following slot is always ordinary before another PMTU request can run;
+// a reactive echo remains an immediate write outside this cadence. A path without
+// a known remote yet is still Ticked (so a silent path is detected Down) but
+// nothing is sent — there is nowhere to send.
 //
 // Concurrency mirrors Send: the path/prober set is snapshotted under m.mu, then
 // released before any socket I/O, so emission neither holds the lock across a
@@ -121,134 +53,46 @@ func (m *Multipath) emitProbePayload(
 // write failures increment wanbond_path_probe_send_errors_total. An ordinary
 // failure is then discarded so the cadence continues across other paths; a PMTU
 // failure is returned to discovery. Expected PMTU EMSGSIZE is excluded from the
-// counter and becomes discovery's too-large verdict. Shaped priority reserves its
-// exact encoded length before sequence/timestamp generation and uses the serialized
-// path writer. It is a no-op when the bind has no probers or is closed.
+// counter and becomes discovery's too-large verdict. It is a no-op when the bind
+// is closed.
 func (m *Multipath) emitProbes() {
 	m.mu.Lock()
-	if len(m.paths) == 0 || m.probers == nil {
+	if len(m.paths) == 0 {
 		m.mu.Unlock()
 		return
 	}
 	type target struct {
-		ps       *peerPathState
-		pr       *telemetry.Prober
-		peer     *peerState
-		contract *recoveryContractCoordinator
+		ps   *peerPathState
+		peer *peerState
 	}
 	// Probe EVERY bound peer's paths (T93): a concentrator initiates its own probe stream to
 	// each edge over that edge-peer's per-(peer,path) prober, so every peer's liveness/RTT is
-	// measured for its OWN scheduler. On the single-peer edge/hub m.peers holds only the
-	// primary, so this is byte-identical to the pre-split single-peer sweep.
-	// holdUpdate carries one peer's resequencer plus its paths' probers so the
-	// RTT-adaptive per-gap hold (T241, D93) can be refreshed lock-free below at
-	// this probe cadence — the natural per-path telemetry consult point, never the
-	// per-datagram hot path.
-	type holdUpdate struct {
-		peer *peerState
-		rq   *reseq.Resequencer
-		prs  []*telemetry.Prober
-	}
+	// measured on its own.
 	targets := make([]target, 0, len(m.paths))
-	holds := make([]holdUpdate, 0, len(m.peers))
 	for _, p := range m.peers {
 		for _, ps := range p.paths {
-			if ps.prober == nil {
-				continue
-			}
-			targets = append(targets, target{ps: ps, pr: ps.prober, peer: p, contract: p.contracts})
-		}
-		if rq := p.resequencer.Load(); rq != nil {
-			prs := make([]*telemetry.Prober, 0, len(p.paths))
-			for _, ps := range p.paths {
-				if ps.prober != nil {
-					prs = append(prs, ps.prober)
-				}
-			}
-			if len(prs) > 0 {
-				holds = append(holds, holdUpdate{peer: p, rq: rq, prs: prs})
-			}
+			targets = append(targets, target{ps: ps, peer: p})
 		}
 	}
 	m.mu.Unlock()
 
-	// Refresh each peer's dynamic per-gap hold from its paths' measured RTT (T241,
-	// D93): the MAX smoothed RTT across the peer's probed paths bounds the
-	// cross-path reorder horizon (a straggler can trail its head by at most about
-	// the slowest path's RTT), so hold = holdBoundRTTMultiple x maxSRTT, clamped by
-	// the resequencer to [its floor, resequencerTimeout]. Paths with no RTT sample
-	// yet contribute nothing; with no sample at all the bound is left unset and the
-	// resequencer keeps the full fixed hold (conservative).
-	for _, h := range holds {
-		if h.peer.adaptive.Load() != nil {
-			continue
-		}
-		var maxRTT time.Duration
-		for _, pr := range h.prs {
-			if rtt := pr.Estimate().RTT; rtt > maxRTT {
-				maxRTT = rtt
-			}
-		}
-		if maxRTT > 0 {
-			h.rq.SetHoldBound(holdBoundRTTMultiple * maxRTT)
-		}
-	}
-
-	feedbacks := make(map[*peerState]*telemetry.DataLossFeedback, len(holds))
-	for _, h := range holds {
-		if h.peer.dataLoss == nil || h.peer.contracts == nil {
-			continue
-		}
-		feedbacks[h.peer] = h.peer.dataLoss.buildReport(
-			h.peer.contracts.receivedDataLossSnapshot(),
-			m.clock.Now(),
-		)
-	}
-
 	now := time.Now()
 	for _, t := range targets {
-		// One-time sticky DEAD fallback for the selected downlink destination (T246,
+		// One-time sticky DEAD fallback for the selected destination (T246,
 		// defect D94), evaluated at probe cadence — never the per-datagram hot path.
 		t.ps.checkRemoteDead(now)
 		remote, hasRemote := t.ps.getRemote()
 		if request := t.ps.takePMTUProbe(); request != nil {
 			request.done <- request.work()
 		} else if hasRemote {
-			var offered recoveryOfferSnapshot
-			if t.contract != nil {
-				offered = t.contract.offerSnapshot()
-			}
-			if feedback := feedbacks[t.peer]; feedback != nil {
-				feedbackPayload, payloadErr := telemetry.EncodeProbePayload(nil, feedback)
-				if payloadErr != nil {
-					panic(payloadErr)
-				}
-				m.emitProbePayload(t.ps, t.pr, remote, feedbackPayload, probeOfferRecord{})
-			}
-			contractPayload := offered.payload
+			var hello []byte
 			if adaptive := t.peer.adaptive.Load(); adaptive != nil {
-				contractPayload = adaptive.hello(t.ps.id)
+				hello = adaptive.hello(t.ps.id)
 			}
-			m.emitProbePayload(t.ps, t.pr, remote, contractPayload, probeOfferRecord{
-				contract: t.contract,
-				offered:  offered,
-			})
+			m.emitProbePayload(t.ps, t.ps.prober, remote, hello)
 		}
-		t.pr.Tick()
+		t.ps.prober.Tick()
 	}
-	if m.fecCfg != nil {
-		for _, h := range holds {
-			m.refreshPeerRecoveryWindow(h.peer)
-		}
-	}
-	// Eager failover nudge (defect D18): recompute the scheduler's active egress path
-	// each probe cadence so a liveness DOWN switches egress even when no application
-	// Send is driving Pick. This is the timer-driven companion to the receive-tick
-	// nudge (see tickLivenessFromReceive) — under CPU starvation this loop's ticker
-	// lags, which is why the receive-tick path carries the guarantee, but when the
-	// loop does run it keeps the selection fresh independent of egress traffic.
-	m.nudgeSchedulerActive()
-	m.driveCongestionControllers()
 }
 
 // StartProbeLoop launches the probe cadence goroutine: it calls emitProbes every
@@ -261,10 +105,9 @@ func (m *Multipath) emitProbes() {
 // liveness logic: every liveness decision the loop drives runs through the
 // injected telemetry.Clock the Probers hold (SendProbe stamps it, Tick reads it),
 // so tests drive emitProbes directly against a fake clock and never start this
-// goroutine. It is a no-op (returning a no-op stopper) when the bind has no
-// probers or interval <= 0.
+// goroutine. It is a no-op (returning a no-op stopper) when interval <= 0.
 func (m *Multipath) StartProbeLoop(interval time.Duration) (stop func()) {
-	if m.probers == nil || interval <= 0 {
+	if interval <= 0 {
 		return func() {}
 	}
 	// Arm the receive-path liveness sweep at the same cadence (D15): a receiver may

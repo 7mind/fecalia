@@ -12,6 +12,10 @@ import time
 
 from lab import GUESTS, Lab
 
+# Emitted explicitly: a binary that still carries the removed transports selects
+# another one when the key is omitted.
+POLICY = "adaptive"
+
 
 def profile_from(path):
     profile = json.loads(path.read_text())
@@ -28,7 +32,7 @@ def apply_profile(lab, profile):
             future.result()
 
 
-def provision(lab, binary, policy):
+def provision(lab, binary):
     binary = binary.resolve(strict=True)
     if not binary.is_file():
         raise ValueError("candidate must be a regular executable file")
@@ -59,8 +63,7 @@ allowed_ips=["10.77.0.{2 if hub else 1}/32"]
         if not hub:
             config += 'endpoint="10.77.200.1:51820"\n'
         config += f'''[scheduler]
-policy="{policy}"
-{"per_path_capacity_fps=100" if policy == "weighted" else ""}
+policy="{POLICY}"
 [metrics]
 listen="127.0.0.1:9090"
 [liveness]
@@ -116,7 +119,6 @@ def measure(lab, output, name, seconds, warmup, reverse):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("binary", type=Path)
-    parser.add_argument("--policy", required=True)
     parser.add_argument("--seconds", type=int, default=20)
     parser.add_argument("--warmup", type=int, default=5, help="convergence period; retained as omitted intervals in raw iperf output")
     parser.add_argument("--idle-seconds", type=int, default=0, help="leave the tunnel idle before measuring startup from sparse feedback")
@@ -126,12 +128,12 @@ def main():
         parser.error("--idle-seconds must be nonnegative")
     lab = Lab()
     lab.acquire()
-    output = lab.state / (time.strftime("%Y%m%d-%H%M%S") + "-" + args.policy)
+    output = lab.state / (time.strftime("%Y%m%d-%H%M%S") + "-" + POLICY)
     output.mkdir()
     profile = profile_from(args.profile)
     apply_profile(lab, profile)
-    provision(lab, args.binary, args.policy)
-    summary = {"binary_sha256": hashlib.sha256(args.binary.read_bytes()).hexdigest(), "policy": args.policy, "profile": profile, "warmup_seconds": args.warmup, "measurement_seconds": args.seconds, "idle_seconds": args.idle_seconds}
+    provision(lab, args.binary)
+    summary = {"binary_sha256": hashlib.sha256(args.binary.read_bytes()).hexdigest(), "policy": POLICY, "profile": profile, "warmup_seconds": args.warmup, "measurement_seconds": args.seconds, "idle_seconds": args.idle_seconds}
     try:
         if args.idle_seconds:
             for guest in GUESTS:

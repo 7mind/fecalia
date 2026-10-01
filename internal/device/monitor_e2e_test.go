@@ -22,6 +22,7 @@ import (
 	"github.com/7mind/wanbond/internal/config"
 	"github.com/7mind/wanbond/internal/metrics"
 	"github.com/7mind/wanbond/internal/monitor"
+	"github.com/7mind/wanbond/internal/reseq"
 	"github.com/7mind/wanbond/internal/telemetry"
 )
 
@@ -262,7 +263,7 @@ func fullPublicKeyB64(t *testing.T, priv config.Key) string {
 // (single, unnamed peer): the first frame is the flat single-peer shape, then a
 // mutation to the underlying Source — path flipped DOWN, byte counters grown
 // (the throughput driver; the rate derivation itself is unit-tested in
-// TestMetricsSourceDerivesThroughput), RTT/loss changed, FEC populated, WG
+// TestMetricsSourceDerivesThroughput), RTT/loss changed, resequencer counters populated, WG
 // session established — MUST surface on a later pushed frame.
 func TestMonitorLiveWSReflectsSourceSinglePeer(t *testing.T) {
 	defer goleak.VerifyNone(t)
@@ -314,14 +315,14 @@ func TestMonitorLiveWSReflectsSourceSinglePeer(t *testing.T) {
 				Estimate: telemetry.Estimate{RTT: 90 * time.Millisecond, Jitter: 12 * time.Millisecond, Loss: 0.2},
 				State:    telemetry.StateDown},
 		},
-		FEC: bind.FECStats{DataFrames: 120, ParityFrames: 40, Recovered: 7, Unrecoverable: 1, DataBytes: 60000, ParityBytes: 8000, ResidualLoss: 0.002},
+		Reseq: reseq.Stats{Released: 120, Skipped: 7, DroppedOld: 1},
 	}})
 
 	// A later pushed frame must reflect ALL of the level-triggered changes.
-	got := readUntil(t, readSnap, "path down + counters grown + FEC populated + session established", func(s monitor.MonitorSnapshot) bool {
+	got := readUntil(t, readSnap, "path down + counters grown + resequencer populated + session established", func(s monitor.MonitorSnapshot) bool {
 		return len(s.Paths) == 1 && !s.Paths[0].Up &&
 			s.Paths[0].TxBytes == 1_000_000 && s.Paths[0].RxBytes == 2_000_000 &&
-			len(s.FEC) == 1 && s.FEC[0].DataPackets == 120 &&
+			len(s.Reseq) == 1 && s.Reseq[0].Released == 120 &&
 			s.Session.Established
 	})
 	if !approxEq(got.Paths[0].RTTSeconds, 0.09) {
@@ -330,8 +331,8 @@ func TestMonitorLiveWSReflectsSourceSinglePeer(t *testing.T) {
 	if !approxEq(got.Paths[0].Loss, 0.2) {
 		t.Errorf("reflected Loss=%g, want ~0.2", got.Paths[0].Loss)
 	}
-	if got.FEC[0].RecoveredPackets != 7 || got.FEC[0].UnrecoverablePackets != 1 {
-		t.Errorf("reflected FEC recovered/unrecoverable = %d/%d, want 7/1", got.FEC[0].RecoveredPackets, got.FEC[0].UnrecoverablePackets)
+	if got.Reseq[0].Skipped != 7 || got.Reseq[0].DroppedOld != 1 {
+		t.Errorf("reflected resequencer skipped/droppedOld = %d/%d, want 7/1", got.Reseq[0].Skipped, got.Reseq[0].DroppedOld)
 	}
 	if got.Session.LastHandshakeSeconds != 15 {
 		t.Errorf("reflected session lastHandshakeSeconds=%g, want 15", got.Session.LastHandshakeSeconds)
@@ -340,7 +341,7 @@ func TestMonitorLiveWSReflectsSourceSinglePeer(t *testing.T) {
 
 // TestMonitorLiveWSReflectsSourceMultiPeer drives the real adapter for a
 // concentrator (two bound peers): the frame carries MultiPeer=true and distinct
-// per-peer path/FEC sections, and a live mutation to ONE peer surfaces on a
+// per-peer path/resequencer sections, and a live mutation to ONE peer surfaces on a
 // later frame without disturbing the other's section.
 func TestMonitorLiveWSReflectsSourceMultiPeer(t *testing.T) {
 	defer goleak.VerifyNone(t)
@@ -351,8 +352,8 @@ func TestMonitorLiveWSReflectsSourceMultiPeer(t *testing.T) {
 	src := newMetricsSource(prov, sess, fakePeerSessions{}, clock)
 
 	prov.set([]bind.PeerSnapshot{
-		{Name: "", Paths: []bind.PathTraffic{{Name: "starlink", TxBytes: 10, State: telemetry.StateUp}}, FEC: bind.FECStats{DataFrames: 10}},
-		{Name: "edge2", Paths: []bind.PathTraffic{{Name: "lte", TxBytes: 20, State: telemetry.StateUp}}, FEC: bind.FECStats{DataFrames: 700}},
+		{Name: "", Paths: []bind.PathTraffic{{Name: "starlink", TxBytes: 10, State: telemetry.StateUp}}, Reseq: reseq.Stats{Released: 10}},
+		{Name: "edge2", Paths: []bind.PathTraffic{{Name: "lte", TxBytes: 20, State: telemetry.StateUp}}, Reseq: reseq.Stats{Released: 700}},
 	})
 
 	readSnap, cleanup := dialMonitor(t, src)
@@ -372,29 +373,29 @@ func TestMonitorLiveWSReflectsSourceMultiPeer(t *testing.T) {
 	if !pathPeers[""] || !pathPeers["edge2"] {
 		t.Fatalf("path peer labels=%v, want distinct \"\" and \"edge2\" sections", pathPeers)
 	}
-	fecByPeer := map[string]uint64{}
-	for _, f := range first.FEC {
-		fecByPeer[f.Peer] = f.DataPackets
+	releasedByPeer := map[string]uint64{}
+	for _, r := range first.Reseq {
+		releasedByPeer[r.Peer] = r.Released
 	}
-	if fecByPeer[""] != 10 || fecByPeer["edge2"] != 700 {
-		t.Fatalf("per-peer FEC DataPackets=%v, want \"\":10 edge2:700", fecByPeer)
+	if releasedByPeer[""] != 10 || releasedByPeer["edge2"] != 700 {
+		t.Fatalf("per-peer resequencer Released=%v, want \"\":10 edge2:700", releasedByPeer)
 	}
 
-	// Live reflection: grow edge2's FEC and flip its path DOWN; a later frame
+	// Live reflection: grow edge2's Released and flip its path DOWN; a later frame
 	// must carry the change on edge2's section while the primary's is untouched.
 	prov.set([]bind.PeerSnapshot{
-		{Name: "", Paths: []bind.PathTraffic{{Name: "starlink", TxBytes: 10, State: telemetry.StateUp}}, FEC: bind.FECStats{DataFrames: 10}},
-		{Name: "edge2", Paths: []bind.PathTraffic{{Name: "lte", TxBytes: 20, State: telemetry.StateDown}}, FEC: bind.FECStats{DataFrames: 999}},
+		{Name: "", Paths: []bind.PathTraffic{{Name: "starlink", TxBytes: 10, State: telemetry.StateUp}}, Reseq: reseq.Stats{Released: 10}},
+		{Name: "edge2", Paths: []bind.PathTraffic{{Name: "lte", TxBytes: 20, State: telemetry.StateDown}}, Reseq: reseq.Stats{Released: 999}},
 	})
-	got := readUntil(t, readSnap, "edge2 FEC grows to 999 + its path flips down", func(s monitor.MonitorSnapshot) bool {
-		if !s.MultiPeer || len(s.FEC) != 2 {
+	got := readUntil(t, readSnap, "edge2 Released grows to 999 + its path flips down", func(s monitor.MonitorSnapshot) bool {
+		if !s.MultiPeer || len(s.Reseq) != 2 {
 			return false
 		}
-		var edge2FEC uint64
+		var edge2Released uint64
 		edge2Down := false
-		for _, f := range s.FEC {
-			if f.Peer == "edge2" {
-				edge2FEC = f.DataPackets
+		for _, r := range s.Reseq {
+			if r.Peer == "edge2" {
+				edge2Released = r.Released
 			}
 		}
 		for _, p := range s.Paths {
@@ -402,14 +403,14 @@ func TestMonitorLiveWSReflectsSourceMultiPeer(t *testing.T) {
 				edge2Down = !p.Up
 			}
 		}
-		return edge2FEC == 999 && edge2Down
+		return edge2Released == 999 && edge2Down
 	})
 	// The primary peer's section stays as configured (not clobbered by edge2's mutation).
-	var primaryFEC uint64
+	var primaryReleased uint64
 	primaryUp := false
-	for _, f := range got.FEC {
-		if f.Peer == "" {
-			primaryFEC = f.DataPackets
+	for _, r := range got.Reseq {
+		if r.Peer == "" {
+			primaryReleased = r.Released
 		}
 	}
 	for _, p := range got.Paths {
@@ -417,8 +418,8 @@ func TestMonitorLiveWSReflectsSourceMultiPeer(t *testing.T) {
 			primaryUp = p.Up
 		}
 	}
-	if primaryFEC != 10 || !primaryUp {
-		t.Errorf("primary section = FEC %d / up %v, want 10 / true (unchanged by edge2's mutation)", primaryFEC, primaryUp)
+	if primaryReleased != 10 || !primaryUp {
+		t.Errorf("primary section = Released %d / up %v, want 10 / true (unchanged by edge2's mutation)", primaryReleased, primaryUp)
 	}
 }
 

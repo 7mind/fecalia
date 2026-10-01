@@ -12,13 +12,14 @@ import (
 	"time"
 
 	"github.com/7mind/wanbond/internal/bind"
+	"github.com/7mind/wanbond/internal/bond"
 )
 
 // TestMultipathPerPath is the T12 per-path acceptance: the multipath Bind carries
 // tunnel traffic over EACH configured path individually. Each subtest brings the
 // bond up with exactly ONE path configured (the other "disabled" by omission) and
 // verifies the WireGuard handshake completes and both ICMP and a TCP bulk transfer
-// flow over that single path's source-bound socket + outer DATA framing.
+// flow over that single path's source-bound socket + outer data framing.
 func TestMultipathPerPath(t *testing.T) {
 	bin := buildWanbond(t)
 	for _, p := range DefaultPaths {
@@ -44,8 +45,8 @@ func TestMultipathPerPath(t *testing.T) {
 // confirms the tunnel is up, then blackholes the secondary path and confirms the
 // tunnel still carries traffic over the primary — demonstrating each path is an
 // independent socket beneath the one virtual endpoint (the engine sees no churn).
-// (Runtime scheduling/failover across paths is T15; T12's policy is "first healthy
-// path", so the primary continues to carry traffic while the secondary is down.)
+// (Runtime failover across paths is T15; here the surviving path continues to carry
+// traffic while the secondary is down.)
 func TestMultipathBothPathsAndFailover(t *testing.T) {
 	bin := buildWanbond(t)
 	top := Setup(t)
@@ -55,7 +56,7 @@ func TestMultipathBothPathsAndFailover(t *testing.T) {
 		t.Fatalf("bond never came up\n--- edge ---\n%s\n--- conc ---\n%s", edge.log(), conc.log())
 	}
 
-	// Blackhole the secondary path; the primary (first configured) still carries
+	// Blackhole the secondary path; the first configured path still carries
 	// traffic.
 	top.Blackhole(DefaultPaths[1].name)
 	if !top.pingUntil(concInner, 10*time.Second) {
@@ -67,22 +68,20 @@ func TestMultipathBothPathsAndFailover(t *testing.T) {
 }
 
 // TestMultipathInnerMTU asserts the TUN MTU the daemon set equals the computed
-// inner MTU = path MTU − (outer IP/UDP + outer DATA frame + WG overhead), the
+// inner MTU = path MTU − (outer IP/UDP + outer data frame + WG overhead), the
 // fixture value pinned by the bind package's unit test.
 func TestMultipathInnerMTU(t *testing.T) {
 	bin := buildWanbond(t)
 	top := Setup(t)
 	setupMultipathTunnel(t, top, bin, DefaultPaths)
 
-	// This fixture runs the daemon with FEC OFF (DefaultPaths carries no [fec] block),
-	// so the TUN MTU is the FEC-off inner budget.
-	want := bind.InnerMTU(bind.DefaultPathMTU, false)
+	want := bind.InnerMTU(bind.DefaultPathMTU)
 	got := top.linkMTU(t, tunDev, false)
 	if got != want {
 		t.Fatalf("edge %s MTU = %d, want computed inner MTU %d", tunDev, got, want)
 	}
-	t.Logf("multipath inner MTU: %s MTU = %d (= %d path MTU − %d IP/UDP − %d DATA frame − %d WG)",
-		tunDev, got, bind.DefaultPathMTU, bind.IPv4UDPOverhead, 40, bind.WGTransportOverhead)
+	t.Logf("multipath inner MTU: %s MTU = %d (= %d path MTU − %d IP/UDP − %d data frame − %d WG)",
+		tunDev, got, bind.DefaultPathMTU, bind.IPv4UDPOverhead, bond.Overhead, bind.WGTransportOverhead)
 }
 
 // TestMultipathNoFragmentation sends a max-inner-MTU payload with the DF bit set
@@ -99,7 +98,7 @@ func TestMultipathNoFragmentation(t *testing.T) {
 		t.Fatalf("tunnel never came up\n%s", edge.log())
 	}
 
-	inner := bind.InnerMTU(bind.DefaultPathMTU, false)
+	inner := bind.InnerMTU(bind.DefaultPathMTU)
 	// ICMP echo payload that exactly fills the inner MTU: inner − 20 (IP) − 8 (ICMP).
 	payload := inner - 28
 
@@ -127,8 +126,8 @@ func setupMultipathTunnel(t *testing.T, top *Topology, bin string, paths []pathS
 
 // setupMultipathTunnelLevel is setupMultipathTunnel with an explicit daemon log
 // level. The P1 failover measurement (TestP1Failover) runs both daemons at "info"
-// so the scheduler's per-direction "active path change" transitions are captured in
-// each process's log for the root-cause evidence; every other caller uses "error".
+// so each end's "path liveness transition" records are captured in each process's
+// log for the root-cause evidence; every other caller uses "error".
 func setupMultipathTunnelLevel(t *testing.T, top *Topology, bin string, paths []pathSpec, level string) (edge, conc *proc) {
 	t.Helper()
 
@@ -201,7 +200,7 @@ func (top *Topology) linkMTU(t *testing.T, dev string, ns bool) int {
 	} else {
 		out = top.runOut("ip", "-o", "link", "show", dev)
 	}
-	// ... mtu 1401 ...
+	// ... mtu 1339 ...
 	fields := strings.Fields(out)
 	for i, f := range fields {
 		if f == "mtu" && i+1 < len(fields) {

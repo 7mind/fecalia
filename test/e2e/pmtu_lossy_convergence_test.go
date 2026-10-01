@@ -46,9 +46,9 @@ package e2e
 // every mid > T is rejected (the first non-echo short-circuits the candidate, hi = mid-1); a
 // candidate mid <= T is never matched -> echoes 3/3 -> accepted (lo = mid). Net: the search
 // converges to EXACTLY T = 1400 (outer), and the T209 resizer folds that to the inner TUN MTU
-// InnerMTU(1400) = 1300 (= 1400 - 28 IPv4/UDP - 40 DATA-frame - 32 WG-transport). Boot TUN is
-// InnerMTU(DefaultPathMTU=1500) = 1400; a PRE-FIX runaway (converged above T) would tighten to
-// some InnerMTU(>1400) != 1300 and this test's exact-convergence wait would TIME OUT.
+// InnerMTU(1400) = 1239 (= 1400 - 28 IPv4/UDP - 101 data-frame - 32 WG-transport). Boot TUN is
+// InnerMTU(DefaultPathMTU=1500) = 1339; a PRE-FIX runaway (converged above T) would tighten to
+// some InnerMTU(>1400) != 1239 and this test's exact-convergence wait would TIME OUT.
 //
 // CONVERGENCE TOLERANCE BAND. The invariant is the inequality PMTUFloor < converged <= T (the
 // converged OUTER pmtu is at/below the reliable threshold AND did not collapse to the floor).
@@ -135,7 +135,7 @@ func TestE2ELossyPathPMTUConvergence(t *testing.T) {
 	// (outer), which the T209 resizer folds — as the min across paths — into the inner TUN MTU
 	// InnerMTU(1400). A PRE-FIX single-echo runaway would converge ABOVE T and tighten to some
 	// InnerMTU(>1400) != this target, so this exact-convergence wait would TIME OUT.
-	wantTun := bind.InnerMTU(lossyOversizeThreshold, false) // InnerMTU(1400) = 1300
+	wantTun := bind.InnerMTU(lossyOversizeThreshold) // InnerMTU(1400) = 1239
 	if !top.waitLinkMTU(t, tunDev, false, wantTun, pmtuConvergeTimeout) {
 		t.Fatalf("wanbond0 MTU = %d after %s, want auto-discovered InnerMTU(%d) = %d — PMTU discovery did NOT converge at/below the reliably-carried threshold T=%d over the deterministic-loss path (a single-echo/pre-fix search runs away ABOVE T and never tightens to this value)\n--- edge ---\n%s",
 			top.linkMTU(t, tunDev, false), pmtuConvergeTimeout, lossyOversizeThreshold, wantTun, lossyOversizeThreshold, edge.log())
@@ -146,8 +146,8 @@ func TestE2ELossyPathPMTUConvergence(t *testing.T) {
 	// discriminator (converged did NOT run away toward the ceiling); the LOWER bound rejects a
 	// degenerate collapse to the floor.
 	got := top.linkMTU(t, tunDev, false)
-	ceilInner := bind.InnerMTU(lossyOversizeThreshold, false) // InnerMTU(1400) = 1300
-	floorInner := bind.InnerMTU(telemetry.PMTUFloor, false)   // InnerMTU(1280) = 1180
+	ceilInner := bind.InnerMTU(lossyOversizeThreshold) // InnerMTU(1400) = 1239
+	floorInner := bind.InnerMTU(telemetry.PMTUFloor)   // InnerMTU(1280) = 1119
 	if got > ceilInner {
 		t.Fatalf("converged wanbond0 MTU = %d > InnerMTU(T=%d) = %d — the PMTU search ran AWAY above the reliably-carried threshold (D91 regression: single-echo acceptance on an intermittently-echoing oversize candidate)\n--- edge ---\n%s",
 			got, lossyOversizeThreshold, ceilInner, edge.log())
@@ -157,7 +157,7 @@ func TestE2ELossyPathPMTUConvergence(t *testing.T) {
 			got, telemetry.PMTUFloor, floorInner, edge.log())
 	}
 	t.Logf("lossy-path convergence: wanbond0 = %d (InnerMTU(%d)) — the N=%d-consecutive search converged AT/BELOW the reliably-carried threshold T=%d over a path dropping every %drd oversize outer datagram, NOT away to the ceiling InnerMTU(%d)=%d (D91 post-fix invariant, end-to-end)",
-		got, lossyOversizeThreshold, lossyDropEveryNth, lossyOversizeThreshold, lossyDropEveryNth, bind.DefaultPathMTU, bind.InnerMTU(bind.DefaultPathMTU, false))
+		got, lossyOversizeThreshold, lossyDropEveryNth, lossyOversizeThreshold, lossyDropEveryNth, bind.DefaultPathMTU, bind.InnerMTU(bind.DefaultPathMTU))
 }
 
 // installLossyOversizeDrop installs an nftables input-hook rule in the concentrator

@@ -26,21 +26,21 @@ import (
 // (200ms) ≈ 600ms once probes reach a reachable hub. At 3s the dwell clears that with a
 // wide margin for jitter/RTT, and also bounds the re-advance cadence while a whole hub
 // fleet is down to at most one switch (one fresh handshake) per 3s. Hub loss is a
-// coarse, rare event (a concentrator down), distinct from the sub-second PER-PATH
-// failover the schedulers own, so a switch latency on this scale is acceptable.
+// coarse, rare event (a concentrator down), distinct from the PER-PATH
+// failover the transport's lanes own, so a switch latency on this scale is acceptable.
 const hubFailoverSettle = 3 * time.Second
 
 // hubHealth is one path's liveness verdict, the read side of the T13 telemetry state
-// machine (*telemetry.Prober satisfies it). The hub-failover controller reads exactly
-// the same up/down verdict the schedulers select on, so "hub loss" is derived from the
-// very liveness plane per-path failover already runs on — no second detector.
+// machine (*telemetry.Prober satisfies it). The hub-failover controller reads the
+// probe plane's up/down verdict, so "hub loss" is derived from the
+// liveness plane the bind already runs — no second detector.
 type hubHealth interface {
 	State() telemetry.PathState
 }
 
 // peerRemote repoints the whole bond's wire remote at a new concentrator endpoint
 // (*bind.Multipath satisfies it via SetPeerRemote). It is the action half of a hub
-// switch on the DATA/PROBE plane; the re-handshake is separate (rehandshake).
+// switch on the bind's wire plane; the re-handshake is separate (rehandshake).
 type peerRemote interface {
 	SetPeerRemote(ap netip.AddrPort)
 }
@@ -53,7 +53,7 @@ type rehandshake func()
 // hubFailover is the edge-side active-standby concentrator failover controller (Q18/T57).
 // It watches the per-path liveness plane and, when EVERY path to the currently-active
 // concentrator is DOWN simultaneously (HUB LOSS — distinct from a single path failing,
-// which the schedulers already absorb), advances to the next endpoint in the ordered
+// which the transport already absorbs), advances to the next endpoint in the ordered
 // concentrator list, repoints every path's remote at it, and initiates a fresh WG
 // re-handshake. It re-arms against the new endpoint and, if that one is also fully down,
 // advances again.
@@ -496,7 +496,7 @@ func (h *hubFailover) checkLocked() (raisedExhaustion bool) {
 	h.idx = nextIdx
 	h.lastSwitch = now
 
-	// Repoint the DATA/PROBE plane FIRST so probes immediately start re-arming detection
+	// Repoint the bind's remotes FIRST so probes immediately start re-arming detection
 	// against the new endpoint, then initiate the fresh WG re-handshake toward it.
 	h.remote.SetPeerRemote(next)
 	if h.rehandshake != nil {

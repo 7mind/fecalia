@@ -86,9 +86,8 @@ const (
 func TestE2EConstrainedPathMTUKnob(t *testing.T) {
 	bin := buildWanbond(t)
 
-	// The constrained path is the PRIMARY (paths[0]) so the "first healthy path"
-	// scheduler rides it; the healthy 1500 path exists so the daemon "assumes 1500"
-	// for a real second path (exercising the min-across-paths TUN sizing, T205). The
+	// The constrained path is paths[0]; the healthy 1500 path exists so the daemon
+	// "assumes 1500" for a real second path (exercising the min-across-paths TUN sizing, T205). The
 	// measured flow is forced onto the constrained path by blackholing the healthy one.
 	constrained := pathSpec{name: "cellular", edgeIP: "10.100.2.1", concIP: "10.100.2.2", edgeVeth: "wbBe", concVeth: "wbBc", delayMs: 20, outerMTU: constrainedOuterMTU}
 	healthy := pathSpec{name: "starlink", edgeIP: "10.100.1.1", concIP: "10.100.1.2", edgeVeth: "wbAe", concVeth: "wbAc", delayMs: 20}
@@ -105,7 +104,7 @@ func TestE2EConstrainedPathMTUKnob(t *testing.T) {
 
 		// With no declared MTU the daemon assumes 1500 for both paths, so wanbond0 is
 		// mis-sized to InnerMTU(1500) — larger than the constrained path can carry.
-		wantTun := bind.InnerMTU(bind.DefaultPathMTU, false)
+		wantTun := bind.InnerMTU(bind.DefaultPathMTU)
 		if got := top.linkMTU(t, tunDev, false); got != wantTun {
 			t.Fatalf("phase-1 %s MTU = %d, want mis-sized InnerMTU(1500) = %d", tunDev, got, wantTun)
 		}
@@ -131,7 +130,7 @@ func TestE2EConstrainedPathMTUKnob(t *testing.T) {
 
 		// The declared mtu=1400 pulls the min-across-paths TUN size down to
 		// InnerMTU(1400) (T205), so a full-wanbond0-MTU inner packet fits the path.
-		wantTun := bind.InnerMTU(constrainedOuterMTU, false)
+		wantTun := bind.InnerMTU(constrainedOuterMTU)
 		if got := top.linkMTU(t, tunDev, false); got != wantTun {
 			t.Fatalf("phase-2 %s MTU = %d, want InnerMTU(1400) = %d (min across paths, T205)", tunDev, got, wantTun)
 		}

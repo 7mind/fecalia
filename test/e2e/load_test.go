@@ -6,10 +6,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"fmt"
 	"net"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"os/exec"
 	"strconv"
@@ -29,7 +27,7 @@ import (
 //
 //   - DriveUDPLoad: a rate-calibrated UDP load generator (sender+sink across the
 //     tunnel) that sustains a target frames/sec offered load, including loads
-//     above an exact-byte shaper's declared wire rate.
+//     above the path's capacity.
 //   - MetricsSampler: a polling /metrics scraper that retains every sample across
 //     a load window, so a caller can inspect the Exposition DURING the load, not
 //     only at its two ends.
@@ -50,7 +48,7 @@ type UDPLoadSpec struct {
 
 // UDPLoadResult reports what DriveUDPLoad's SENDER side actually achieved: the
 // frames/bytes it managed to WRITE to its UDP socket. This is the OFFERED load,
-// not necessarily what the exact-byte shaper transmitted; under backpressure,
+// not necessarily what the tunnel transmitted; under overload,
 // wanbond_path_tx_bytes_total can fall short of this application-side count.
 type UDPLoadResult struct {
 	SentFrames  int64
@@ -73,8 +71,8 @@ const udpLoadPayloadByte = 0xA5
 // socket bound to srcIP — through the wanbond TUN once the tunnel is up, exactly
 // as an application socket would use it. Pacing uses a fixed-interval ticker (not
 // a tight send loop), so the ACHIEVED rate tracks the TARGET rather than blasting
-// as fast as the kernel allows. A caller may drive above the configured wire rate
-// to exercise exact-byte capacity backpressure.
+// as fast as the kernel allows. A caller may drive above the path's capacity to
+// exercise the tunnel under overload.
 func (top *Topology) DriveUDPLoad(t *testing.T, srcIP, sinkAddr string, spec UDPLoadSpec) UDPLoadResult {
 	t.Helper()
 	if spec.TargetFPS <= 0 {
@@ -299,140 +297,6 @@ func (s *MetricsSampler) PathValueDelta(t *testing.T, name, path string) float64
 		t.Fatalf("last sample missing %s{path=%q}", name, path)
 	}
 	return last - first
-}
-
-func TestWaitPathShaperDrainedRejectsLateTailAfterEmptyScrape(t *testing.T) {
-	const path = "tail"
-	if out, err := exec.Command("ip", "link", "set", "lo", "up").CombinedOutput(); err != nil {
-		t.Fatalf("bring up loopback for metrics fixture: %v\n%s", err, out)
-	}
-	var mu sync.Mutex
-	scrapes := 0
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		mu.Lock()
-		scrapes++
-		scrape := scrapes
-		mu.Unlock()
-		value := 0
-		if scrape > 1 {
-			value = 100
-		}
-		for _, name := range []string{
-			metrics.MetricShaperAcceptedBytes,
-			metrics.MetricShaperEmittedBytes,
-			metrics.MetricShaperAcceptedDatagrams,
-			metrics.MetricShaperEmittedDatagrams,
-		} {
-			_, _ = fmt.Fprintf(w, "%s{path=%q} %d\n", name, path, value)
-		}
-		for _, name := range []string{
-			metrics.MetricShaperQueueBytes,
-			metrics.MetricShaperInFlightBytes,
-			metrics.MetricProbeSendErrors,
-			metrics.MetricSocketWriteErrors,
-			metrics.MetricShaperAdmissionCanceledDatagrams,
-			metrics.MetricShaperAsyncWriteErrors,
-			metrics.MetricShaperAsyncWriteErrorBytes,
-			metrics.MetricShaperAsyncWriteEMSGSIZEErrors,
-			metrics.MetricShaperAsyncWriteEMSGSIZEBytes,
-		} {
-			_, _ = fmt.Fprintf(w, "%s{path=%q} 0\n", name, path)
-		}
-		writeErrors := 0
-		if scrape > 4 {
-			writeErrors = 1
-		}
-		_, _ = fmt.Fprintf(w, "%s{path=%q} %d\n", metrics.MetricShaperWriteErrors, path, writeErrors)
-	}))
-	defer server.Close()
-
-	exp := waitPathShaperDrained(t, server.URL, path)
-	accepted, ok := exp.PathValue(metrics.MetricShaperAcceptedBytes, path)
-	if !ok || accepted != 100 {
-		t.Fatalf("terminal accepted bytes = %.0f (ok=%v), want late tail value 100 rather than the first empty scrape", accepted, ok)
-	}
-	if writeErrors, ok := exp.PathValue(metrics.MetricShaperWriteErrors, path); !ok || writeErrors != 1 {
-		t.Fatalf("terminal write errors = %.0f (ok=%v), want late counter value 1 after quiescence reset", writeErrors, ok)
-	}
-}
-
-const shaperDrainQuiescence = 250 * time.Millisecond
-
-type shaperDrainFingerprint struct {
-	acceptedBytes              float64
-	emittedBytes               float64
-	acceptedDatagrams          float64
-	emittedDatagrams           float64
-	queueBytes                 float64
-	inFlightBytes              float64
-	probeSendErrors            float64
-	shaperWriteErrors          float64
-	socketWriteErrors          float64
-	admissionCanceledDatagrams float64
-	asyncWriteErrors           float64
-	asyncWriteErrorBytes       float64
-	asyncWriteEMSGSIZEErrors   float64
-	asyncWriteEMSGSIZEBytes    float64
-}
-
-// waitPathShaperDrained returns a terminal scrape only after accepted/emitted
-// counters reconcile, the queue and writer stay empty, and all admission and
-// terminal counters remain unchanged across a quiescence interval. The stable
-// interval prevents an empty scrape from preceding later kernel/TUN-tail
-// admissions.
-func waitPathShaperDrained(t *testing.T, url, path string) metrics.Exposition {
-	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	var stable shaperDrainFingerprint
-	var stableSince time.Time
-	haveStable := false
-	for time.Now().Before(deadline) {
-		ctx, cancel := context.WithTimeout(context.Background(), metricsSamplerScrapeTimeout)
-		exp := fetchMetrics(t, ctx, url)
-		cancel()
-		value := func(name string) float64 {
-			got, ok := exp.PathValue(name, path)
-			if !ok {
-				t.Fatalf("drain scrape missing %s{path=%q}", name, path)
-			}
-			return got
-		}
-		current := shaperDrainFingerprint{
-			acceptedBytes:              value(metrics.MetricShaperAcceptedBytes),
-			emittedBytes:               value(metrics.MetricShaperEmittedBytes),
-			acceptedDatagrams:          value(metrics.MetricShaperAcceptedDatagrams),
-			emittedDatagrams:           value(metrics.MetricShaperEmittedDatagrams),
-			queueBytes:                 value(metrics.MetricShaperQueueBytes),
-			inFlightBytes:              value(metrics.MetricShaperInFlightBytes),
-			probeSendErrors:            value(metrics.MetricProbeSendErrors),
-			shaperWriteErrors:          value(metrics.MetricShaperWriteErrors),
-			socketWriteErrors:          value(metrics.MetricSocketWriteErrors),
-			admissionCanceledDatagrams: value(metrics.MetricShaperAdmissionCanceledDatagrams),
-			asyncWriteErrors:           value(metrics.MetricShaperAsyncWriteErrors),
-			asyncWriteErrorBytes:       value(metrics.MetricShaperAsyncWriteErrorBytes),
-			asyncWriteEMSGSIZEErrors:   value(metrics.MetricShaperAsyncWriteEMSGSIZEErrors),
-			asyncWriteEMSGSIZEBytes:    value(metrics.MetricShaperAsyncWriteEMSGSIZEBytes),
-		}
-		drained := current.acceptedBytes == current.emittedBytes &&
-			current.acceptedDatagrams == current.emittedDatagrams &&
-			current.queueBytes == 0 &&
-			current.inFlightBytes == 0
-		now := time.Now()
-		if drained {
-			if !haveStable || current != stable {
-				stable = current
-				stableSince = now
-				haveStable = true
-			} else if now.Sub(stableSince) >= shaperDrainQuiescence {
-				return exp
-			}
-		} else {
-			haveStable = false
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	t.Fatalf("exact-byte shaper path %q did not remain drained for %s within 10s", path, shaperDrainQuiescence)
-	return metrics.Exposition{}
 }
 
 // LogLine is one parsed structured (JSON) daemon log record: the "msg" field

@@ -5,7 +5,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"math"
 	"net"
 	"net/netip"
 	"strconv"
@@ -14,9 +13,7 @@ import (
 
 	awgdevice "github.com/amnezia-vpn/amneziawg-go/v3/device"
 
-	"github.com/7mind/wanbond/internal/congestion"
 	"github.com/7mind/wanbond/internal/netutil"
-	pathshaper "github.com/7mind/wanbond/internal/shaper"
 )
 
 // Role selects which end of the tunnel this process runs as. It is an explicit,
@@ -51,7 +48,6 @@ type Config struct {
 	Monitor   Monitor         `toml:"monitor"`
 	Log       Log             `toml:"log"`
 	Scheduler SchedulerConfig `toml:"scheduler"`
-	FEC       FEC             `toml:"fec"`
 	DNS       DNS             `toml:"dns"`
 	// Liveness configures the D86 top-level up/down detection down_after
 	// threshold (T203). An absent [liveness] block is inert: DownAfter defaults
@@ -75,22 +71,9 @@ type Config struct {
 	// device STILL needs the unmanaged-devices drop-in (D39) — persistence keeps
 	// the link across restarts but does not exempt it from NetworkManager.
 	TUNPersist bool `toml:"tun_persist"`
-	// WeightedCapacitySane is the Q52 WARN-arm capacity-sanity verdict (T144), computed
-	// by normalize() and never read from TOML: nil when scheduler.policy is not
-	// "weighted" (not applicable — the wanbond_weighted_capacity_sane metric family is
-	// absent and no startup WARN is possible), otherwise a non-nil bool — true when
-	// EVERY path declares link_bandwidth (SANE-VERIFIED: gauge=1, no WARN — by the time
-	// Load returns, the T142 hard-fail guard has necessarily also passed, since a
-	// declared-but-inconsistent path would have already aborted Load), false when at
-	// least one path's link_bandwidth is undeclared (UNVERIFIABLE: gauge=0, one startup
-	// WARN — covering BOTH "no path declares it" and a PARTIAL declaration, the latter
-	// reachable whenever pacing is disabled since deriveWeightedBottleneckPacing then
-	// no-ops and never rejects it). See weightedCapacitySane.
-	WeightedCapacitySane *bool `toml:"-"`
 	// LivenessBudgetSane is the D86-decision-4 WARN-arm failover-budget verdict (T211),
 	// computed by normalize() and never read from TOML: ALWAYS non-nil (the failover
-	// budget applies to every config, unlike WeightedCapacitySane which is nil off the
-	// weighted policy). true when the analytical failover budget for the worst-case path
+	// budget applies to every config). true when the analytical failover budget for the worst-case path
 	// — livenessFailoverBudget(Liveness.DownAfter, max path ride_through,
 	// livenessProbeInterval) — fits within livenessRecoveryBudget (the 3s P1 deadline);
 	// false when it does NOT. It is WARN-AND-ALLOW: normalize NEVER rejects an over-budget
@@ -125,394 +108,50 @@ func (b BindMode) valid() bool {
 	return b == BindModeSource || b == BindModeDevice || b == BindModeAuto
 }
 
-// SchedulerPolicy selects the send-side path-selection policy the multipath Bind
-// runs. It is a bounded enum: the P1 active-backup failover (default) or the T21
-// weighted-aggregation policy. The policy is an explicit config choice — active-
-// backup stays selectable so the P1 behaviour is never removed, only extended.
+// SchedulerPolicy names the transport the multipath Bind runs. The adaptive
+// transport (internal/bond) is the only one; the key is retained as a
+// single-valued enum so a configuration that names it explicitly stays valid.
 type SchedulerPolicy string
 
-const (
-	// PolicyActiveBackup is the P1 single-active-path failover scheduler: all egress
-	// on the highest-priority live path, every other path idle (data-thrift by
-	// construction). It is the default when [scheduler] is omitted.
-	PolicyActiveBackup SchedulerPolicy = "active-backup"
-	// PolicyWeighted is the T21 weighted-aggregation scheduler: under load a single
-	// flow is striped across both paths in proportion to per-path RTT/loss-derived
-	// weight, collapsing to the primary at low load (5G stays ~idle) with hysteresis,
-	// and per-path send-pacing to bound bufferbloat.
-	PolicyWeighted SchedulerPolicy = "weighted"
-	PolicyAdaptive SchedulerPolicy = "adaptive"
-)
+// PolicyAdaptive is the adaptive bonding transport: per-lane capacity discovery,
+// bounded retransmission and small-packet replication.
+const PolicyAdaptive SchedulerPolicy = "adaptive"
 
-func (p SchedulerPolicy) valid() bool {
-	return p == PolicyActiveBackup || p == PolicyWeighted || p == PolicyAdaptive
-}
-
-// Weighted-aggregation policy defaults (T21). They are applied when [scheduler]
-// selects the weighted policy but leaves a knob at its zero value, so a minimal
-// `policy = "weighted"` block is usable without hand-tuning every threshold. They
-// are conservative bring-up values; production byte shaping is sized from an
-// operator-declared per-link BDP, so the shipped default leaves pacing DISABLED
-// and only bounds weighted distribution.
-const (
-	// defaultPerPathCapacityFPS is the reference per-path capacity, in OFFERED WIRE
-	// FRAMES per second on that one path (inner data frames PLUS any FEC parity
-	// frames that egress on the chosen path), that the aggregation load-gate compares
-	// offered load against. With pacing enabled, raw frame-domain configuration is
-	// projected to the live exact-byte shaper; scheduler admission remains unpaced.
-	// It is a synthetic proxy for path capacity: there is no measured BDP
-	// (P0 §7), so this default is a bring-up placeholder. When an operator sizes the
-	// knob for real, the NORMATIVE derivation is bandwidth_bits_per_sec / (8 *
-	// avg_wire_frame_bytes) — SizePacingFromBDP below is the programmatic form of the
-	// same derivation — computed from the path's WIRE rate, NEVER from expected
-	// goodput or from a data rate net of FEC overhead (decisions:K35 §3h): parity
-	// egresses on the same wire and consumes the same capacity, so a capacity sized
-	// net of FEC under-declares the path and spends the disengage-direction margin
-	// (defects:D95, tasks:T292).
-	defaultPerPathCapacityFPS = 10000.0
-	// defaultEngageFraction engages aggregation once offered load exceeds this
-	// fraction of one path's capacity — i.e. a single path is nearly saturated.
-	defaultEngageFraction = 0.9
-	// defaultDisengageFraction collapses back to primary-only once offered load falls
-	// below this fraction of one path's capacity. It is strictly below the engage
-	// fraction: the gap is the hysteresis band that stops the 5G path from dribbling
-	// on/off around a single threshold (requirement 2, data-thrift).
-	defaultDisengageFraction = 0.5
-	// defaultCollapseDwell is how long offered load must stay continuously below the
-	// disengage fraction before aggregation collapses to primary-only — the temporal
-	// half of the hysteresis, mirroring the active-backup failback dwell so a brief
-	// lull does not repeatedly park then re-engage the metered path.
-	defaultCollapseDwell = 2 * time.Second
-	// defaultLoadTau is the time constant of the exponentially-weighted offered-load
-	// rate estimator. It smooths the instantaneous offered wire-frame arrival rate
-	// (data plus any FEC parity, folded per Pick call — tasks:T290) so the gate
-	// reacts to sustained load, not single-batch bursts.
-	defaultLoadTau = 200 * time.Millisecond
-	// defaultPacingBurstFrames is the raw per-path burst input in frame slots. When
-	// pacing is enabled, config projects it at 1500 bytes/slot into the live shaper's
-	// bounded DATA budget.
-	defaultPacingBurstFrames = 64.0
-	// defaultWeightRTTFloor floors the RTT in the weight formula so a path reporting a
-	// near-zero RTT (cold estimator, no samples yet) cannot be handed unbounded weight.
-	defaultWeightRTTFloor = 1 * time.Millisecond
-	// defaultWeightLossFloor floors the loss term under the square root so a zero-loss
-	// path gets a large-but-finite weight and two zero-loss paths split by inverse-RTT
-	// alone rather than both diverging.
-	defaultWeightLossFloor = 1e-3
-)
-
-// SchedulerConfig selects and tunes the send scheduler. When the [scheduler] block
-// is omitted the policy defaults to active-backup and every weighted-only aggregation/
-// weight knob is ignored, so existing configs keep the P1 behaviour unchanged. The
-// knobs fall in two groups (D65, T152): the POLICY-INDEPENDENT pacing surface
-// (pacing_enabled, per_path_capacity_fps, pacing_burst_frames — which size egress
-// pacing under BOTH the weighted and the default active-backup policy) and the
-// WEIGHTED-ONLY aggregation/weight knobs (engage/disengage/collapse/load_tau/weight_*),
-// which are validated and defaulted only when the weighted policy is selected. The
-// pacing knobs are validated whenever pacing is enabled under EITHER policy.
+// SchedulerConfig selects the transport. An omitted [scheduler] block, or an
+// omitted policy, means PolicyAdaptive.
 type SchedulerConfig struct {
-	// Policy selects the scheduler; defaults to active-backup when empty.
+	// Policy selects the transport; defaults to PolicyAdaptive when empty.
 	Policy SchedulerPolicy `toml:"policy"`
-
-	// --- Policy-independent pacing surface (D65, T152) ---
-	// These size exact-byte egress shaping under BOTH policies. Every live path
-	// shaper uses that path's own declared link. Under weighted, a declared
-	// link_bandwidth additionally sizes the SHARED bottleneck frame-domain
-	// compatibility scalar (PerPathCapacityFPS/PacingBurstFrames); under
-	// active-backup it sizes the PER-PATH compatibility vectors
-	// (PerPathCapacities/PacingBursts).
-
-	// PacingEnabled turns exact-byte per-(peer,path) send shaping on. When false the
-	// bind preserves its direct batch-framing/socket-write path (a documented no-op —
-	// P0 §7 could not empirically size the pace in the unmetered fixture). Under
-	// weighted, PerPathCapacityFPS still drives the
-	// aggregation gate even with pacing off; under active-backup it is inert with
-	// pacing off.
-	PacingEnabled bool `toml:"pacing_enabled"`
-	// PerPathCapacityFPS is the reference per-path capacity in OFFERED WIRE FRAMES per
-	// second on that one path (inner data frames PLUS any FEC parity frames egressing
-	// on it): under the weighted policy it is the denominator the aggregation
-	// load-gate compares offered load against. When PacingEnabled without declared
-	// link_bandwidth, config also projects it at 1500 bytes/frame into each live
-	// shaper's exact-byte rate; under active-backup the scalar is replicated across
-	// paths. Must be > 0 under the weighted policy, and — when pacing is enabled under
-	// active-backup WITHOUT a declared link_bandwidth — it (with
-	// pacing_burst_frames) is the required explicit source. Size it from the
-	// path's WIRE rate, bandwidth/(8 * on-wire frame bytes) — never from goodput or
-	// from a data rate net of FEC overhead (decisions:K35 §3h).
-	PerPathCapacityFPS float64 `toml:"per_path_capacity_fps"`
-	// PacingBurstFrames is the raw per-path burst in frame slots, projected at
-	// 1500 bytes/slot into the exact-byte shaper. Must be > 0 when PacingEnabled
-	// under EITHER policy (unless a declared link_bandwidth supplies the BDP budget).
-	PacingBurstFrames float64 `toml:"pacing_burst_frames"`
-	// PerPathCapacities retains the derived active-backup offered-frame sizing
-	// (frame slots/s), index-aligned to Config.Paths, for scheduler/config
-	// compatibility. Production exact-byte composition disables legacy scheduler
-	// admission and consumes PerPathShapers instead. nil under weighted and with
-	// pacing disabled. Never read from TOML.
-	PerPathCapacities []float64 `toml:"-"`
-	// PacingBursts retains the derived active-backup burst in frame slots,
-	// index-aligned to Config.Paths and PerPathCapacities, for scheduler/config
-	// compatibility. It does not admit live production traffic after T299.
-	// nil under weighted / with pacing off. Never read from TOML.
-	PacingBursts []float64 `toml:"-"`
-	// PerPathShapers is the derived exact-byte shaper configuration, index-aligned to
-	// Config.Paths. It is populated whenever pacing is enabled and device.Up consumes it
-	// to create one live shaper per (peer,path), while scheduler selection uses its
-	// unpaced seam. Never read from TOML.
-	PerPathShapers []PathShaperConfig `toml:"-"`
-
-	// --- Weighted-only aggregation/weight knobs ---
-	// Validated and defaulted ONLY when the weighted policy is selected; inert (and
-	// left zero) under active-backup.
-
-	// EngageFraction engages aggregation when offered load exceeds
-	// EngageFraction*PerPathCapacityFPS. Must be in (0,1].
-	EngageFraction float64 `toml:"engage_fraction"`
-	// DisengageFraction collapses aggregation to primary-only once offered load stays
-	// below DisengageFraction*PerPathCapacityFPS for CollapseDwell. Must be in
-	// [0,EngageFraction) — strictly below EngageFraction so the two form a hysteresis
-	// band.
-	DisengageFraction float64 `toml:"disengage_fraction"`
-	// CollapseDwell is the sustained-low-load dwell before collapsing to primary-only
-	// (hysteresis). Must be >= 0. Parsed from CollapseDwellRaw in normalize.
-	CollapseDwell time.Duration `toml:"-"`
-	// CollapseDwellRaw is the TOML Go-duration string form of CollapseDwell, e.g.
-	// "2s" (D43). Parsed in normalize; an unparseable value fails fast, mirroring
-	// Path.LinkRTTRaw.
-	CollapseDwellRaw string `toml:"collapse_dwell"`
-	// LoadTau is the offered-load rate estimator's time constant. Must be > 0. Parsed
-	// from LoadTauRaw in normalize.
-	LoadTau time.Duration `toml:"-"`
-	// LoadTauRaw is the TOML Go-duration string form of LoadTau, e.g. "200ms" (D43).
-	// Parsed in normalize; an unparseable value fails fast.
-	LoadTauRaw string `toml:"load_tau"`
-	// WeightRTTFloor floors RTT in the weight formula (must be > 0 under weighted).
-	// Parsed from WeightRTTFloorRaw in normalize.
-	WeightRTTFloor time.Duration `toml:"-"`
-	// WeightRTTFloorRaw is the TOML Go-duration string form of WeightRTTFloor, e.g.
-	// "1ms" (D43). Parsed in normalize; an unparseable value fails fast.
-	WeightRTTFloorRaw string `toml:"weight_rtt_floor"`
-	// WeightLossFloor floors the loss term under the square root (must be > 0 under
-	// weighted).
-	WeightLossFloor float64 `toml:"weight_loss_floor"`
 }
 
-// BDPSizing is a per-path pacing sizing derived from a MEASURED path, in the
-// frame-selection-slot units the weighted scheduler pace uses (defect D22). It is the
-// empirical alternative to the synthetic frame-count defaults: CapacityFPS replaces
-// PerPathCapacityFPS and BurstFrames replaces PacingBurstFrames.
-type BDPSizing struct {
-	// CapacityFPS is the sustained per-path frame rate the measured bottleneck bandwidth
-	// supports (the aggregation-gate denominator and raw byte-projection input).
-	CapacityFPS float64
-	// BurstFrames is the bandwidth-delay product expressed in frames (bandwidth x RTT,
-	// i.e. one RTT of in-flight frames), retained as the frame-domain representation
-	// of the live shaper's byte budget.
-	BurstFrames float64
+func (s *SchedulerConfig) applyDefaults() {
+	if s.Policy == "" {
+		s.Policy = PolicyAdaptive
+	}
 }
 
-// PathShaperConfig owns the unit-exact byte quantities for one per-(peer,path)
-// shaper. Config derives these once from validated operator input and device.Up
-// consumes them for the live T299 shaping path.
-type PathShaperConfig struct {
-	// RateBytesPerSecond is the measured initial wire-byte rate Rseed.
-	RateBytesPerSecond float64
-	// RateLimitBytesPerSecond is the optional operator safety ceiling Rlimit.
-	// Zero leaves the active-backup controller uncapped.
-	RateLimitBytesPerSecond float64
-	// CongestionControlled distinguishes an active-backup measured seed from
-	// the fixed-rate weighted and explicit frame-slot shapers.
-	CongestionControlled bool
-	// LinkRTT is the delay term used to derive the live DATA/PARITY budget
-	// B=ceil(Rtarget*LinkRTT) after every controller retarget.
-	LinkRTT time.Duration
-	// DataBurstBytes is the retained DATA/PARITY budget B. It is always at least
-	// one maximum legal encoded datagram, so an otherwise legal write can never
-	// be permanently inadmissible solely because it exceeds the shaper's burst.
-	DataBurstBytes int
-	// ControlReserveBytes is the inner-control reserve C, exactly one Lmax. The
-	// total retained budget is Q=B+C; the serial writer may additionally hold one
-	// in-flight datagram of at most Lmax.
-	ControlReserveBytes int
-	// MaxEncodedDatagramBytes is Lmax, the largest UDP payload admitted by this
-	// path's validated outer MTU and address-family framing.
-	MaxEncodedDatagramBytes int
-	// ProbeRateBytesPerSecond is the maximum generated probe+echo byte rate Rp for
-	// this per-(peer,path) shaper at the minimum probe interval.
-	ProbeRateBytesPerSecond float64
-	// ProbeBurstBytes is the coincident maximum-size probe+echo burst Pburst.
-	ProbeBurstBytes int
-	// PriorityReserveBytes is retained generated-priority storage P=Pburst.
-	PriorityReserveBytes int
-	// FECGroupReserveBytes is the one-group ownership bound Fgroup. Zero
-	// disables the finite recovery contract when FEC is disabled.
-	FECGroupReserveBytes int
-	// RecoveryWriteSlack is the cumulative kernel-call budget I for one
-	// receiver-observable exclusive recovery cut.
-	RecoveryWriteSlack time.Duration
-	// RecoveryBound is A=Sdevice from the first receiver-observable recovery-cut
-	// write through the cut's terminal socket outcome.
-	RecoveryBound time.Duration
-	// CompletionOverrunBound is Ecompletion for already-admitted DATA/control.
-	CompletionOverrunBound time.Duration
-	// MemoryBoundBytes is Mtotal=B+C+P+Fgroup+Lio.
-	MemoryBoundBytes int
-}
-
-// defaultAvgWireFrameBytes is the conservative average on-wire outer-frame size used
-// when deriving the per-path pace from an operator-declared bandwidth at config load
-// (T53): a full IPv4 path MTU, since a full-MTU DATA datagram occupies about one path
-// MTU on the wire. It mirrors bind.DefaultPathMTU (1500) rather than importing it —
-// internal/bind imports internal/config, so config cannot import bind without a cycle
-// (the same mirror-with-cross-reference pattern as maxFECDeadline above). Sizing
-// capacity with the full-MTU frame is the conservative floor: smaller average frames
-// would yield a HIGHER frame rate, so this never over-paces a path.
-const defaultAvgWireFrameBytes = 1500.0
-
-const (
-	RecoveryWriteSlack = 10 * time.Millisecond
-	// Mirrors frame.DataOverhead without importing frame (frame imports config).
-	outerDataFrameOverhead = 40
-	// Mirrors bind.FECParityMTUPenalty without importing bind (bind imports config).
-	fecParityMTUPenalty     = 5
-	fecShardLengthPrefix    = 4
-	resequencerServiceLimit = 250 * time.Millisecond
-)
-
-type fecGroupOwnership struct {
-	codedInputBytes  int
-	workspaceBytes   int
-	encodedWireBytes int
-	totalBytes       int
-}
-
-func checkedIntProduct(label string, left, right int) (int, error) {
-	if left < 0 || right < 0 {
-		return 0, fmt.Errorf("%s must be nonnegative", label)
+// validate rejects any policy other than PolicyAdaptive. The static weighted and
+// active-backup schedulers were removed; naming one fails the load rather than
+// silently running a different transport.
+func (s SchedulerConfig) validate() error {
+	if s.Policy != PolicyAdaptive {
+		return fmt.Errorf("scheduler.policy must be %q (the only supported transport), got %q", PolicyAdaptive, s.Policy)
 	}
-	if left != 0 && right > math.MaxInt/left {
-		return 0, fmt.Errorf("%s must fit in int", label)
-	}
-	return left * right, nil
-}
-
-func checkedIntSum(label string, values ...int) (int, error) {
-	total := 0
-	for _, value := range values {
-		if value < 0 || value > math.MaxInt-total {
-			return 0, fmt.Errorf("%s must fit in int", label)
-		}
-		total += value
-	}
-	return total, nil
-}
-
-func deriveFECGroupOwnership(kdata, mmax, lmax int) (fecGroupOwnership, error) {
-	shards, err := checkedIntSum("FEC shard count K+M", kdata, mmax)
-	if err != nil {
-		return fecGroupOwnership{}, err
-	}
-	maxInnerDatagram, err := checkedIntSum(
-		"maximum FEC inner datagram",
-		lmax-outerDataFrameOverhead-fecParityMTUPenalty,
-	)
-	if err != nil {
-		return fecGroupOwnership{}, err
-	}
-	lc, err := checkedIntSum("FEC coded-input length Lc", 8, maxInnerDatagram)
-	if err != nil {
-		return fecGroupOwnership{}, err
-	}
-	ls, err := checkedIntSum("FEC workspace shard length Ls", fecShardLengthPrefix, lc)
-	if err != nil {
-		return fecGroupOwnership{}, err
-	}
-	codedInput, err := checkedIntProduct("FEC coded-input ownership K*Lc", kdata, lc)
-	if err != nil {
-		return fecGroupOwnership{}, err
-	}
-	workspace, err := checkedIntProduct("Reed-Solomon workspace ownership (K+M)*Ls", shards, ls)
-	if err != nil {
-		return fecGroupOwnership{}, err
-	}
-	dataWireLength, err := checkedIntSum(
-		"maximum FEC DATA wire length",
-		outerDataFrameOverhead,
-		maxInnerDatagram,
-	)
-	if err != nil {
-		return fecGroupOwnership{}, err
-	}
-	dataWire, err := checkedIntProduct("encoded DATA-wire ownership K*Ldata", kdata, dataWireLength)
-	if err != nil {
-		return fecGroupOwnership{}, err
-	}
-	parityWire, err := checkedIntProduct("encoded PARITY-wire ownership M*Lmax", mmax, lmax)
-	if err != nil {
-		return fecGroupOwnership{}, err
-	}
-	encodedWire, err := checkedIntSum("encoded-wire ownership", dataWire, parityWire)
-	if err != nil {
-		return fecGroupOwnership{}, err
-	}
-	total, err := checkedIntSum("Fgroup", codedInput, workspace, encodedWire)
-	if err != nil {
-		return fecGroupOwnership{}, err
-	}
-	return fecGroupOwnership{
-		codedInputBytes:  codedInput,
-		workspaceBytes:   workspace,
-		encodedWireBytes: encodedWire,
-		totalBytes:       total,
-	}, nil
-}
-
-func deriveServiceDuration(label string, byteCount int, netRate float64, slack time.Duration) (time.Duration, error) {
-	if byteCount < 0 || !finitePositive(netRate) || slack < 0 {
-		return 0, fmt.Errorf("%s inputs must be finite and nonnegative", label)
-	}
-	nanoseconds := math.Ceil(float64(byteCount) / netRate * float64(time.Second))
-	maxInt64Exclusive := math.Ldexp(1, 63)
-	if math.IsNaN(nanoseconds) || math.IsInf(nanoseconds, 0) ||
-		nanoseconds < 0 || nanoseconds >= maxInt64Exclusive {
-		return 0, fmt.Errorf("%s cannot be represented as time.Duration", label)
-	}
-	service := time.Duration(nanoseconds)
-	if service > time.Duration(math.MaxInt64)-slack {
-		return 0, fmt.Errorf("%s plus recovery write slack cannot be represented as time.Duration", label)
-	}
-	return service + slack, nil
-}
-
-// defaultPathMTU and the outer IP/UDP overheads mirror bind.DefaultPathMTU,
-// bind.IPv4UDPOverhead, and bind.IPv6UDPOverhead. Config cannot import bind
-// because bind already imports config.
-const (
-	defaultPathMTU          = 1500
-	outerIPv4UDPOverhead    = 28
-	outerIPv6UDPOverhead    = 48
-	bitsPerByte             = 8.0
-	probeFramesPerBurstPair = 2
-)
-
-func finitePositive(v float64) bool {
-	return v > 0 && !math.IsNaN(v) && !math.IsInf(v, 0)
+	return nil
 }
 
 // outerPathOverheadBytes is the fixed per-datagram overhead a full-size inner
-// (TUN) packet grows by once wrapped in the outer IPv4/UDP + DATA-frame +
+// (TUN) packet grows by once wrapped in the outer IPv4/UDP + data-frame +
 // WireGuard-transport layers (T200, D85): bind.IPv4UDPOverhead (28) +
-// frame.DataOverhead (40) + bind.WGTransportOverhead (32) = 100. It mirrors
-// bind.InnerMTU's non-FEC IPv4 budget rather than importing it — internal/bind
-// imports internal/config, so config cannot import bind without a cycle (the
-// same mirror-with-cross-reference pattern as defaultAvgWireFrameBytes and
-// maxFECDeadline above). Path.validate uses it to reject an operator-declared
+// bond.Overhead (101) + bind.WGTransportOverhead (32) = 161. It mirrors
+// bind.InnerMTU's IPv4 budget rather than importing it — internal/bind
+// imports internal/config, so config cannot import bind without a cycle.
+// Path.validate uses it to reject an operator-declared
 // `mtu` too small to leave a sane inner MTU; kept honest against drift in
 // bind's actual overhead figures by TestPathMTUOverheadMatchesConfigMirror in
 // internal/bind (that package CAN import config, so the cross-check lives
 // there instead).
-const outerPathOverheadBytes = 100
+const outerPathOverheadBytes = 161
 
 // minPathMTU is the lower bound accepted for an operator-declared per-path
 // `mtu` (T200, D85): the IPv6 minimum-MTU floor (RFC 8200 §5), chosen as a
@@ -530,257 +169,12 @@ const maxPathMTU = 9000
 // an operator-declared `mtu` (T200, D85): the classic IPv4 minimum-reassembly
 // MTU (RFC 791), the conventional floor below which an inner tunnel MTU is
 // considered too degenerate to carry real traffic usefully. Given
-// minPathMTU (1280) and outerPathOverheadBytes (100), this bound is currently
-// subsumed by minPathMTU (1280-100 = 1180 > 576) — it stays an explicit,
+// minPathMTU (1280) and outerPathOverheadBytes (161), this bound is currently
+// subsumed by minPathMTU (1280-161 = 1119 > 576) — it stays an explicit,
 // independent check so a future increase in outerPathOverheadBytes (e.g. an
-// IPv6 or FEC-aware budget) cannot silently let the derived inner MTU sink
+// IPv6 budget) cannot silently let the derived inner MTU sink
 // below a sane floor without validate() catching it.
 const minInnerMTU = 576
-
-// SizePacingFromBDP derives frame-domain compatibility values from an
-// operator-declared path instead of the synthetic frame-count default (defect
-// D22). Under weighted, the slowest-link result supplies only the shared
-// aggregation reference; every live exact-byte shaper is built separately from
-// its path's own declaration. The shipped defaultPerPathCapacityFPS (10000,
-// ~115 Mbit/s at full MTU) can sit far above a realistic slow uplink, so the
-// aggregation gate may never engage unless the operator supplies a defensible
-// path declaration.
-//
-// capacity_fps = bandwidth / (8 * avg wire frame bytes) — frames/s the link sustains.
-// burst_frames = capacity_fps * RTT — one RTT of in-flight frames (equivalently
-// BDP_bytes / avg wire frame bytes, since the bandwidth-delay product BDP = bandwidth * RTT).
-//
-// bandwidthBitsPerSec is the operator-declared real-link bottleneck bandwidth
-// (bits/s), rtt the operator-declared baseline path RTT, and avgWireFrameBytes
-// the average on-wire outer-frame size (a full-MTU datagram plus
-// frame.DataOverhead is the conservative choice). It fails fast on a
-// non-positive input rather than emitting a nonsensical (zero/negative/Inf)
-// sizing.
-func SizePacingFromBDP(bandwidthBitsPerSec float64, rtt time.Duration, avgWireFrameBytes float64) (BDPSizing, error) {
-	if bandwidthBitsPerSec <= 0 {
-		return BDPSizing{}, fmt.Errorf("config: BDP sizing bandwidth must be > 0 bit/s, got %g", bandwidthBitsPerSec)
-	}
-	if rtt <= 0 {
-		return BDPSizing{}, fmt.Errorf("config: BDP sizing RTT must be > 0, got %s", rtt)
-	}
-	if avgWireFrameBytes <= 0 {
-		return BDPSizing{}, fmt.Errorf("config: BDP sizing average wire frame size must be > 0 bytes, got %g", avgWireFrameBytes)
-	}
-	capacityFPS := bandwidthBitsPerSec / (bitsPerByte * avgWireFrameBytes)
-	burstFrames := capacityFPS * rtt.Seconds()
-	return BDPSizing{CapacityFPS: capacityFPS, BurstFrames: burstFrames}, nil
-}
-
-// bandwidthUnit is a recognised link_bandwidth suffix and its bit/s multiplier.
-type bandwidthUnit struct {
-	suffix string
-	mult   float64
-}
-
-// bandwidthUnits are the accepted operator-facing bandwidth suffixes, longest-first so
-// "gbit" is matched before "bit". SI decimal multipliers (k/M/G = 1e3/1e6/1e9) over a
-// bit/s base; "bps" is accepted as an alias of "bit" (and "kbps"/"mbps"/"gbps" likewise).
-var bandwidthUnits = []bandwidthUnit{
-	{"gbit", 1e9}, {"gbps", 1e9},
-	{"mbit", 1e6}, {"mbps", 1e6},
-	{"kbit", 1e3}, {"kbps", 1e3},
-	{"bit", 1}, {"bps", 1},
-}
-
-// parseBandwidth parses an operator-declared link bandwidth such as "50Mbit", "1Gbit",
-// or "500kbit" into bits per second. It requires an explicit bit/s unit suffix so a
-// bare unitless number cannot be silently misread, and fails fast on an empty or
-// otherwise unparseable value — a mistyped bandwidth is rejected at config load.
-func parseBandwidth(s string) (float64, error) {
-	lower := strings.ToLower(strings.TrimSpace(s))
-	if lower == "" {
-		return 0, errors.New("empty bandwidth")
-	}
-	for _, u := range bandwidthUnits {
-		if !strings.HasSuffix(lower, u.suffix) {
-			continue
-		}
-		num := strings.TrimSpace(lower[:len(lower)-len(u.suffix)])
-		val, err := strconv.ParseFloat(num, 64)
-		if err != nil {
-			return 0, fmt.Errorf("invalid number %q", num)
-		}
-		return val * u.mult, nil
-	}
-	return 0, fmt.Errorf("missing bit/s unit suffix (want e.g. %q)", "50Mbit")
-}
-
-// FEC group-close deadline default (T24). Applied only when [fec] is enabled but
-// leaves the deadline at its zero value, so a minimal `enabled = true` block emits
-// parity for a partially-filled group promptly under low load rather than stranding
-// it until the size threshold fills.
-const defaultFECDeadline = 5 * time.Millisecond
-
-// defaultAdaptiveSafetyFactor mirrors adaptivefec.DefaultSafetyFactor (1.5), the
-// simulation-proven controller default, restated here (with this cross-reference rather
-// than an import) so a minimal `adaptive = true` block gets the proven tuning without
-// coupling config to the controller package. NOTE: 1.5 sizes M for the mean loss with
-// modest variance headroom; a tight residual SLA under a specific loss/geometry may need a
-// higher factor (e.g. at 5% loss with K=10 the 1.5 default sizes M=1, ~1% residual — raise
-// this to lift M and drive the residual down).
-const defaultAdaptiveSafetyFactor = 1.5
-
-// maxFECDeadline bounds the FEC group-close deadline at load time (T24, defect #4). It
-// MUST stay at or below the multipath Bind's authoritative bound (bind.maxFECDeadline =
-// resequencerTimeout/2 = 125ms): a group flushed by the deadline emits its parity
-// `deadline` after opening, and the reconstructed frames must reach the receive
-// resequencer BEFORE it skips the gap (its 250ms per-gap timeout) — otherwise recovery
-// is structurally too late (the gap is skipped, the recovered frame dropped as past the
-// release point) while /metrics would still count it reconstructed. Rejecting an
-// over-large deadline at load makes that coupling fail-fast and explicit rather than
-// silently defeating FEC. Kept in lockstep with bind.maxFECDeadline (the packages
-// cannot import each other, so the value is mirrored with this cross-reference).
-const maxFECDeadline = 125 * time.Millisecond
-
-// maxFECShards mirrors the Reed-Solomon field limit enforced in internal/fec: a
-// coding group carries at most 256 shards (data + parity) total over GF(2^8). It
-// is restated here so config load fails fast on an over-large ratio at the right
-// locus, with the same bound the codec enforces internally.
-const maxFECShards = 256
-
-// FEC configures the fixed-ratio Reed-Solomon forward-error-correction plane (T24).
-// It is DISABLED by default (like pacing), so an existing config with no [fec] block
-// runs the datapath exactly as before — FEC transparent, no parity on the wire. When
-// enabled, each group of DataShards (K) inner datagrams is protected by ParityShards
-// (M) parity frames, letting the receiver reconstruct up to M lost data frames per
-// group at a fixed M/K parity overhead.
-type FEC struct {
-	// Enabled turns the FEC plane on. When false every other field is ignored and the
-	// datapath carries no parity.
-	Enabled bool `toml:"enabled"`
-	// DataShards is K: the number of inner datagrams grouped before parity is emitted.
-	// Must be >= 1 when enabled.
-	DataShards int `toml:"data_shards"`
-	// ParityShards is M: the parity frames emitted per group and the maximum number of
-	// per-group data losses the receiver can recover. Must be >= 1 when enabled. In
-	// adaptive mode it is the CEILING (and the receiver's decoder cardinality) — the
-	// controller drives the per-group parity in [0,ParityShards] to track measured loss.
-	ParityShards int `toml:"parity_shards"`
-	// Deadline bounds grouping latency: a partially-filled group is flushed (parity
-	// emitted over its current data frames) once this much time has elapsed since its
-	// first frame. Defaults to defaultFECDeadline when enabled and left zero; must be
-	// > 0 after defaulting. Parsed from DeadlineRaw in normalize.
-	Deadline time.Duration `toml:"-"`
-	// DeadlineRaw is the TOML Go-duration string form of Deadline, e.g. "5ms" (D43).
-	// Parsed in normalize; an unparseable value fails fast, mirroring Path.LinkRTTRaw.
-	DeadlineRaw string `toml:"deadline"`
-	// Adaptive opts the send-side FEC into the closed-loop controller (T27/T29): the
-	// per-group parity count tracks the measured per-path loss instead of standing at
-	// the fixed ParityShards ratio, so a clean path spends near-zero overhead while a
-	// lossy one is masked. It is OFF by default, so an existing [fec] block keeps the
-	// fixed-ratio behaviour (T24) byte-for-byte. When true, ParityShards is reinterpreted
-	// as the controller's parity ceiling (see above); the receiver is unchanged because a
-	// group coded with fewer parity shards decodes against the ParityShards-ceiling codec
-	// unchanged (klauspost's parity is prefix-consistent).
-	Adaptive bool `toml:"adaptive"`
-	// SafetyFactor is the adaptive controller's headroom multiplier over the measured mean
-	// loss the per-group parity is sized to mask (adaptivefec.Config.SafetyFactor). It is
-	// the residual-loss LEVER: the controller sizes M so M/(K+M) >= SafetyFactor*loss, so a
-	// higher factor spends more parity to keep the post-recovery residual under a tighter
-	// bound against binomial per-group variance. Applies only in adaptive mode; defaults to
-	// defaultAdaptiveSafetyFactor (the simulation-proven controller default) when left zero
-	// AND target_residual is unset, and must be >= 1. Ignored (and must stay zero) in fixed
-	// mode, and mutually exclusive with target_residual (set one, not both).
-	SafetyFactor float64 `toml:"safety_factor"`
-	// TargetResidual is the adaptive controller's target POST-RECOVERY residual-loss SLA
-	// (a fraction in (0,1)) and the PRIMARY adaptive sizing surface (D26/T46): the
-	// controller derives the per-group parity M by inverting the binomial residual model
-	// E[max(0,D-M)]/K (D ~ Bin(K, smoothed loss)) to the smallest M meeting this target,
-	// capped at the parity ceiling (parity_shards). It SUPERSEDES safety_factor — set
-	// EITHER a residual SLA (target_residual, recommended: it maps an operator's loss
-	// budget directly to redundancy) OR the bare headroom multiplier (safety_factor), never
-	// both. Applies only in adaptive mode; unset (0) selects the safety_factor path. Must
-	// be in (0,1) when set. Ignored (and must stay zero) in fixed mode.
-	TargetResidual float64 `toml:"target_residual"`
-}
-
-// parseDurations parses DeadlineRaw into the typed Deadline field (D43), mirroring
-// the Path.LinkRTTRaw precedent: go-toml/v2 cannot decode a TOML string into a bare
-// time.Duration, so the documented `deadline = "5ms"` form would otherwise fail to
-// load. An empty DeadlineRaw leaves Deadline at zero so applyDefaults' zero-check
-// still fills defaultFECDeadline. Only the parse itself is fail-fast here (unparseable
-// duration syntax); the >0/<=maxFECDeadline range checks stay in validate(), unchanged.
-func (f *FEC) parseDurations() error {
-	if f.DeadlineRaw != "" {
-		d, err := time.ParseDuration(f.DeadlineRaw)
-		if err != nil {
-			return fmt.Errorf("fec.deadline: invalid duration %q: %w", f.DeadlineRaw, err)
-		}
-		f.Deadline = d
-	}
-	return nil
-}
-
-// applyDefaults fills the group-close deadline when FEC is enabled and the deadline
-// was left at zero. It is a no-op for a disabled block, so a config that never turns
-// FEC on keeps an empty [fec] surface.
-func (f *FEC) applyDefaults() {
-	if !f.Enabled {
-		return
-	}
-	if f.Deadline == 0 {
-		f.Deadline = defaultFECDeadline
-	}
-	// The SafetyFactor default is applied only in the legacy sizing mode: when
-	// target_residual is set it is the primary surface and safety_factor stays inert
-	// (0), so defaulting it would spuriously trip the mutual-exclusion check.
-	if f.Adaptive && f.TargetResidual == 0 && f.SafetyFactor == 0 {
-		f.SafetyFactor = defaultAdaptiveSafetyFactor
-	}
-}
-
-// validate enforces the FEC ratio invariants, failing fast so a mis-tuned parity
-// ratio is rejected at load rather than panicking the codec at runtime. A disabled
-// block needs no tuning. The bounds mirror internal/fec's own Config.validate.
-func (f FEC) validate() error {
-	if !f.Enabled {
-		if f.Adaptive {
-			return errors.New("fec.adaptive = true requires fec.enabled = true (adaptive FEC is meaningless with the plane off)")
-		}
-		return nil
-	}
-	if f.DataShards < 1 {
-		return fmt.Errorf("fec.data_shards must be >= 1 when FEC is enabled, got %d", f.DataShards)
-	}
-	if f.ParityShards < 1 {
-		return fmt.Errorf("fec.parity_shards must be >= 1 when FEC is enabled, got %d", f.ParityShards)
-	}
-	if f.DataShards+f.ParityShards > maxFECShards {
-		return fmt.Errorf("fec.data_shards + fec.parity_shards must be <= %d (Reed-Solomon field limit), got %d", maxFECShards, f.DataShards+f.ParityShards)
-	}
-	if f.Deadline <= 0 {
-		return fmt.Errorf("fec.deadline must be > 0 when FEC is enabled, got %s", f.Deadline)
-	}
-	if f.Deadline > maxFECDeadline {
-		return fmt.Errorf("fec.deadline must be <= %s (safely below the receive resequencer's per-gap timeout so deadline-flushed recovery lands before the gap is skipped), got %s", maxFECDeadline, f.Deadline)
-	}
-	if f.Adaptive {
-		if f.TargetResidual != 0 {
-			// Residual-SLA sizing mode (primary): target_residual governs and safety_factor
-			// stays inert, so setting both is an ambiguous mis-config — reject it. NaN is
-			// caught explicitly because every ordered comparison against it is false.
-			if math.IsNaN(f.TargetResidual) || f.TargetResidual <= 0 || f.TargetResidual >= 1 {
-				return fmt.Errorf("fec.target_residual must be a finite value in (0,1), got %g", f.TargetResidual)
-			}
-			if f.SafetyFactor != 0 {
-				return fmt.Errorf("fec.safety_factor and fec.target_residual are mutually exclusive; target_residual is the primary residual-SLA surface — set one, not both")
-			}
-		} else if f.SafetyFactor < 1 {
-			// SafetyFactor is defaulted to defaultAdaptiveSafetyFactor when zero, so a value
-			// below 1 here is an explicit mis-set: the controller requires >= 1 (masking less
-			// than the mean loss is nonsensical), matching adaptivefec.Config.Validate.
-			return fmt.Errorf("fec.safety_factor must be >= 1 in adaptive mode, got %g", f.SafetyFactor)
-		}
-	} else if f.SafetyFactor != 0 || f.TargetResidual != 0 {
-		return fmt.Errorf("fec.safety_factor / fec.target_residual are only meaningful in adaptive mode (set fec.adaptive = true), got safety_factor=%g target_residual=%g", f.SafetyFactor, f.TargetResidual)
-	}
-	return nil
-}
 
 // Path is one physical WAN uplink. The edge binds each path's UDP socket to
 // SourceAddr so the upstream router pins it to the intended WAN; the
@@ -801,36 +195,6 @@ type Path struct {
 	DestAddr netip.AddrPort `toml:"-"`
 	// DestAddrRaw is the TOML string form of DestAddr; parsed in normalize.
 	DestAddrRaw string `toml:"dest_addr"`
-	// LinkBandwidthBitsPerSec is the OPERATOR-MEASURED bandwidth of this uplink
-	// in bits/s, parsed from LinkBandwidthRaw in normalize. Under weighted it
-	// sizes the fixed exact-byte rate R and DATA/PARITY budget B. Under
-	// active-backup it seeds the live controller, which retargets R and B. It
-	// also supplies the frame-domain
-	// scheduler compatibility values (a shared bottleneck reference under weighted,
-	// per-path vectors under active-backup) — T53/T152/T299/T324. Zero
-	// means "not declared": weighted retains the synthetic frame-domain
-	// aggregation reference; active-backup shaping then requires the explicit
-	// per_path_capacity_fps knobs.
-	LinkBandwidthBitsPerSec float64 `toml:"-"`
-	// LinkBandwidthRaw is the TOML string form of the declared bandwidth, e.g.
-	// "50Mbit" / "1Gbit" / "500kbit" (SI bit/s units; the "bit" suffix may be written
-	// "bps"). Parsed in normalize; a non-positive or unparseable value fails fast.
-	LinkBandwidthRaw string `toml:"link_bandwidth"`
-	// LinkBandwidthLimitBitsPerSec is the optional active-backup controller
-	// ceiling parsed from LinkBandwidthLimitRaw. Zero means uncapped.
-	LinkBandwidthLimitBitsPerSec float64 `toml:"-"`
-	// LinkBandwidthLimitRaw is the TOML string form of the optional safety
-	// ceiling. When set, it must be at least link_bandwidth.
-	LinkBandwidthLimitRaw string `toml:"link_bandwidth_limit"`
-	// LinkRTT is the OPERATOR-DECLARED baseline RTT of this uplink, parsed from
-	// LinkRTTRaw in normalize. It is the delay term of the bandwidth-delay-product
-	// DATA/PARITY budget B=ceil(R*RTT); required (> 0) when LinkBandwidth is set and
-	// pacing is enabled under EITHER the weighted or the active-backup policy, ignored
-	// otherwise.
-	LinkRTT time.Duration `toml:"-"`
-	// LinkRTTRaw is the TOML Go-duration string form of LinkRTT, e.g. "45ms". Parsed in
-	// normalize; an unparseable or non-positive value fails fast.
-	LinkRTTRaw string `toml:"link_rtt"`
 	// Bind selects this path's bind mode (I5, Q42): "source", "device", or "auto".
 	// Left empty in TOML, it falls back to the top-level Config.Bind default (itself
 	// defaulted to BindModeAuto); normalize() resolves this field to its EFFECTIVE
@@ -849,12 +213,12 @@ type Path struct {
 	MTU int `toml:"mtu"`
 	// RideThrough is the OPTIONAL per-path liveness ride-through duration (D86
 	// decision 3, T203): DEFAULT 0, parsed from RideThroughRaw in normalize. An
-	// unset (zero) value reproduces today's behavior byte-for-byte — this task
-	// adds ONLY the config surface; wiring it into the running scheduler is
-	// T207's job (device.go/liveness.go are untouched here). Must be >= 0.
+	// unset (zero) value reproduces today's behavior byte-for-byte.
+	// device.proberConfigForPath wires it into the path's Prober (T207).
+	// Must be >= 0.
 	RideThrough time.Duration `toml:"-"`
 	// RideThroughRaw is the TOML Go-duration string form of RideThrough, e.g.
-	// "5s" (mirrors Path.LinkRTTRaw — go-toml/v2 cannot decode a TOML string
+	// "5s" (go-toml/v2 cannot decode a TOML string
 	// directly into a bare time.Duration field). Parsed in normalize; an
 	// unparseable value fails fast.
 	RideThroughRaw string `toml:"ride_through"`
@@ -1149,8 +513,7 @@ func (a Amnezia) Configured() bool {
 // datagram under this obfuscation profile: max(S1, S2), the larger of the
 // initiation/response junk-prefix lengths (defect D85, fix-direction 4). These are the
 // only size-bearing prefixes in the profile — the s1/s2 bytes prepended ahead of a
-// packet's type word (see internal/bind/classify.go, where they are the initJunk/
-// responseJunk offsets); jc/jmin/jmax size SEPARATE junk PACKETS, not a per-datagram
+// packet's type word; jc/jmin/jmax size SEPARATE junk PACKETS, not a per-datagram
 // prefix, so they do not enter the DATA-frame MTU envelope. MTU sizing reserves this many
 // bytes on top of the fixed outer overhead so a full-size DATA datagram plus a worst-case
 // junk prefix still fits the path MTU without fragmentation/EMSGSIZE. An unconfigured
@@ -1315,64 +678,12 @@ func (c *Config) normalize() error {
 			}
 			p.DestAddr = dst
 		}
-		if p.LinkBandwidthRaw != "" {
-			bw, err := parseBandwidth(p.LinkBandwidthRaw)
-			if err != nil {
-				return fmt.Errorf("path %q: invalid link_bandwidth %q: %w", p.Name, p.LinkBandwidthRaw, err)
-			}
-			if math.IsNaN(bw) || math.IsInf(bw, 0) {
-				return fmt.Errorf("path %q: link_bandwidth must be finite and > 0, got %q", p.Name, p.LinkBandwidthRaw)
-			}
-			if bw <= 0 {
-				return fmt.Errorf("path %q: link_bandwidth must be > 0, got %q", p.Name, p.LinkBandwidthRaw)
-			}
-			p.LinkBandwidthBitsPerSec = bw
-		}
-		if p.LinkBandwidthLimitRaw != "" {
-			limit, err := parseBandwidth(p.LinkBandwidthLimitRaw)
-			if err != nil {
-				return fmt.Errorf("path %q: invalid link_bandwidth_limit %q: %w", p.Name, p.LinkBandwidthLimitRaw, err)
-			}
-			if !finitePositive(limit) {
-				return fmt.Errorf("path %q: link_bandwidth_limit must be finite and > 0, got %q", p.Name, p.LinkBandwidthLimitRaw)
-			}
-			p.LinkBandwidthLimitBitsPerSec = limit
-		}
-		if p.LinkRTTRaw != "" {
-			rtt, err := time.ParseDuration(p.LinkRTTRaw)
-			if err != nil {
-				return fmt.Errorf("path %q: invalid link_rtt %q: %w", p.Name, p.LinkRTTRaw, err)
-			}
-			if rtt <= 0 {
-				return fmt.Errorf("path %q: link_rtt must be > 0, got %q", p.Name, p.LinkRTTRaw)
-			}
-			p.LinkRTT = rtt
-		}
 		if p.RideThroughRaw != "" {
 			rt, err := time.ParseDuration(p.RideThroughRaw)
 			if err != nil {
 				return fmt.Errorf("path %q: invalid ride_through %q: %w", p.Name, p.RideThroughRaw, err)
 			}
 			p.RideThrough = rt
-		}
-		if p.LinkBandwidthLimitBitsPerSec > 0 {
-			if !c.Scheduler.PacingEnabled {
-				return fmt.Errorf("path %q: link_bandwidth_limit requires scheduler.pacing_enabled = true", p.Name)
-			}
-			if c.Scheduler.Policy == PolicyWeighted {
-				return fmt.Errorf("path %q: link_bandwidth_limit is supported only by active-backup pacing", p.Name)
-			}
-			if p.LinkBandwidthBitsPerSec <= 0 {
-				return fmt.Errorf("path %q: link_bandwidth_limit requires link_bandwidth as the measured controller seed", p.Name)
-			}
-			if p.LinkBandwidthLimitBitsPerSec < p.LinkBandwidthBitsPerSec {
-				return fmt.Errorf(
-					"path %q: link_bandwidth_limit %q must be at least link_bandwidth %q",
-					p.Name,
-					p.LinkBandwidthLimitRaw,
-					p.LinkBandwidthRaw,
-				)
-			}
 		}
 	}
 	for i := range c.WireGuard.Peers {
@@ -1381,37 +692,13 @@ func (c *Config) normalize() error {
 		}
 	}
 	c.Amnezia.applyDefaults()
-	// Derive frame-domain compatibility values from any operator-declared per-link
-	// bandwidth BEFORE applyDefaults, so it can (a) see the raw zero
-	// PerPathCapacityFPS to distinguish an explicit knob from the default and (b)
-	// set the derived capacity/burst that applyDefaults then leaves intact (it only
-	// fills a knob left at zero). It runs under BOTH policies when shaping is
-	// enabled (T152): weighted stores the shared slowest-link aggregation
-	// reference, while active-backup stores per-path compatibility vectors. The
-	// live exact-byte R/B shapers are built separately from each path's own
-	// declaration. With shaping disabled this is a no-op, so only the weighted
-	// synthetic aggregation reference remains.
-	if err := c.derivePacingFromBDP(); err != nil {
-		return err
-	}
-	if err := c.Scheduler.parseDurations(); err != nil {
-		return err
-	}
 	c.Scheduler.applyDefaults()
-	if err := c.FEC.parseDurations(); err != nil {
-		return err
-	}
-	c.FEC.applyDefaults()
 	if err := c.DNS.applyDefaults(); err != nil {
 		return err
 	}
 	if err := c.Liveness.applyDefaults(); err != nil {
 		return err
 	}
-	// Computed LAST, after c.Scheduler.applyDefaults() has resolved an omitted
-	// scheduler.policy to its default (PolicyActiveBackup) — see weightedCapacitySane's
-	// doc for why this must run after every path's LinkBandwidthBitsPerSec is parsed.
-	c.WeightedCapacitySane = c.weightedCapacitySane()
 	// Computed after Liveness.applyDefaults has resolved DownAfter and every path's
 	// RideThrough has been parsed, so the verdict sees the EFFECTIVE timing (T211).
 	c.LivenessBudgetSane = c.livenessBudgetSane()
@@ -1419,7 +706,7 @@ func (c *Config) normalize() error {
 }
 
 // livenessBudgetSane computes the D86-decision-4 WARN-arm failover-budget verdict
-// (T211), following the weightedCapacitySane() computed-verdict precedent. It returns
+// (T211). It returns
 // a non-nil *bool for EVERY config (the budget always applies): true when the
 // worst-case-path analytical failover budget fits within the 3s P1 recovery deadline,
 // false when it exceeds it. The worst-case path is the one with the LARGEST ride_through
@@ -1438,582 +725,6 @@ func (c *Config) livenessBudgetSane() *bool {
 	return &sane
 }
 
-// weightedCapacitySane computes the Q52 WARN-arm capacity-sanity verdict (T144, the
-// complementary soft-verdict to T142's hard-fail guard): nil when the scheduler is not
-// running the weighted policy (not applicable). Under the weighted policy it is true
-// when EVERY path declares link_bandwidth — SANE-VERIFIED — and false when at least one
-// does not — UNVERIFIABLE, covering both "no path declares it" and a PARTIAL
-// declaration. It must run after normalize has parsed every path's LinkBandwidthRaw
-// into LinkBandwidthBitsPerSec and after c.Scheduler.applyDefaults has resolved an
-// omitted policy, so it sees the EFFECTIVE policy and EFFECTIVE per-path bandwidths.
-func (c *Config) weightedCapacitySane() *bool {
-	if c.Scheduler.Policy != PolicyWeighted {
-		return nil
-	}
-	declared := 0
-	for i := range c.Paths {
-		if c.Paths[i].LinkBandwidthBitsPerSec > 0 {
-			declared++
-		}
-	}
-	sane := declared == len(c.Paths)
-	return &sane
-}
-
-// derivePacingFromBDP sizes egress send-pacing from the operator-declared per-link
-// bandwidth (T53, Q20; generalized to be policy-independent in T152, D65) via
-// SizePacingFromBDP instead of the synthetic defaultPerPathCapacityFPS. It runs
-// whenever pacing is ENABLED, under BOTH the weighted and the default active-backup
-// policy; with pacing DISABLED (the shipped default) a declared bandwidth is inert, so
-// an unrelated config is untouched. Weighted consumes the derived value as a
-// fixed rate; active-backup consumes it as the closed-loop seed.
-//
-// The two policies derive frame-domain compatibility values differently (D65),
-// because they egress differently; derivePathShapers separately produces each
-// path's live exact-byte configuration:
-//
-//   - WEIGHTED stripes ALL paths simultaneously, so its aggregation reference uses
-//     the slowest declared link for PerPathCapacityFPS/PacingBurstFrames.
-//   - ACTIVE-BACKUP egresses on exactly ONE path at a time, so its compatibility
-//     vectors retain each path's OWN BDP, not a bottleneck reduction.
-//
-// Both policies keep the all-paths-or-none link_bandwidth rule, the raw-knobs-vs-
-// link_bandwidth mutual exclusion, and the per-path link_rtt>0 requirement. Under
-// active-backup, pacing enabled with NEITHER a declared link_bandwidth NOR explicit
-// per_path_capacity_fps+pacing_burst_frames is a fail-fast LOAD ERROR: the weighted
-// synthetic default (~10000 fps) must not silently apply, since a nominally-enabled-but-
-// UNBINDING pace reproduces D65 while claiming to shape.
-//
-// It runs before SchedulerConfig.applyDefaults, so an omitted policy is still the empty
-// string here; the empty policy is treated as its active-backup default.
-func (c *Config) derivePacingFromBDP() error {
-	s := &c.Scheduler
-	if !s.PacingEnabled {
-		return nil
-	}
-	switch s.Policy {
-	case PolicyWeighted:
-		return c.deriveWeightedBottleneckPacing()
-	case PolicyActiveBackup, "":
-		return c.deriveActiveBackupPerPathPacing()
-	default:
-		// An unrecognized policy is rejected by validate(); size nothing here.
-		return nil
-	}
-}
-
-// derivePathShapers separates the live exact-byte shaper's unit domain from
-// scheduler offered-frame metering. It runs only after normalize and validate:
-// address families, MTUs, pacing-source exclusivity, RTTs, and legacy fields are
-// therefore already effective and valid. device.Up consumes these values and
-// disables the legacy scheduler policer for production shaped composition.
-func (c *Config) derivePathShapers() error {
-	s := &c.Scheduler
-	if !s.PacingEnabled || s.Policy == PolicyAdaptive {
-		return nil
-	}
-
-	fromLinkBandwidth := c.declaredLinkBandwidths() > 0
-	shapers := make([]PathShaperConfig, len(c.Paths))
-	for i := range c.Paths {
-		p := &c.Paths[i]
-		lmax := p.maxEncodedDatagramBytes()
-		var rateBytesPerSecond, rateLimitBytesPerSecond, burstBytes float64
-		var controllerRTT time.Duration
-		if fromLinkBandwidth {
-			rateBytesPerSecond = p.LinkBandwidthBitsPerSec / bitsPerByte
-			rateLimitBytesPerSecond = p.LinkBandwidthLimitBitsPerSec / bitsPerByte
-			burstBytes = rateBytesPerSecond * p.LinkRTT.Seconds()
-			controllerRTT = p.LinkRTT
-		} else {
-			rateBytesPerSecond = s.PerPathCapacityFPS * defaultAvgWireFrameBytes
-			burstBytes = s.PacingBurstFrames * defaultAvgWireFrameBytes
-		}
-		if !finitePositive(rateBytesPerSecond) {
-			return fmt.Errorf("path %q: derived shaper rate must be finite and > 0 bytes/s, got %g", p.Name, rateBytesPerSecond)
-		}
-		if !finitePositive(burstBytes) {
-			return fmt.Errorf("path %q: derived DATA burst must be finite and > 0 bytes, got %g", p.Name, burstBytes)
-		}
-		roundedBurstBytes := math.Ceil(burstBytes)
-		maxIntExclusive := math.Ldexp(1, strconv.IntSize-1)
-		if roundedBurstBytes >= maxIntExclusive {
-			return fmt.Errorf("path %q: derived DATA burst exceeds maximum supported byte count for int%d, got %g",
-				p.Name, strconv.IntSize, roundedBurstBytes)
-		}
-		dataBurstBytes := int(roundedBurstBytes)
-		if dataBurstBytes < lmax {
-			if fromLinkBandwidth {
-				return fmt.Errorf("path %q: link_bandwidth/link_rtt DATA burst %d bytes is below maximum encoded datagram %d bytes; increase link_rtt or link_bandwidth so every legal datagram is admissible",
-					p.Name, dataBurstBytes, lmax)
-			}
-			return fmt.Errorf("scheduler.pacing_burst_frames=%g converts to a DATA burst %d bytes below path %q maximum encoded datagram %d bytes; set pacing_burst_frames >= %g so every legal datagram is admissible",
-				s.PacingBurstFrames, dataBurstBytes, p.Name, lmax, float64(lmax)/defaultAvgWireFrameBytes)
-		}
-		if !fromLinkBandwidth {
-			controllerRTTNanoseconds :=
-				float64(dataBurstBytes) / rateBytesPerSecond * float64(time.Second)
-			if math.IsInf(controllerRTTNanoseconds, 0) ||
-				controllerRTTNanoseconds >= math.Ldexp(1, 63) {
-				return fmt.Errorf(
-					"path %q: raw pacing R/B ratio exceeds time.Duration",
-					p.Name,
-				)
-			}
-			controllerRTT = time.Duration(math.Ceil(controllerRTTNanoseconds))
-		}
-
-		probeBurstBytes := probeFramesPerBurstPair * lmax
-		probeRateBytesPerSecond := float64(probeBurstBytes) / livenessProbeInterval.Seconds()
-		if probeRateBytesPerSecond >= rateBytesPerSecond {
-			return fmt.Errorf("path %q: generated probe+echo rate %g bytes/s must be < shaper rate %g bytes/s (Pburst=%d bytes at minimum interval %s)",
-				p.Name, probeRateBytesPerSecond, rateBytesPerSecond, probeBurstBytes, livenessProbeInterval)
-		}
-		fecGroupReserveBytes := 0
-		recoverySlack := time.Duration(0)
-		recoveryBound := time.Duration(0)
-		completionOverrunBound := time.Duration(0)
-		if c.FEC.Enabled {
-			kdata := c.FEC.DataShards
-			mmax := c.FEC.ParityShards
-			ownership, err := deriveFECGroupOwnership(kdata, mmax, lmax)
-			if err != nil {
-				return fmt.Errorf("path %q: derive Fgroup: %w", p.Name, err)
-			}
-			fecGroupReserveBytes = ownership.totalBytes
-			recoverySlack = RecoveryWriteSlack
-			recoveryBound = recoverySlack
-			completionRate := rateBytesPerSecond
-			if s.Policy == PolicyActiveBackup {
-				completionRate, err = congestion.MinimumTargetRate(rateBytesPerSecond)
-				if err != nil {
-					return fmt.Errorf("path %q: derive minimum congestion target: %w", p.Name, err)
-				}
-			}
-			netRate := completionRate - probeRateBytesPerSecond
-			completionParityBytes, err := checkedIntProduct(
-				"completion parity term M*Lmax",
-				mmax,
-				lmax,
-			)
-			if err != nil {
-				return fmt.Errorf("path %q: derive completion overrun Ecompletion: %w", p.Name, err)
-			}
-			completionBytes, err := checkedIntSum(
-				"completion overrun Ecompletion byte numerator",
-				probeBurstBytes,
-				completionParityBytes,
-				lmax,
-			)
-			if err != nil {
-				return fmt.Errorf("path %q: %w", p.Name, err)
-			}
-			completionOverrunBound, err = deriveServiceDuration(
-				"completion overrun Ecompletion",
-				completionBytes,
-				netRate,
-				recoverySlack,
-			)
-			if err != nil {
-				return fmt.Errorf("path %q: %w", p.Name, err)
-			}
-			if recoveryBound >= resequencerServiceLimit {
-				return fmt.Errorf(
-					"path %q: finite recovery bound A=%s must stay below receiver fallback T=%s",
-					p.Name,
-					recoveryBound,
-					resequencerServiceLimit,
-				)
-			}
-		}
-		if _, err := checkedIntSum("queue budget B+C", dataBurstBytes, lmax); err != nil {
-			return fmt.Errorf("path %q: %w", p.Name, err)
-		}
-		memoryBoundBytes, err := checkedIntSum(
-			"memory bound Mtotal",
-			dataBurstBytes,
-			lmax,
-			probeBurstBytes,
-			fecGroupReserveBytes,
-			lmax,
-		)
-		if err != nil {
-			return fmt.Errorf("path %q: %w", p.Name, err)
-		}
-		derived := PathShaperConfig{
-			RateBytesPerSecond:      rateBytesPerSecond,
-			RateLimitBytesPerSecond: rateLimitBytesPerSecond,
-			CongestionControlled:    s.Policy == PolicyActiveBackup,
-			LinkRTT:                 controllerRTT,
-			DataBurstBytes:          dataBurstBytes,
-			ControlReserveBytes:     lmax,
-			MaxEncodedDatagramBytes: lmax,
-			ProbeRateBytesPerSecond: probeRateBytesPerSecond,
-			ProbeBurstBytes:         probeBurstBytes,
-			PriorityReserveBytes:    probeBurstBytes,
-			FECGroupReserveBytes:    fecGroupReserveBytes,
-			RecoveryWriteSlack:      recoverySlack,
-			RecoveryBound:           recoveryBound,
-			CompletionOverrunBound:  completionOverrunBound,
-			MemoryBoundBytes:        memoryBoundBytes,
-		}
-		if err := pathshaper.ValidateConfig(pathshaper.Config{
-			RateBytesPerSecond:         derived.RateBytesPerSecond,
-			PriorityRateBytesPerSecond: derived.ProbeRateBytesPerSecond,
-			DataBudgetBytes:            derived.DataBurstBytes,
-			ControlReserveBytes:        derived.ControlReserveBytes,
-			MaxDatagramBytes:           derived.MaxEncodedDatagramBytes,
-			PriorityBurstBytes:         derived.ProbeBurstBytes,
-			PriorityReserveBytes:       derived.PriorityReserveBytes,
-			FECGroupReserveBytes:       derived.FECGroupReserveBytes,
-			RecoveryWriteSlack:         derived.RecoveryWriteSlack,
-		}); err != nil {
-			return fmt.Errorf("path %q: invalid exact-byte shaper configuration: %w", p.Name, err)
-		}
-		shapers[i] = derived
-	}
-	s.PerPathShapers = shapers
-	return nil
-}
-
-// maxEncodedDatagramBytes returns Lmax, the largest encoded UDP payload that
-// fits this path's validated outer IP MTU. An omitted MTU uses the same 1500-byte
-// fallback as bind; IPv6 reserves its larger outer header.
-func (p Path) maxEncodedDatagramBytes() int {
-	pathMTU := p.MTU
-	if pathMTU == 0 {
-		pathMTU = defaultPathMTU
-	}
-	outerOverhead := outerIPv4UDPOverhead
-	if p.SourceAddr.Unmap().Is6() {
-		outerOverhead = outerIPv6UDPOverhead
-	}
-	return pathMTU - outerOverhead
-}
-
-// declaredLinkBandwidths counts paths carrying an operator-declared link_bandwidth.
-func (c *Config) declaredLinkBandwidths() int {
-	declared := 0
-	for i := range c.Paths {
-		if c.Paths[i].LinkBandwidthBitsPerSec > 0 {
-			declared++
-		}
-	}
-	return declared
-}
-
-// deriveWeightedBottleneckPacing sizes the weighted scheduler's SHARED
-// frame-domain compatibility reference to the BOTTLENECK (slowest) declared link
-// — the pre-T152 behavior, byte-identical. The aggregation gate applies one
-// reference capacity to every path, so it must not exceed the slowest link's
-// capacity. Each live exact-byte shaper is derived separately from its own path.
-func (c *Config) deriveWeightedBottleneckPacing() error {
-	s := &c.Scheduler
-	declared := c.declaredLinkBandwidths()
-	if declared == 0 {
-		return nil // no declaration: the synthetic aggregation reference remains.
-	}
-	if declared != len(c.Paths) {
-		return fmt.Errorf("scheduler pacing: link_bandwidth must be declared on ALL paths or none (got %d of %d) — the weighted aggregation frame-domain compatibility reference is sized to the slowest declared link, which is undefined with a partial declaration", declared, len(c.Paths))
-	}
-	if s.PerPathCapacityFPS != 0 || s.PacingBurstFrames != 0 {
-		return errors.New("scheduler.per_path_capacity_fps / pacing_burst_frames and per-path link_bandwidth are mutually exclusive: declare the link bandwidth (BDP-derived exact-byte envelope) OR set the raw frame-slot knobs, not both")
-	}
-	var bottleneck BDPSizing
-	for i := range c.Paths {
-		p := &c.Paths[i]
-		if p.LinkRTT <= 0 {
-			return fmt.Errorf("path %q: link_rtt is required (> 0) when link_bandwidth is set under weighted pacing — it is the delay term of DATA/PARITY budget B=ceil(R*RTT)", p.Name)
-		}
-		sz, err := SizePacingFromBDP(p.LinkBandwidthBitsPerSec, p.LinkRTT, defaultAvgWireFrameBytes)
-		if err != nil {
-			return fmt.Errorf("path %q: %w", p.Name, err)
-		}
-		if i == 0 || sz.CapacityFPS < bottleneck.CapacityFPS {
-			bottleneck = sz
-		}
-	}
-	s.PerPathCapacityFPS = bottleneck.CapacityFPS
-	s.PacingBurstFrames = bottleneck.BurstFrames
-	return nil
-}
-
-// deriveActiveBackupPerPathPacing retains the active-backup scheduler's PER-PATH
-// frame-domain sizing (T152, D65). Because only one path egresses at a time, each
-// path's OWN link_bandwidth/link_rtt BDP populates PerPathCapacities/PacingBursts,
-// not a bottleneck reduction. Production shaped composition uses PerPathShapers and
-// disables these legacy admission buckets. When no
-// link_bandwidth is declared, the explicit per_path_capacity_fps + pacing_burst_frames
-// scalars are the required pace source, replicated across every path. Pacing enabled with
-// NEITHER source is a fail-fast LOAD ERROR (no silent synthetic default — see
-// derivePacingFromBDP).
-func (c *Config) deriveActiveBackupPerPathPacing() error {
-	s := &c.Scheduler
-	declared := c.declaredLinkBandwidths()
-	hasRawKnobs := s.PerPathCapacityFPS != 0 || s.PacingBurstFrames != 0
-	if declared > 0 {
-		// BDP-sized per-path exact-byte envelope. The raw frame-slot knobs are
-		// mutually exclusive with a declared bandwidth, exactly as under weighted.
-		if hasRawKnobs {
-			return errors.New("scheduler.per_path_capacity_fps / pacing_burst_frames and per-path link_bandwidth are mutually exclusive: declare the link bandwidth (BDP-derived exact-byte envelope) OR set the raw frame-slot knobs, not both")
-		}
-		if declared != len(c.Paths) {
-			return fmt.Errorf("scheduler pacing: link_bandwidth must be declared on ALL paths or none (got %d of %d) — each path's exact-byte R/B envelope is sized from its own declared link, which is undefined with a partial declaration", declared, len(c.Paths))
-		}
-		caps := make([]float64, len(c.Paths))
-		bursts := make([]float64, len(c.Paths))
-		for i := range c.Paths {
-			p := &c.Paths[i]
-			if p.LinkRTT <= 0 {
-				return fmt.Errorf("path %q: link_rtt is required (> 0) when link_bandwidth is set under active-backup pacing — it is the delay term of DATA/PARITY budget B=ceil(R*RTT)", p.Name)
-			}
-			sz, err := SizePacingFromBDP(p.LinkBandwidthBitsPerSec, p.LinkRTT, defaultAvgWireFrameBytes)
-			if err != nil {
-				return fmt.Errorf("path %q: %w", p.Name, err)
-			}
-			caps[i] = sz.CapacityFPS
-			bursts[i] = sz.BurstFrames
-		}
-		s.PerPathCapacities = caps
-		s.PacingBursts = bursts
-		return nil
-	}
-	// No declared bandwidth: the explicit raw knobs are the ONLY exact-byte shaping
-	// source. Fail fast when they are absent — the weighted synthetic default must
-	// NOT bind here (D65).
-	if !hasRawKnobs {
-		return errors.New("scheduler.pacing_enabled under the active-backup policy requires an exact-byte shaping source: declare link_bandwidth + link_rtt on ALL paths (per-path BDP-derived R/B envelope) OR set explicit per_path_capacity_fps + pacing_burst_frames; with neither, no byte-rate bound exists (reintroducing the D65 bufferbloat it claims to prevent)")
-	}
-	// Explicit scalar knobs: replicate across every path into the vectors T153 consumes.
-	// A missing/negative knob is left in the vector and rejected by validate (>0), so the
-	// >0 checks live in a single locus.
-	n := len(c.Paths)
-	caps := make([]float64, n)
-	bursts := make([]float64, n)
-	for i := 0; i < n; i++ {
-		caps[i] = s.PerPathCapacityFPS
-		bursts[i] = s.PacingBurstFrames
-	}
-	s.PerPathCapacities = caps
-	s.PacingBursts = bursts
-	return nil
-}
-
-// parseDurations parses the scheduler's Go-duration-string knobs (CollapseDwellRaw,
-// LoadTauRaw, WeightRTTFloorRaw) into their typed time.Duration fields (D43), mirroring
-// the Path.LinkRTTRaw precedent: go-toml/v2 cannot decode a TOML string into a bare
-// time.Duration, so wanbond.example.toml's documented "2s"/"200ms"/"1ms" forms would
-// otherwise fail to load. An empty Raw string leaves the typed field at its zero value,
-// so applyDefaults' zero-check still fills the documented default. Only the parse
-// itself is fail-fast here (unparseable duration syntax); the >=0/>0 range checks stay
-// in validate(), unchanged — this runs unconditionally (regardless of Policy) exactly
-// like the typed fields decoded unconditionally before this change.
-func (s *SchedulerConfig) parseDurations() error {
-	if s.CollapseDwellRaw != "" {
-		d, err := time.ParseDuration(s.CollapseDwellRaw)
-		if err != nil {
-			return fmt.Errorf("scheduler.collapse_dwell: invalid duration %q: %w", s.CollapseDwellRaw, err)
-		}
-		s.CollapseDwell = d
-	}
-	if s.LoadTauRaw != "" {
-		d, err := time.ParseDuration(s.LoadTauRaw)
-		if err != nil {
-			return fmt.Errorf("scheduler.load_tau: invalid duration %q: %w", s.LoadTauRaw, err)
-		}
-		s.LoadTau = d
-	}
-	if s.WeightRTTFloorRaw != "" {
-		d, err := time.ParseDuration(s.WeightRTTFloorRaw)
-		if err != nil {
-			return fmt.Errorf("scheduler.weight_rtt_floor: invalid duration %q: %w", s.WeightRTTFloorRaw, err)
-		}
-		s.WeightRTTFloor = d
-	}
-	return nil
-}
-
-// applyDefaults selects active-backup when no policy is given and, only under the
-// weighted policy, fills any weighted-family knob (including the shared
-// frame-domain aggregation capacity reference) left at its zero value with its
-// default. It is a no-op for the active-backup policy: the weighted
-// aggregation/weight knobs are inert there, so leaving them zero keeps the config
-// surface for a P1 deployment empty.
-//
-// The shaping inputs under active-backup are DELIBERATELY not synthetically
-// defaulted here (T152, D65): derivePacingFromBDP has already sized the per-path
-// compatibility vectors from link_bandwidth or the explicit knobs, or failed
-// fast. The weighted synthetic aggregation reference (~10000 fps) does not
-// constitute an active-backup byte-rate source; using it implicitly would leave
-// a nominally-enabled shaper without an operator-declared link bound, reproducing
-// D65 bufferbloat. That condition remains a load error, not a silent default.
-func (s *SchedulerConfig) applyDefaults() {
-	if s.Policy == "" {
-		s.Policy = PolicyActiveBackup
-	}
-	if s.Policy != PolicyWeighted {
-		return
-	}
-	if s.PerPathCapacityFPS == 0 {
-		s.PerPathCapacityFPS = defaultPerPathCapacityFPS
-	}
-	if s.EngageFraction == 0 {
-		s.EngageFraction = defaultEngageFraction
-	}
-	if s.DisengageFraction == 0 {
-		s.DisengageFraction = defaultDisengageFraction
-	}
-	if s.CollapseDwell == 0 {
-		s.CollapseDwell = defaultCollapseDwell
-	}
-	if s.LoadTau == 0 {
-		s.LoadTau = defaultLoadTau
-	}
-	if s.PacingBurstFrames == 0 {
-		s.PacingBurstFrames = defaultPacingBurstFrames
-	}
-	if s.WeightRTTFloor == 0 {
-		s.WeightRTTFloor = defaultWeightRTTFloor
-	}
-	if s.WeightLossFloor == 0 {
-		s.WeightLossFloor = defaultWeightLossFloor
-	}
-}
-
-// validate enforces the scheduler policy invariants. active-backup needs no tuning
-// unless pacing is enabled, in which case the policy-independent pacing surface is
-// validated (T152). The weighted policy fails fast on any out-of-range knob so a
-// mis-tuned aggregation policy is rejected at load rather than misbehaving at runtime
-// (the hysteresis band, in particular, is only a band when disengage < engage).
-func (s SchedulerConfig) validate() error {
-	if !s.Policy.valid() {
-		return fmt.Errorf("scheduler.policy must be %q, %q or %q, got %q", PolicyActiveBackup, PolicyWeighted, PolicyAdaptive, s.Policy)
-	}
-	if s.Policy == PolicyAdaptive {
-		return nil
-	}
-	if s.Policy != PolicyWeighted {
-		// active-backup (an omitted policy has already been defaulted to it). The
-		// weighted aggregation/weight knobs are inert and unvalidated here; only the
-		// policy-independent pacing surface is validated, and only when enabled.
-		if s.PacingEnabled {
-			return s.validateActiveBackupPacing()
-		}
-		return nil
-	}
-	if math.IsNaN(s.PerPathCapacityFPS) || math.IsInf(s.PerPathCapacityFPS, 0) {
-		return fmt.Errorf("scheduler.per_path_capacity_fps must be finite and > 0 under the weighted policy, got %g", s.PerPathCapacityFPS)
-	}
-	if s.PerPathCapacityFPS <= 0 {
-		return fmt.Errorf("scheduler.per_path_capacity_fps must be > 0 under the weighted policy, got %g", s.PerPathCapacityFPS)
-	}
-	if s.EngageFraction <= 0 || s.EngageFraction > 1 {
-		return fmt.Errorf("scheduler.engage_fraction must be in (0,1], got %g", s.EngageFraction)
-	}
-	if s.DisengageFraction < 0 || s.DisengageFraction >= s.EngageFraction {
-		return fmt.Errorf("scheduler.disengage_fraction must be in [0,engage_fraction=%g) to form a hysteresis band, got %g", s.EngageFraction, s.DisengageFraction)
-	}
-	if s.CollapseDwell < 0 {
-		return fmt.Errorf("scheduler.collapse_dwell must be >= 0, got %s", s.CollapseDwell)
-	}
-	if s.LoadTau <= 0 {
-		return fmt.Errorf("scheduler.load_tau must be > 0, got %s", s.LoadTau)
-	}
-	if s.PacingEnabled {
-		if math.IsNaN(s.PacingBurstFrames) || math.IsInf(s.PacingBurstFrames, 0) {
-			return fmt.Errorf("scheduler.pacing_burst_frames must be finite and > 0 when pacing is enabled, got %g", s.PacingBurstFrames)
-		}
-		if s.PacingBurstFrames <= 0 {
-			return fmt.Errorf("scheduler.pacing_burst_frames must be > 0 when pacing is enabled, got %g", s.PacingBurstFrames)
-		}
-	}
-	if s.WeightRTTFloor <= 0 {
-		return fmt.Errorf("scheduler.weight_rtt_floor must be > 0 under the weighted policy, got %s", s.WeightRTTFloor)
-	}
-	if s.WeightLossFloor <= 0 {
-		return fmt.Errorf("scheduler.weight_loss_floor must be > 0 under the weighted policy, got %g", s.WeightLossFloor)
-	}
-	return nil
-}
-
-// validateActiveBackupPacing enforces the policy-independent pacing invariants under the
-// active-backup policy (T152, D65): pacing must be sized to a bound per-path pace. By the
-// time validate runs, derivePacingFromBDP has populated the PerPathCapacities/PacingBursts
-// vectors from link_bandwidth or the explicit per_path_capacity_fps+pacing_burst_frames
-// scalars, or already failed fast when NEITHER source was given — so an empty vector here
-// is a defensive guard against that fail-fast being bypassed. Every per-path capacity and
-// burst must be > 0 (the shared >0 locus for both the BDP-derived and explicit-scalar
-// paths), mirroring the weighted per_path_capacity_fps/pacing_burst_frames checks.
-func (s SchedulerConfig) validateActiveBackupPacing() error {
-	if len(s.PerPathCapacities) == 0 || len(s.PacingBursts) == 0 {
-		return errors.New("scheduler.pacing_enabled under the active-backup policy requires an exact-byte shaping source: declare link_bandwidth + link_rtt on ALL paths OR set explicit per_path_capacity_fps + pacing_burst_frames (the weighted synthetic default must not silently apply)")
-	}
-	if len(s.PerPathCapacities) != len(s.PacingBursts) {
-		return fmt.Errorf("scheduler: per-path frame-domain compatibility vectors must be the same length, got %d capacities and %d bursts", len(s.PerPathCapacities), len(s.PacingBursts))
-	}
-	for i, capFPS := range s.PerPathCapacities {
-		if math.IsNaN(capFPS) || math.IsInf(capFPS, 0) {
-			return fmt.Errorf("scheduler.per_path_capacity_fps must be finite and > 0 when pacing is enabled under active-backup, got %g (path %d)", capFPS, i)
-		}
-		if capFPS <= 0 {
-			return fmt.Errorf("scheduler.per_path_capacity_fps must be > 0 when pacing is enabled under active-backup, got %g (path %d)", capFPS, i)
-		}
-	}
-	for i, burst := range s.PacingBursts {
-		if math.IsNaN(burst) || math.IsInf(burst, 0) {
-			return fmt.Errorf("scheduler.pacing_burst_frames must be finite and > 0 when pacing is enabled under active-backup, got %g (path %d)", burst, i)
-		}
-		if burst <= 0 {
-			return fmt.Errorf("scheduler.pacing_burst_frames must be > 0 when pacing is enabled under active-backup, got %g (path %d)", burst, i)
-		}
-	}
-	return nil
-}
-
-// validateWeightedEngageAgainstBandwidth is the Q52/Q53 hard-fail guard (Option 3,
-// scoped to the guard itself — per-path capacity auto-derive + BDP-sizing docs are
-// G2/Q20's scope, see docs/install.md §3a, not restated here). Under the weighted
-// policy, a path that declares link_bandwidth must be able to sustain the
-// aggregation engage threshold, or weighted aggregation can mathematically never
-// engage at line rate on that path — a misconfiguration that must fail fast at load
-// rather than silently capping the path below its declared capacity forever. It runs
-// AFTER normalize (deriveWeightedBottleneckPacing + SchedulerConfig.applyDefaults have
-// already produced the EFFECTIVE EngageFraction/PerPathCapacityFPS), and computes the
-// bandwidth-implied capacity with the SAME avg-wire-frame constant and math
-// SizePacingFromBDP uses (capacity_fps = bandwidth / (8 * defaultAvgWireFrameBytes)),
-// so the guard and the BDP derive can never disagree.
-//
-// With pacing ENABLED + declared bandwidth, deriveWeightedBottleneckPacing has already
-// sized PerPathCapacityFPS to the BOTTLENECK link's implied capacity (the raw
-// per_path_capacity_fps/pacing_burst_frames knobs are mutually exclusive with a
-// declared bandwidth there, config.go's deriveWeightedBottleneckPacing), so
-// EngageFraction <= 1 (enforced by SchedulerConfig.validate above) makes this guard
-// structurally unable to fire. It therefore chiefly bites when pacing is DISABLED
-// (the derive no-ops, leaving the synthetic defaultPerPathCapacityFPS=10000 standing
-// against a much slower declared link) or when the raw knobs are set explicitly
-// alongside a declared bandwidth.
-func (c *Config) validateWeightedEngageAgainstBandwidth() error {
-	if c.Scheduler.Policy != PolicyWeighted {
-		return nil
-	}
-	threshold := c.Scheduler.EngageFraction * c.Scheduler.PerPathCapacityFPS
-	for _, p := range c.Paths {
-		if p.LinkBandwidthBitsPerSec <= 0 {
-			continue
-		}
-		impliedCapacityFPS := p.LinkBandwidthBitsPerSec / (8 * defaultAvgWireFrameBytes)
-		if threshold > impliedCapacityFPS {
-			return fmt.Errorf("path %q: declared link_bandwidth %s implies a maximum sustained capacity of %.1f frames/s, "+
-				"but scheduler.engage_fraction(%g) * per_path_capacity_fps(%.1f) = %.1f frames/s exceeds it — "+
-				"weighted aggregation can mathematically never engage at line rate on this path; "+
-				"lower scheduler.per_path_capacity_fps, enable scheduler.pacing_enabled to auto-derive it from "+
-				"link_bandwidth, or correct link_bandwidth",
-				p.Name, p.LinkBandwidthRaw, impliedCapacityFPS, c.Scheduler.EngageFraction, c.Scheduler.PerPathCapacityFPS, threshold)
-		}
-	}
-	return nil
-}
-
 // peerLabel formats a wireguard peer identifier for a validation error: the
 // index always, plus the configured name in parens when set (a single-peer
 // config legitimately leaves Name empty; a multi-peer one requires it).
@@ -2029,8 +740,8 @@ func peerLabel(i int, name string) string {
 // fan-out is N concentrator peers × U uplinks. The uplink SOCKETS do not multiply
 // by N — every peer shares each uplink's socket (bind's attachSharedPathLocked) —
 // but the PROBERS do: each emits one PROBE per fixed livenessProbeInterval
-// (200ms) plus its reflected echo. Those generated frames bypass Send and remain
-// uncharged by the live exact-byte shaper until T300. The ceiling independently
+// (200ms) plus its reflected echo. Those generated frames bypass Send and the
+// transport's pacing. The ceiling independently
 // keeps aggregate emission bounded (32 probers × 5 PROBE/s = 160 PROBE/s across
 // the shared uplink sockets). It admits realistic multi-concentrator
 // edges (e.g. 8 concentrators × 4 uplinks) and rejects a pathological fan-out at
@@ -2211,9 +922,6 @@ func (c *Config) validateEdgePeerSet(peerPrefixes [][]netip.Prefix) error {
 
 // validate enforces the required-field invariants, failing on the first problem.
 func (c *Config) validate() error {
-	if c.Scheduler.Policy == PolicyAdaptive && c.FEC.Enabled {
-		return errors.New("scheduler.policy=adaptive uses bounded retransmission and small-packet replication; fec.enabled must be false")
-	}
 	if !c.Role.valid() {
 		return fmt.Errorf("role must be %q or %q, got %q", RoleEdge, RoleConcentrator, c.Role)
 	}
@@ -2265,25 +973,6 @@ func (c *Config) validate() error {
 		}
 		if p.RideThrough < 0 {
 			return fmt.Errorf("path %q: ride_through must be >= 0, got %s", p.Name, p.RideThrough)
-		}
-		if p.LinkBandwidthLimitBitsPerSec > 0 {
-			if c.Scheduler.Policy != PolicyActiveBackup {
-				return fmt.Errorf("path %q: link_bandwidth_limit is supported only by active-backup pacing", p.Name)
-			}
-			if !c.Scheduler.PacingEnabled {
-				return fmt.Errorf("path %q: link_bandwidth_limit requires scheduler.pacing_enabled = true", p.Name)
-			}
-			if p.LinkBandwidthBitsPerSec <= 0 {
-				return fmt.Errorf("path %q: link_bandwidth_limit requires link_bandwidth as the measured controller seed", p.Name)
-			}
-			if p.LinkBandwidthLimitBitsPerSec < p.LinkBandwidthBitsPerSec {
-				return fmt.Errorf(
-					"path %q: link_bandwidth_limit %q must be at least link_bandwidth %q",
-					p.Name,
-					p.LinkBandwidthLimitRaw,
-					p.LinkBandwidthRaw,
-				)
-			}
 		}
 	}
 	if !c.WireGuard.PrivateKey.IsSet() {
@@ -2441,12 +1130,6 @@ func (c *Config) validate() error {
 		return err
 	}
 	if err := c.Scheduler.validate(); err != nil {
-		return err
-	}
-	if err := c.validateWeightedEngageAgainstBandwidth(); err != nil {
-		return err
-	}
-	if err := c.FEC.validate(); err != nil {
 		return err
 	}
 	if err := c.DNS.validate(); err != nil {

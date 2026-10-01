@@ -12,7 +12,6 @@ import (
 
 	"github.com/7mind/wanbond/internal/config"
 	"github.com/7mind/wanbond/internal/frame"
-	"github.com/7mind/wanbond/internal/shaper"
 	"github.com/7mind/wanbond/internal/telemetry"
 )
 
@@ -22,7 +21,7 @@ import (
 func TestPMTUProbeAccessor(t *testing.T) {
 	psk := testKey(t, 0x24)
 	clk := newFakeClock()
-	m, _, _ := newProbingMultipath(t, loopbackPaths(2), psk, clk)
+	m, _ := newProbingMultipath(t, loopbackPaths(2), psk, clk)
 	if _, _, err := m.Open(0); err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -49,7 +48,7 @@ func TestPMTUProbeAccessor(t *testing.T) {
 func TestPMTURoamCallback(t *testing.T) {
 	psk := testKey(t, 0x24)
 	clk := newFakeClock()
-	m, _, _ := newProbingMultipath(t, loopbackPaths(1), psk, clk)
+	m, _ := newProbingMultipath(t, loopbackPaths(1), psk, clk)
 	if _, _, err := m.Open(0); err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -136,19 +135,6 @@ func waitPendingPMTUProbe(t testing.TB, ps *peerPathState) {
 	}
 }
 
-type validatingPriorityShaper struct {
-	pathShaper
-	debits chan int
-}
-
-func (s *validatingPriorityShaper) AccountPriority(size int) error {
-	if err := s.pathShaper.AccountPriority(size); err != nil {
-		return err
-	}
-	s.debits <- size
-	return nil
-}
-
 func TestPMTUProbeSuccessfulWriteAccountsFamilyExactPaddedBytes(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -164,30 +150,8 @@ func TestPMTUProbeSuccessfulWriteAccountsFamilyExactPaddedBytes(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			psk := testKey(t, 0x25)
 			paths := []config.Path{{Name: "a", SourceAddr: test.source}}
-			m, _, _ := newProbingMultipath(t, paths, psk, newFakeClock())
+			m, _ := newProbingMultipath(t, paths, psk, newFakeClock())
 			lmax := 1500 - test.overhead
-			cfg := config.PathShaperConfig{
-				RateBytesPerSecond:      1_000_000,
-				DataBurstBytes:          45_000,
-				ControlReserveBytes:     lmax,
-				MaxEncodedDatagramBytes: lmax,
-				ProbeRateBytesPerSecond: float64(2*lmax) / telemetry.DefaultProbeInterval.Seconds(),
-				ProbeBurstBytes:         2 * lmax,
-				PriorityReserveBytes:    2 * lmax,
-			}
-			var validating *validatingPriorityShaper
-			m.shaperConfigs = []config.PathShaperConfig{cfg}
-			m.newPathShaper = func(got shaper.Config, write shaper.WriteFunc) (pathShaper, error) {
-				realShaper, err := shaper.New(got, shaper.SystemClock{}, write)
-				if err != nil {
-					return nil, err
-				}
-				validating = &validatingPriorityShaper{
-					pathShaper: realShaper,
-					debits:     make(chan int, 1),
-				}
-				return validating, nil
-			}
 			if _, _, err := m.Open(0); err != nil {
 				t.Fatal(err)
 			}
@@ -212,14 +176,6 @@ func TestPMTUProbeSuccessfulWriteAccountsFamilyExactPaddedBytes(t *testing.T) {
 			if len(raw) != lmax {
 				t.Fatalf("padded PMTU UDP payload = %d bytes, want family-exact Lmax %d", len(raw), lmax)
 			}
-			select {
-			case debit := <-validating.debits:
-				if debit != lmax {
-					t.Fatalf("PMTU priority debit = %d bytes, want exact successful length %d", debit, lmax)
-				}
-			default:
-				t.Fatal("successful PMTU write was rejected by the real priority shaper")
-			}
 			if got := m.paths[0].txBytes.Load(); got != uint64(lmax) {
 				t.Fatalf("PMTU txBytes = %d, want exact successful padded length %d", got, lmax)
 			}
@@ -230,8 +186,11 @@ func TestPMTUProbeSuccessfulWriteAccountsFamilyExactPaddedBytes(t *testing.T) {
 func TestPMTUProbeCadenceWaitDoesNotInflateMeasuredRTT(t *testing.T) {
 	psk := testKey(t, 0x2A)
 	clock := newFakeClock()
-	m, probers, _ := newProbingMultipath(t, loopbackPaths(1), psk, clock)
-	openWithPriorityRecorder(t, m, &priorityRecordingShaper{})
+	m, probers := newProbingMultipath(t, loopbackPaths(1), psk, clock)
+	if _, _, err := m.Open(0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = m.Close() })
 	peer, peerAP := rawPeer(t)
 	m.paths[0].setRemote(peerAP)
 
@@ -249,11 +208,13 @@ func TestPMTUProbeCadenceWaitDoesNotInflateMeasuredRTT(t *testing.T) {
 	}
 }
 
-func TestPMTUProbeFailedWriteCreatesNoDebtOrWireBytes(t *testing.T) {
+func TestPMTUProbeFailedWriteCreatesNoWireBytes(t *testing.T) {
 	psk := testKey(t, 0x26)
-	m, _, _ := newProbingMultipath(t, loopbackPaths(1), psk, newFakeClock())
-	recorder := &priorityRecordingShaper{}
-	openWithPriorityRecorder(t, m, recorder)
+	m, _ := newProbingMultipath(t, loopbackPaths(1), psk, newFakeClock())
+	if _, _, err := m.Open(0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = m.Close() })
 	_, peerAP := rawPeer(t)
 	m.paths[0].setRemote(peerAP)
 	if err := m.paths[0].conn.Close(); err != nil {
@@ -270,9 +231,6 @@ func TestPMTUProbeFailedWriteCreatesNoDebtOrWireBytes(t *testing.T) {
 	if !errors.Is(got.err, net.ErrClosed) {
 		t.Fatalf("failed ProbePMTU error = %v, want original net.ErrClosed identity", got.err)
 	}
-	if got := recorder.debitSnapshot(); len(got) != 0 {
-		t.Fatalf("failed PMTU write created priority debt %v", got)
-	}
 	if got := m.paths[0].txBytes.Load(); got != 0 {
 		t.Fatalf("failed PMTU write added txBytes = %d, want 0", got)
 	}
@@ -283,9 +241,11 @@ func TestPMTUProbeFailedWriteCreatesNoDebtOrWireBytes(t *testing.T) {
 
 func TestPMTUProbeSubstitutesForPeriodicProbeAtSharedCadence(t *testing.T) {
 	psk := testKey(t, 0x27)
-	m, _, _ := newProbingMultipath(t, loopbackPaths(1), psk, newFakeClock())
-	recorder := &priorityRecordingShaper{}
-	openWithPriorityRecorder(t, m, recorder)
+	m, _ := newProbingMultipath(t, loopbackPaths(1), psk, newFakeClock())
+	if _, _, err := m.Open(0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = m.Close() })
 	peer, peerAP := rawPeer(t)
 	m.paths[0].setRemote(peerAP)
 
@@ -367,9 +327,6 @@ func TestPMTUProbeSubstitutesForPeriodicProbeAtSharedCadence(t *testing.T) {
 	} else if !errors.Is(err, os.ErrDeadlineExceeded) {
 		t.Fatalf("post-cadence read error = %v, want timeout", err)
 	}
-	if got := recorder.debitSnapshot(); len(got) != 2 || got[0] != len(raw) || got[1] != len(raw) {
-		t.Fatalf("shared-cadence priority debits = %v, want exact coincident Pburst [%d %d]", got, len(raw), len(raw))
-	}
 	if got := m.paths[0].txBytes.Load(); got != uint64(2*len(raw)) {
 		t.Fatalf("coincident local PMTU + reactive echo txBytes = %d, want Pburst=%d", got, 2*len(raw))
 	}
@@ -407,7 +364,7 @@ func TestPendingPMTUProbeUnblocksOnCloseAndPathRemoval(t *testing.T) {
 		test := test
 		t.Run(test.name, func(t *testing.T) {
 			psk := testKey(t, 0x28)
-			m, _, _ := newProbingMultipath(t, test.paths, psk, newFakeClock())
+			m, _ := newProbingMultipath(t, test.paths, psk, newFakeClock())
 			if _, _, err := m.Open(0); err != nil {
 				t.Fatal(err)
 			}
@@ -420,8 +377,8 @@ func TestPendingPMTUProbeUnblocksOnCloseAndPathRemoval(t *testing.T) {
 			test.teardown(t, m)
 			select {
 			case got := <-result:
-				if got.err == nil || got.echoed {
-					t.Fatalf("pending ProbePMTU after teardown = (%v, %v), want (false, error)", got.echoed, got.err)
+				if !errors.Is(got.err, net.ErrClosed) || got.echoed {
+					t.Fatalf("pending ProbePMTU after teardown = (%v, %v), want (false, net.ErrClosed)", got.echoed, got.err)
 				}
 			case <-time.After(time.Second):
 				t.Fatal("pending PMTU probe remained blocked after path teardown")
@@ -432,7 +389,7 @@ func TestPendingPMTUProbeUnblocksOnCloseAndPathRemoval(t *testing.T) {
 
 func TestPMTUProbeFailuresCannotConsumeConsecutiveLocalCadenceSlots(t *testing.T) {
 	psk := testKey(t, 0x2B)
-	m, _, _ := newProbingMultipath(t, loopbackPaths(1), psk, newFakeClock())
+	m, _ := newProbingMultipath(t, loopbackPaths(1), psk, newFakeClock())
 	if _, _, err := m.Open(0); err != nil {
 		t.Fatal(err)
 	}

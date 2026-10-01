@@ -61,11 +61,8 @@ func newFirstPathUpHarness(t *testing.T, cfg *config.Config) *bind.Multipath {
 	if err != nil {
 		t.Fatalf("new session id: %v", err)
 	}
-	scheduler, probers, newProber, err := buildScheduler(cfg, psk, sessionID, lg)
-	if err != nil {
-		t.Fatalf("build scheduler: %v", err)
-	}
-	mp, err := bind.NewMultipath(cfg.Paths, psk, scheduler, probers, newProber, nil, nil, cfg.Amnezia, lg)
+	probers, newProber := buildProbers(cfg, psk, sessionID, lg)
+	mp, err := bind.NewMultipath(cfg.Paths, psk, probers, newProber, lg)
 	if err != nil {
 		t.Fatalf("build multipath bind: %v", err)
 	}

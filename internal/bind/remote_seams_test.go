@@ -29,7 +29,7 @@ func authEcho(t *testing.T, psk config.Key, pathID uint8, seq uint64, clk *fakeC
 func TestRemoteTableMultiPathNoBleed(t *testing.T) {
 	psk := testKey(t, 0x81)
 	clk := newFakeClock()
-	m, _, _ := newProbingMultipath(t, loopbackPaths(2), psk, clk)
+	m, _ := newProbingMultipath(t, loopbackPaths(2), psk, clk)
 	if _, _, err := m.Open(0); err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -61,14 +61,14 @@ func TestRemoteTableMultiPathNoBleed(t *testing.T) {
 }
 
 // TestRemoteRoamQuietUnderProbeCadence locks T247 seam (d): across K probe cadences with
-// interleaved standby probes and stable DATA on the active WAN, the roam callback fires
+// interleaved standby probes and stable datagrams on the active WAN, the roam callback fires
 // exactly once (initial establishment) — the pre-D94 per-cadence NotifyRoam churn is gone
 // — and the concentrator's own probe egress (emitProbes reads getRemote) keeps targeting
 // the SELECTED destination throughout. A forced DEAD fallback then adds exactly one more.
 func TestRemoteRoamQuietUnderProbeCadence(t *testing.T) {
 	psk := testKey(t, 0x82)
 	clk := newFakeClock()
-	m, _, _ := newProbingMultipath(t, loopbackPaths(1), psk, clk)
+	m, _ := newProbingMultipath(t, loopbackPaths(1), psk, clk)
 	if _, _, err := m.Open(0); err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -81,16 +81,17 @@ func TestRemoteRoamQuietUnderProbeCadence(t *testing.T) {
 	srcA := netip.MustParseAddrPort("203.0.113.20:40000")
 	srcB := netip.MustParseAddrPort("198.51.100.21:40001")
 
-	codec, err := frame.NewCodec(psk)
-	if err != nil {
-		t.Fatalf("build codec: %v", err)
-	}
+	wanA := newRemoteTransport(t, m.peerState, 987).onPath(1)
+	wanA.join(ps, srcA)
 
 	m.demuxInbound(ps, authProbe(t, psk, 1, 1, clk), srcA)
 	for k := 0; k < 6; k++ { // K >= 5 cadences
 		m.demuxInbound(ps, authProbe(t, psk, 2, uint64(10+k), clk), srcB)
 		m.demuxInbound(ps, authProbe(t, psk, 1, uint64(20+k), clk), srcA)
-		m.demuxInbound(ps, mustEncodeData(t, codec, uint64(k), 1, "d"), srcA)
+		m.demuxInbound(ps, wanA.wire(wanA.small(ps, []byte("d"))), srcA)
+		if it, ok := m.adaptive.Load().popInteractive(); !ok || string(it.Payload) != "d" {
+			t.Fatalf("cadence %d: datagram on the active WAN = %q (ok=%v), want it delivered", k, it.Payload, ok)
+		}
 		m.emitProbes() // the concentrator's own probe cadence: egress reads getRemote
 		if got, _ := ps.getRemote(); got != srcA {
 			t.Fatalf("cadence %d: selected destination = %v, want %v (probe egress would follow the flap)", k, got, srcA)
@@ -122,7 +123,7 @@ func TestRemoteRoamQuietUnderProbeCadence(t *testing.T) {
 func TestEchoRefreshesOwnPathEntryAndOverrideSticky(t *testing.T) {
 	psk := testKey(t, 0x83)
 	clk := newFakeClock()
-	m, _, _ := newProbingMultipath(t, loopbackPaths(1), psk, clk)
+	m, _ := newProbingMultipath(t, loopbackPaths(1), psk, clk)
 	if _, _, err := m.Open(0); err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -158,6 +159,6 @@ func TestEchoRefreshesOwnPathEntryAndOverrideSticky(t *testing.T) {
 	m.SetPeerRemote(ovr)
 	m.demuxInbound(ps, authProbe(t, psk, 7, 3, clk), concNew)
 	if got, _ := ps.getRemote(); got != ovr {
-		t.Fatalf("post-override learning moved getRemote to %v; must honour the override %v until it goes DEAD or DATA names another entry", got, ovr)
+		t.Fatalf("post-override learning moved getRemote to %v; must honour the override %v until it goes DEAD", got, ovr)
 	}
 }

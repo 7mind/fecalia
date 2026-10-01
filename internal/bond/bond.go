@@ -69,7 +69,7 @@ const (
 	maxDatagram        = 9000
 	// fullDatagramWireBytes is an ordinary full-size datagram on the wire.
 	fullDatagramWireBytes = 1500
-	wireOverhead          = 129 // outer CONTROL, adaptive header, sequences, IP and UDP
+	wireOverhead          = Overhead + 28 // data frame, IPv4 and UDP headers
 	transitSizeBucket     = 128
 )
 
@@ -826,8 +826,8 @@ func (t *Transport) Receive(path PathID, f frame.Control, now time.Time) ([]Deli
 		if f.Seq > previousHigh {
 			r.highAt = now
 		}
-		r.bytes += uint64(len(f.Payload) - headerBytes - 32 + wireOverhead)
-		r.received.add(now, float64(len(f.Payload)-headerBytes-32+wireOverhead))
+		r.bytes += uint64(len(f.Payload) - headerBytes - dataFieldBytes + wireOverhead)
+		r.received.add(now, float64(len(f.Payload)-headerBytes-dataFieldBytes+wireOverhead))
 		r.last = now
 		r.pending++
 		if seq == 0 {

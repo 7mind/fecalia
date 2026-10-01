@@ -1,35 +1,18 @@
 package bind
 
 import (
-	"context"
-	"net"
 	"testing"
 	"time"
 
+	"github.com/7mind/wanbond/internal/bond"
 	"github.com/7mind/wanbond/internal/config"
-	"github.com/7mind/wanbond/internal/shaper"
+	"github.com/7mind/wanbond/internal/frame"
 )
 
-type snapshotCallbackShaper struct {
-	callback func()
-	snapshot shaper.Snapshot
-}
-
-func (*snapshotCallbackShaper) WriteDatagrams(context.Context, []shaper.Datagram) (shaper.BatchResult, error) {
-	return shaper.BatchResult{FailedIndex: -1}, nil
-}
-
-func (*snapshotCallbackShaper) AccountPriority(int) error { return nil }
-func (*snapshotCallbackShaper) Close() error              { return nil }
-func (s *snapshotCallbackShaper) Snapshot() shaper.Snapshot {
-	s.callback()
-	return s.snapshot
-}
-
-// TestMultipathTxBytesCountedOnSend asserts Send accumulates, per path, exactly the
-// OUTER-wire bytes it writes to that path's socket (T23). The peer socket's read length
-// is the ground-truth wire size, so TxBytes must equal the sum of the sizes the peer
-// observed — and only the chosen path (index 0, the sole one with a remote) is charged.
+// TestMultipathTxBytesCountedOnSend asserts the transport's writes accumulate, per path,
+// exactly the OUTER-wire bytes written to that path's socket (T23). The peer socket's read
+// length is the ground-truth wire size, so TxBytes must equal the sum of the sizes the peer
+// observed — and only the path holding the lane (index 0) is charged.
 func TestMultipathTxBytesCountedOnSend(t *testing.T) {
 	psk := testKey(t, 0x71)
 	m, err := newMultipath(t, loopbackPaths(2), psk)
@@ -41,87 +24,61 @@ func TestMultipathTxBytesCountedOnSend(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = m.Close() })
 
-	peer, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1")})
-	if err != nil {
-		t.Fatalf("listen peer: %v", err)
-	}
-	defer peer.Close()
-	m.paths[0].setRemote(peer.LocalAddr().(*net.UDPAddr).AddrPort())
+	peer, peerAP := rawPeer(t)
+	newRemoteTransport(t, m.peerState, 987).join(m.paths[0], peerAP)
 
 	const frames = 3
-	var wantTx uint64
-	buf := make([]byte, maxDatagram)
 	for i := 0; i < frames; i++ {
 		if err := m.Send([][]byte{[]byte("inner-wg-datagram")}, m.virt); err != nil {
 			t.Fatalf("Send %d: %v", i, err)
 		}
-		n, err := peer.Read(buf)
-		if err != nil {
-			t.Fatalf("peer read %d: %v", i, err)
+	}
+
+	// The transport also writes lane keepalives and repeats unacknowledged datagrams, so
+	// the peer keeps receiving. Every write lands in the peer's socket before it is
+	// counted: whenever the socket is drained and no write is in progress, the counter
+	// equals the bytes read.
+	codec, _ := frame.NewCodec(psk)
+	buf := make([]byte, maxDatagram)
+	var wantTx uint64
+	datagrams := 0
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if err := peer.SetReadDeadline(time.Now().Add(10 * time.Millisecond)); err != nil {
+			t.Fatalf("set read deadline: %v", err)
 		}
-		wantTx += uint64(n)
+		for {
+			n, err := peer.Read(buf)
+			if err != nil {
+				break
+			}
+			wantTx += uint64(n)
+			if fr, err := codec.Decode(buf[:n]); err == nil {
+				if control, ok := fr.(frame.Control); ok && control.ControlType == bond.DataType && n > bond.Overhead {
+					datagrams++
+				}
+			}
+		}
+		if datagrams >= frames && m.PeerSnapshots()[0].Paths[0].TxBytes == wantTx {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("path 0 TxBytes = %d, want %d (sum of wire bytes the peer received, %d datagrams)",
+				m.PeerSnapshots()[0].Paths[0].TxBytes, wantTx, datagrams)
+		}
 	}
 
 	snaps := m.PeerSnapshots()[0].Paths
 	if len(snaps) != 2 {
 		t.Fatalf("PeerSnapshots()[0].Paths len = %d, want 2", len(snaps))
 	}
-	if snaps[0].TxBytes != wantTx {
-		t.Errorf("path 0 TxBytes = %d, want %d (sum of wire bytes the peer received)", snaps[0].TxBytes, wantTx)
-	}
-	// The unchosen path (no remote) carried nothing.
+	// The path without a lane carried nothing.
 	if snaps[1].TxBytes != 0 {
 		t.Errorf("path 1 TxBytes = %d, want 0 (never selected)", snaps[1].TxBytes)
 	}
 	// Send does not touch the receive counter.
 	if snaps[0].RxBytes != 0 {
 		t.Errorf("path 0 RxBytes = %d, want 0 (no inbound)", snaps[0].RxBytes)
-	}
-	if snaps[0].Shaper != nil || snaps[1].Shaper != nil {
-		t.Fatalf("unpaced path exposed a shaper snapshot: %+v", snaps)
-	}
-}
-
-func TestPeerSnapshotsReadsShaperAfterReleasingBindLock(t *testing.T) {
-	m, err := newMultipath(t, loopbackPaths(1), testKey(t, 0x73))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, _, err := m.Open(0); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = m.Close() })
-
-	lockAcquired := make(chan struct{}, 1)
-	reporter := &snapshotCallbackShaper{
-		callback: func() {
-			m.mu.Lock()
-			lockAcquired <- struct{}{}
-			m.mu.Unlock()
-		},
-		snapshot: shaper.Snapshot{AcceptedBytes: 17},
-	}
-	m.mu.Lock()
-	m.paths[0].shaper = reporter
-	m.mu.Unlock()
-
-	done := make(chan []PeerSnapshot, 1)
-	go func() {
-		done <- m.PeerSnapshots()
-	}()
-	select {
-	case peers := <-done:
-		select {
-		case <-lockAcquired:
-		default:
-			t.Fatal("shaper Snapshot callback did not acquire m.mu")
-		}
-		got := peers[0].Paths[0].Shaper
-		if got == nil || got.AcceptedBytes != 17 {
-			t.Fatalf("shaper snapshot = %+v", got)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("PeerSnapshots called shaper Snapshot while holding m.mu")
 	}
 }
 
@@ -167,12 +124,7 @@ func TestPeerSnapshots_CarriesAddressing(t *testing.T) {
 	}
 
 	// A setRemote repoint must be reflected in the next snapshot.
-	peer, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1")})
-	if err != nil {
-		t.Fatalf("listen peer: %v", err)
-	}
-	defer peer.Close()
-	want := peer.LocalAddr().(*net.UDPAddr).AddrPort()
+	_, want := rawPeer(t)
 	m.paths[0].setRemote(want)
 
 	if got := m.PeerSnapshots()[0].Paths[0].Remote; got != want {
@@ -182,7 +134,7 @@ func TestPeerSnapshots_CarriesAddressing(t *testing.T) {
 
 // TestMultipathRxBytesCountedOnReceive asserts the per-path readLoop accumulates the
 // OUTER-wire bytes it pulls off the socket (T23), independent of frame kind — here a
-// DATA frame delivered to a specific path's socket. The count is charged only to the
+// transport data frame delivered to a specific path's socket. The count is charged only to the
 // receiving path.
 func TestMultipathRxBytesCountedOnReceive(t *testing.T) {
 	psk := testKey(t, 0x72)
@@ -197,18 +149,16 @@ func TestMultipathRxBytesCountedOnReceive(t *testing.T) {
 	t.Cleanup(func() { _ = m.Close() })
 	fn := fns[0]
 
-	// Send one DATA frame to path 1's socket and drain it through the fan-in drainer so
+	// Send one data frame to path 1's socket and drain it through the fan-in drainer so
 	// the receive definitely completed before we read the counter.
-	dst := m.paths[1].conn.LocalAddr().(*net.UDPAddr)
+	remote := newRemoteTransport(t, m.peerState, 987)
+	cl, src := dialPath(t, m.paths[1])
+	remote.join(m.paths[1], src)
 	payload := []byte("opaque-wireguard-datagram")
-	sendDataTo(t, psk, dst, 1, payload)
-
-	bufs := [][]byte{make([]byte, 2048)}
-	sizes := make([]int, 1)
-	eps := make([]Endpoint, 1)
-	if _, err := fn(bufs, sizes, eps); err != nil {
-		t.Fatalf("receive: %v", err)
+	if _, err := cl.Write(remote.wire(remote.small(m.paths[1], payload))); err != nil {
+		t.Fatalf("write: %v", err)
 	}
+	receiveOne(t, fn)
 
 	// The counter is written by the reader goroutine; the drainer wakes off a separate
 	// signal, so poll briefly for the Add to land rather than assuming ordering.
@@ -223,10 +173,10 @@ func TestMultipathRxBytesCountedOnReceive(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	if got == 0 {
-		t.Fatal("path 1 RxBytes never advanced after an inbound DATA frame")
+		t.Fatal("path 1 RxBytes never advanced after an inbound data frame")
 	}
 	// The wire size is the encoded frame length; it must exceed the inner payload
-	// (outer DATA header + MAC) and be charged only to the receiving path.
+	// (outer framing + MAC) and be charged only to the receiving path.
 	if got <= uint64(len(payload)) {
 		t.Errorf("path 1 RxBytes = %d, want > inner payload len %d (outer framing)", got, len(payload))
 	}

@@ -15,12 +15,11 @@ import (
 	"github.com/7mind/wanbond/internal/bind"
 	"github.com/7mind/wanbond/internal/config"
 	"github.com/7mind/wanbond/internal/log"
-	"github.com/7mind/wanbond/internal/sched"
 	"github.com/7mind/wanbond/internal/telemetry"
 )
 
 // newAllowedIPsTestEngine builds a REAL vendored amneziawg-go engine over a channel TUN and a
-// minimal single-path multipath Bind (AlwaysUp scheduler, no probers), for exercising the
+// minimal single-path multipath Bind (no probe loop), for exercising the
 // allowed-ips trie via IpcSet/IpcGet WITHOUT bringing the device up (an allowed_ip insert lands in
 // the trie at IpcSet time regardless of the device's up-state, so no sockets are needed). The
 // caller Closes the returned device.
@@ -28,11 +27,7 @@ func newAllowedIPsTestEngine(t *testing.T, lg log.Logger) *awgdevice.Device {
 	t.Helper()
 	psk := keyFromRaw(t, mustRandom(t, 32))
 	paths := []config.Path{{Name: "a", SourceAddr: netip.MustParseAddr("127.0.0.1")}}
-	scheduler, err := sched.NewActiveBackup([]sched.PathHealth{sched.AlwaysUp{}}, sched.Config{FailbackAfter: time.Second}, telemetry.SystemClock{}, lg)
-	if err != nil {
-		t.Fatalf("build scheduler: %v", err)
-	}
-	mp, err := bind.NewMultipath(paths, psk, scheduler, nil, nil, nil, nil, config.Amnezia{}, lg)
+	mp, err := bind.NewMultipath(paths, psk, testProbers(paths, psk, lg), nil, lg)
 	if err != nil {
 		t.Fatalf("build multipath bind: %v", err)
 	}

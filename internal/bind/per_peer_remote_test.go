@@ -2,6 +2,7 @@ package bind
 
 import (
 	"net/netip"
+	"slices"
 	"testing"
 
 	"github.com/7mind/wanbond/internal/config"
@@ -16,10 +17,10 @@ func buildTwoPeerEdge(t *testing.T, pskA, pskB config.Key, remoteA, remoteB neti
 	t.Helper()
 	clk := newFakeClock()
 	paths := loopbackPaths(2)
-	m, _, _ := newProbingMultipath(t, paths, pskA, clk)
+	m, _ := newProbingMultipath(t, paths, pskA, clk)
 
-	betaSched, betaProbers, betaFactory := concPeerWiring(t, paths, pskB, 0x0BEECAFE, clk)
-	if err := m.AddConcentratorPeer("beta", pskB, betaSched, betaProbers, betaFactory); err != nil {
+	betaProbers, betaFactory := concPeerWiring(t, paths, pskB, 0x0BEECAFE, clk)
+	if err := m.AddConcentratorPeer("beta", pskB, betaProbers, betaFactory); err != nil {
 		t.Fatalf("AddConcentratorPeer: %v", err)
 	}
 	if err := m.SeedEdgePeerRemotes([]netip.AddrPort{remoteA, remoteB}); err != nil {
@@ -59,8 +60,9 @@ func remotesOfPeer(t *testing.T, p *peerState) map[string]netip.AddrPort {
 
 // TestSetPeerRemoteForRepointsOnlyTargetPeer is the T252/G28 acceptance for the per-peer
 // hub-failover seam: with two peers bound over the SAME shared sockets, SetPeerRemoteFor on peer
-// A must repoint EVERY peer-A path at the new remote AND re-baseline A's resequencer, while every
-// peer-B path's remote and B's whole resequencer state stay BYTE-IDENTICAL — the per-peer D32
+// A must repoint EVERY peer-A path at the new remote AND make A's transport forget its lanes to
+// the prior hub, so the new hub's hello re-baselines A's resequencer, while every peer-B path's
+// remote, B's lanes and B's whole resequencer state stay BYTE-IDENTICAL — the per-peer D32
 // boundary that the removed bind-global defaultRemote coupling would have violated.
 func TestSetPeerRemoteForRepointsOnlyTargetPeer(t *testing.T) {
 	pskA := testKey(t, 0x11)
@@ -78,6 +80,14 @@ func TestSetPeerRemoteForRepointsOnlyTargetPeer(t *testing.T) {
 	if witnessRQ == nil || betaRQ == nil {
 		t.Fatalf("resequencer not instantiated (primary=%v beta=%v)", witnessRQ != nil, betaRQ != nil)
 	}
+	// Each peer's transport holds a lane to its own hub on path "a".
+	witnessView := peerPathByName(primary, "a")
+	betaView := peerPathByName(beta, "a")
+	newRemoteTransport(t, primary, 987).join(witnessView, remoteA)
+	newRemoteTransport(t, beta, 988).join(betaView, remoteB)
+	if got := upLanes(t, m, 1); !slices.Equal(got, []uint8{betaView.id}) {
+		t.Fatalf("beta lanes before the repoint = %v, want its lane on path a", got)
+	}
 	witnessStatsBefore := witnessRQ.Stats()
 	betaRebaselinesBefore := betaRQ.Stats().Rebaselines
 
@@ -92,9 +102,17 @@ func TestSetPeerRemoteForRepointsOnlyTargetPeer(t *testing.T) {
 			t.Errorf("beta path %q remote = %v, want %v (the repoint target)", name, ap, newRemoteB)
 		}
 	}
-	// Peer A's resequencer was re-baselined exactly once (the D32 hub-switch resync).
+	// Peer A's transport forgot its lanes to the prior hub, and the new hub's hello — another
+	// process — re-baselines its resequencer exactly once (the D32 hub-switch resync).
+	if got := upLanes(t, m, 1); len(got) != 0 {
+		t.Errorf("beta lanes after the repoint = %v, want none (SetPeerRemoteFor must forget the prior hub's lanes)", got)
+	}
+	newRemoteTransport(t, beta, 989).join(betaView, newRemoteB)
 	if got := betaRQ.Stats().Rebaselines; got != betaRebaselinesBefore+1 {
-		t.Errorf("beta resequencer Rebaselines = %d, want %d (SetPeerRemoteFor must resync the repointed peer)", got, betaRebaselinesBefore+1)
+		t.Errorf("beta resequencer Rebaselines = %d, want %d (the new hub's hello must resync the repointed peer)", got, betaRebaselinesBefore+1)
+	}
+	if got := upLanes(t, m, 1); !slices.Equal(got, []uint8{betaView.id}) {
+		t.Errorf("beta lanes after the new hub's hello = %v, want its lane on path a", got)
 	}
 
 	// Peer B's per-path remotes are byte-identical.
@@ -107,7 +125,11 @@ func TestSetPeerRemoteForRepointsOnlyTargetPeer(t *testing.T) {
 			t.Errorf("witness path %q remote disturbed by beta's repoint: %v → %v", name, before, after)
 		}
 	}
-	// Peer B's resequencer is the SAME instance with byte-identical stats (untouched).
+	// Peer B's lane survived, and its resequencer is the SAME instance with byte-identical
+	// stats (untouched).
+	if got := upLanes(t, m, 0); !slices.Equal(got, []uint8{witnessView.id}) {
+		t.Errorf("witness lanes disturbed by beta's repoint: %v, want its lane on path a", got)
+	}
 	if primary.resequencer.Load() != witnessRQ {
 		t.Error("witness resequencer instance replaced by beta's repoint")
 	}

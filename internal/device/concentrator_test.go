@@ -177,7 +177,7 @@ func decodesAsProbe(t *testing.T, psk config.Key, raw []byte) bool {
 }
 
 // TestUpTwoPeerConcentratorKeysEachPeerOnItsOwnPSK is the T93 device-level MUTATION guard for the
-// per-peer PSK wiring the concentrator loop performs in up() — buildScheduler(cfg, id.PSK, ...)
+// per-peer PSK wiring the concentrator loop performs in up() — buildProbers(cfg, id.PSK, ...)
 // for each additional peer's prober set (device.go:301) and AddConcentratorPeer(id.Name, id.PSK,
 // ...) registering the peer under its own psk (device.go:306). Both mutants replace id.PSK with
 // ids[0].PSK (keying an additional peer on the PRIMARY's psk) yet leave the rest of the suite

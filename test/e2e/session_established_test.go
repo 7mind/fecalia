@@ -84,8 +84,12 @@ func TestSessionEstablishedTransitions(t *testing.T) {
 		t.Errorf("%s = %.1fs, want a fresh handshake within the 180s validity window", metrics.MetricSessionLastHandshake, age)
 	}
 
-	// (3) The 'session established' record appears exactly once per session.
+	// (3) The 'session established' record appears exactly once per session. The session
+	// monitor emits it at its own poll cadence, so it can trail the scraped gauge.
 	logText := edge.log()
+	for deadline := time.Now().Add(i2SessionUpDeadline); countLogRecords(logText, "session established") == 0 && time.Now().Before(deadline); logText = edge.log() {
+		time.Sleep(50 * time.Millisecond)
+	}
 	if got := countLogRecords(logText, "session established"); got != 1 {
 		t.Fatalf("'session established' logged %d times, want exactly 1 per session\n%s", got, logText)
 	}

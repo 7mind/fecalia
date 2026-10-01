@@ -21,8 +21,8 @@ import (
 //
 // TestWireFormatAudit captures the outer tunnel UDP payloads (the wanbond wire
 // frames) across >= wireaudit.MinSessions FRESH tunnel sessions — each with amnezia
-// junk AND fixed-ratio FEC parity ACTIVE, so the capture spans the full traffic mix
-// (DATA / PARITY / PROBE / CONTROL + amnezia junk) — and then asserts the
+// junk ACTIVE, so the capture spans the full traffic mix
+// (PROBE / CONTROL + amnezia junk) — and then asserts the
 // requirement-6 obfuscation properties PROGRAMMATICALLY via internal/wireaudit:
 //
 //  1. no byte offset holds a constant value across sessions/packets (a DPI
@@ -44,17 +44,8 @@ import (
 // strictly sequential. A byte constant WITHIN one session but varying ACROSS
 // sessions is not a fingerprint; the detector requires cross-session constancy.
 const (
-	// auditFECData / auditFECParity size the FEC group for the audit. Small K with a
-	// short deadline so parity frames actually appear at the fixture's low frame rate
-	// (the audit needs PARITY on the wire, not a specific recovery ratio).
-	auditFECData   = 4
-	auditFECParity = 2
-	// auditFECDeadlineNanos closes FEC groups after 50ms so parity flushes promptly
-	// even when a group never fills to K at the fixture's low packet rate.
-	auditFECDeadlineNanos = 50 * 1000 * 1000
-
 	// auditLoadSecs is the per-session bulk-transfer duration: long enough to emit
-	// thousands of MTU-sized DATA frames (so the large-frame entropy sample and the
+	// thousands of MTU-sized data frames (so the large-frame entropy sample and the
 	// per-offset sample counts clear their floors) yet short enough for five
 	// sessions to run in reasonable wall time.
 	auditLoadSecs = 5
@@ -243,9 +234,9 @@ func offsetInConstants(cs []wireaudit.ConstantOffset, offset int, value byte) bo
 	return false
 }
 
-// captureAuditSession brings up one fresh amnezia+FEC tunnel session over auditPath,
+// captureAuditSession brings up one fresh amnezia tunnel session over auditPath,
 // captures the outer UDP payloads on the edge veth with tcpdump while a short bulk
-// transfer drives DATA/PARITY/PROBE/junk traffic, and returns the parsed wanbond
+// transfer drives data/PROBE/junk traffic, and returns the parsed wanbond
 // frames.
 func captureAuditSession(t *testing.T, bin string, session int) []wireaudit.Frame {
 	t.Helper()
@@ -261,8 +252,8 @@ func captureAuditSession(t *testing.T, bin string, session int) []wireaudit.Fram
 			session, edge.log(), conc.log())
 	}
 
-	// Drive representative traffic: a saturating upload (DATA + FEC PARITY), with
-	// PROBE/CONTROL + amnezia junk flowing continuously alongside.
+	// Drive representative traffic: a saturating upload, with
+	// PROBE + amnezia junk flowing continuously alongside.
 	if mbps := top.iperf3Mbps(t, concInner, auditLoadSecs); mbps <= 0 {
 		cap.stop(t)
 		t.Fatalf("session %d: non-positive throughput %.2f Mbit/s", session, mbps)
@@ -344,20 +335,16 @@ func (top *Topology) startPcapFilter(t *testing.T, veth, filter, file string) *p
 	return cap
 }
 
-// setupAuditTunnel brings up the edge+concentrator tunnel over auditPath with BOTH
-// the amnezia obfuscation profile (junk active) AND the fixed-ratio FEC plane
-// (parity active) enabled on both ends, so the captured wire carries the full
-// traffic mix. It mirrors setupP3Tunnel's addressing/bring-up with the [amnezia]
-// block added.
+// setupAuditTunnel brings up the edge+concentrator tunnel over auditPath with
+// the amnezia obfuscation profile (junk active) enabled on both ends, so the
+// captured wire carries the full traffic mix. It mirrors setupMultipathTunnel's
+// addressing/bring-up with the [amnezia] block added.
 func setupAuditTunnel(t *testing.T, top *Topology, bin string) (edge, conc *proc) {
 	t.Helper()
 
 	edgePriv, edgePub := genKey(t)
 	concPriv, concPub := genKey(t)
 	psk := randKey(t)
-
-	fecBlock := fmt.Sprintf("[fec]\nenabled = true\ndata_shards = %d\nparity_shards = %d\ndeadline = \"%dms\"\n\n",
-		auditFECData, auditFECParity, auditFECDeadlineNanos/1_000_000)
 
 	dir := t.TempDir()
 	edgeCfg := writeConfig(t, filepath.Join(dir, "edge.toml"), fmt.Sprintf(`role = "edge"
@@ -367,7 +354,7 @@ psk = "%s"
 name = "%s"
 source_addr = "%s"
 
-%s%s[wireguard]
+%s[wireguard]
 private_key = "%s"
 
 [[wireguard.peers]]
@@ -377,7 +364,7 @@ allowed_ips = ["%s/32"]
 
 [log]
 level = "error"
-`, psk, auditPath.name, auditPath.edgeIP, amneziaProfileA, fecBlock, edgePriv, concPub, auditPath.concIP, listenPort, concInner))
+`, psk, auditPath.name, auditPath.edgeIP, amneziaProfileA, edgePriv, concPub, auditPath.concIP, listenPort, concInner))
 
 	concCfg := writeConfig(t, filepath.Join(dir, "conc.toml"), fmt.Sprintf(`role = "concentrator"
 psk = "%s"
@@ -386,7 +373,7 @@ psk = "%s"
 name = "%s"
 source_addr = "%s"
 
-%s%s[wireguard]
+%s[wireguard]
 private_key = "%s"
 listen_port = %d
 
@@ -396,7 +383,7 @@ allowed_ips = ["%s/32"]
 
 [log]
 level = "error"
-`, psk, auditPath.name, auditPath.concIP, amneziaProfileA, fecBlock, concPriv, listenPort, edgePub, edgeInner))
+`, psk, auditPath.name, auditPath.concIP, amneziaProfileA, concPriv, listenPort, edgePub, edgeInner))
 
 	conc = top.startProc(t, "concentrator", "nsenter", "-t", strconv.Itoa(top.pid), "-n", bin, "--config", concCfg)
 	edge = top.startProc(t, "edge", bin, "--config", edgeCfg)

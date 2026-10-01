@@ -362,7 +362,7 @@ func TestLoadSinglePeerLegacyPSKGoldenShape(t *testing.T) {
 		},
 		PSK: mustKey(t, 3),
 		Scheduler: SchedulerConfig{
-			Policy: PolicyActiveBackup, // applyDefaults always fills this in.
+			Policy: PolicyAdaptive, // applyDefaults always fills this in.
 		},
 		DNS: DNS{
 			// applyDefaults always fills these in for an absent [dns] block.
@@ -877,8 +877,8 @@ func TestLoadRejects(t *testing.T) {
 			name: "unknown key on path table",
 			mode: 0o600,
 			body: fill(strings.Replace(edgeConfig, `source_addr = "192.0.2.10"`,
-				"source_addr = \"192.0.2.10\"\nlink_bandwith = 1000000", 1)), //nolint:misspell // intentional misspelling: the rejected-key fixture
-			want: "unknown key paths.link_bandwith", //nolint:misspell // intentional misspelling: the rejected-key fixture
+				"source_addr = \"192.0.2.10\"\nsource_adr = \"192.0.2.11\"", 1)),
+			want: "unknown key paths.source_adr",
 		},
 		{
 			// D41: strict decoding rejects a misspelled key on a nested table too,
@@ -890,14 +890,14 @@ func TestLoadRejects(t *testing.T) {
 			want: "unknown key wireguard.peers.nane",
 		},
 		{
-			// T250 rule 6 (Q71): ONE shared [scheduler]/[fec]/[reseq] policy block
+			// T250 rule 6 (Q71): ONE shared [scheduler] policy block
 			// applies uniformly to every peer bond — there is no per-peer policy
 			// surface, so a per-peer policy scalar is rejected as an unknown key by
 			// the strict decoder rather than silently ignored.
 			name: "per-peer policy field is rejected (one shared policy block, Q71)",
 			mode: 0o600,
 			body: fill(strings.Replace(edgeConfig, `allowed_ips = ["0.0.0.0/0"]`,
-				"allowed_ips = [\"0.0.0.0/0\"]\npolicy = \"weighted\"", 1)),
+				"allowed_ips = [\"0.0.0.0/0\"]\npolicy = \"adaptive\"", 1)),
 			want: "unknown key wireguard.peers.policy",
 		},
 		{
@@ -906,7 +906,7 @@ func TestLoadRejects(t *testing.T) {
 			name: "per-peer scheduler sub-table is rejected (one shared policy block, Q71)",
 			mode: 0o600,
 			body: fill(strings.Replace(edgeConfig, `allowed_ips = ["0.0.0.0/0"]`,
-				"allowed_ips = [\"0.0.0.0/0\"]\n[wireguard.peers.scheduler]\npolicy = \"weighted\"", 1)),
+				"allowed_ips = [\"0.0.0.0/0\"]\n[wireguard.peers.scheduler]\npolicy = \"adaptive\"", 1)),
 			want: "unknown key wireguard.peers.scheduler",
 		},
 		{
@@ -920,66 +920,6 @@ func TestLoadRejects(t *testing.T) {
 			mode: 0o600,
 			body: fill(strings.Replace(edgeConfig, "psk = \"%PSK%\"", "", 1)),
 			want: "psk is required",
-		},
-		{
-			name: "fec enabled without data_shards",
-			mode: 0o600,
-			body: fill(edgeConfig) + "\n[fec]\nenabled = true\nparity_shards = 2\n",
-			want: "fec.data_shards must be >= 1",
-		},
-		{
-			name: "fec enabled without parity_shards",
-			mode: 0o600,
-			body: fill(edgeConfig) + "\n[fec]\nenabled = true\ndata_shards = 8\n",
-			want: "fec.parity_shards must be >= 1",
-		},
-		{
-			name: "fec ratio exceeds field limit",
-			mode: 0o600,
-			body: fill(edgeConfig) + "\n[fec]\nenabled = true\ndata_shards = 250\nparity_shards = 10\n",
-			want: "Reed-Solomon field limit",
-		},
-		{
-			name: "fec deadline exceeds resequencer budget",
-			mode: 0o600,
-			body: fill(edgeConfig) + "\n[fec]\nenabled = true\ndata_shards = 8\nparity_shards = 3\ndeadline = \"500ms\"\n",
-			want: "fec.deadline must be <=",
-		},
-		{
-			name: "fec adaptive without enabled",
-			mode: 0o600,
-			body: fill(edgeConfig) + "\n[fec]\nadaptive = true\n",
-			want: "fec.adaptive = true requires fec.enabled = true",
-		},
-		{
-			name: "fec target_residual out of range (>= 1)",
-			mode: 0o600,
-			body: fill(edgeConfig) + "\n[fec]\nenabled = true\nadaptive = true\ndata_shards = 10\nparity_shards = 6\ntarget_residual = 1.5\n",
-			want: "fec.target_residual must be a finite value in (0,1)",
-		},
-		{
-			name: "fec target_residual out of range (<= 0)",
-			mode: 0o600,
-			body: fill(edgeConfig) + "\n[fec]\nenabled = true\nadaptive = true\ndata_shards = 10\nparity_shards = 6\ntarget_residual = -0.01\n",
-			want: "fec.target_residual must be a finite value in (0,1)",
-		},
-		{
-			name: "fec target_residual non-finite (nan)",
-			mode: 0o600,
-			body: fill(edgeConfig) + "\n[fec]\nenabled = true\nadaptive = true\ndata_shards = 10\nparity_shards = 6\ntarget_residual = nan\n",
-			want: "fec.target_residual must be a finite value in (0,1)",
-		},
-		{
-			name: "fec target_residual and safety_factor both set",
-			mode: 0o600,
-			body: fill(edgeConfig) + "\n[fec]\nenabled = true\nadaptive = true\ndata_shards = 10\nparity_shards = 6\ntarget_residual = 0.005\nsafety_factor = 2.0\n",
-			want: "mutually exclusive",
-		},
-		{
-			name: "fec target_residual in fixed (non-adaptive) mode",
-			mode: 0o600,
-			body: fill(edgeConfig) + "\n[fec]\nenabled = true\ndata_shards = 10\nparity_shards = 6\ntarget_residual = 0.005\n",
-			want: "only meaningful in adaptive mode",
 		},
 	}
 	for _, tc := range cases {
@@ -1122,271 +1062,6 @@ func TestLoadRejectsDuplicateSourceAddrV4MappedV6(t *testing.T) {
 		if !strings.Contains(msg, want) {
 			t.Errorf("error %q must name conflicting path %q", msg, want)
 		}
-	}
-}
-
-// TestFECDefaultOff: omitting [fec] leaves FEC disabled so an existing config runs
-// the pre-T24 datapath unchanged, and every FEC knob stays at its zero value.
-func TestFECDefaultOff(t *testing.T) {
-	path := writeConfig(t, 0o600, fill(edgeConfig))
-	c, err := Load(path)
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	if c.FEC.Enabled {
-		t.Fatal("FEC must default to disabled when [fec] is omitted")
-	}
-	if c.FEC.DataShards != 0 || c.FEC.ParityShards != 0 || c.FEC.Deadline != 0 {
-		t.Fatalf("FEC knobs must stay zero when disabled, got %+v", c.FEC)
-	}
-}
-
-// TestFECAdaptiveLoads: an enabled [fec] block with adaptive = true loads, keeps the
-// ratio (now the controller's K / parity-ceiling), and reports adaptive on; fixed configs
-// leave it off (default).
-func TestFECAdaptiveLoads(t *testing.T) {
-	body := fill(edgeConfig) + "\n[fec]\nenabled = true\nadaptive = true\ndata_shards = 10\nparity_shards = 6\n"
-	path := writeConfig(t, 0o600, body)
-	c, err := Load(path)
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	if !c.FEC.Enabled || !c.FEC.Adaptive {
-		t.Fatalf("adaptive FEC not loaded: %+v", c.FEC)
-	}
-	if c.FEC.DataShards != 10 || c.FEC.ParityShards != 6 {
-		t.Fatalf("adaptive ratio not loaded: %+v", c.FEC)
-	}
-
-	// A fixed block leaves adaptive off.
-	fixed := writeConfig(t, 0o600, fill(edgeConfig)+"\n[fec]\nenabled = true\ndata_shards = 10\nparity_shards = 6\n")
-	cf, err := Load(fixed)
-	if err != nil {
-		t.Fatalf("Load fixed: %v", err)
-	}
-	if cf.FEC.Adaptive {
-		t.Fatal("adaptive must default to off for a fixed [fec] block")
-	}
-}
-
-// TestFECTargetResidualLoads: an adaptive [fec] block with target_residual set parses
-// the SLA, leaves safety_factor inert (0, NOT defaulted), so the residual-SLA sizing
-// mode (D26/T46) is the one the controller runs. A block with neither field keeps the
-// safety_factor default (the legacy path), proving the two are mutually exclusive at load.
-func TestFECTargetResidualLoads(t *testing.T) {
-	body := fill(edgeConfig) + "\n[fec]\nenabled = true\nadaptive = true\ndata_shards = 10\nparity_shards = 6\ntarget_residual = 0.005\n"
-	path := writeConfig(t, 0o600, body)
-	c, err := Load(path)
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	if c.FEC.TargetResidual != 0.005 {
-		t.Fatalf("target_residual = %g, want 0.005", c.FEC.TargetResidual)
-	}
-	if c.FEC.SafetyFactor != 0 {
-		t.Fatalf("safety_factor = %g, want 0 (inert when target_residual governs)", c.FEC.SafetyFactor)
-	}
-
-	// With neither field the legacy safety_factor default fills in (not target_residual).
-	legacy := writeConfig(t, 0o600, fill(edgeConfig)+"\n[fec]\nenabled = true\nadaptive = true\ndata_shards = 10\nparity_shards = 6\n")
-	lc, err := Load(legacy)
-	if err != nil {
-		t.Fatalf("Load legacy: %v", err)
-	}
-	if lc.FEC.TargetResidual != 0 {
-		t.Fatalf("legacy target_residual = %g, want 0", lc.FEC.TargetResidual)
-	}
-	if lc.FEC.SafetyFactor != defaultAdaptiveSafetyFactor {
-		t.Fatalf("legacy safety_factor = %g, want defaulted %g", lc.FEC.SafetyFactor, defaultAdaptiveSafetyFactor)
-	}
-}
-
-// TestFECEnabledDefaults: a minimal enabled [fec] block loads, keeps the given ratio,
-// and defaults the group-close deadline so `enabled = true` with just a ratio is
-// usable without hand-tuning the deadline.
-func TestFECEnabledDefaults(t *testing.T) {
-	body := fill(edgeConfig) + "\n[fec]\nenabled = true\ndata_shards = 8\nparity_shards = 3\n"
-	path := writeConfig(t, 0o600, body)
-	c, err := Load(path)
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	if !c.FEC.Enabled || c.FEC.DataShards != 8 || c.FEC.ParityShards != 3 {
-		t.Fatalf("FEC ratio not loaded: %+v", c.FEC)
-	}
-	if c.FEC.Deadline != defaultFECDeadline {
-		t.Fatalf("FEC deadline = %s, want defaulted %s", c.FEC.Deadline, defaultFECDeadline)
-	}
-}
-
-// TestSchedulerPolicyDefault: omitting [scheduler] defaults the policy to
-// active-backup (P1 preserved) and leaves the weighted knobs inert/zero.
-func TestSchedulerPolicyDefault(t *testing.T) {
-	path := writeConfig(t, 0o600, fill(edgeConfig))
-	c, err := Load(path)
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	if c.Scheduler.Policy != PolicyActiveBackup {
-		t.Fatalf("default scheduler policy = %q, want %q", c.Scheduler.Policy, PolicyActiveBackup)
-	}
-	if c.Scheduler.PerPathCapacityFPS != 0 {
-		t.Fatalf("weighted knobs must stay zero under active-backup, got capacity %g", c.Scheduler.PerPathCapacityFPS)
-	}
-}
-
-// TestSchedulerPolicyWeightedDefaults: a minimal weighted block loads and every
-// omitted weighted knob is filled with its default (so `policy = "weighted"` alone
-// is usable), forming a valid hysteresis band.
-func TestSchedulerPolicyWeightedDefaults(t *testing.T) {
-	body := fill(edgeConfig) + "\n[scheduler]\npolicy = \"weighted\"\n"
-	path := writeConfig(t, 0o600, body)
-	c, err := Load(path)
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	if c.Scheduler.Policy != PolicyWeighted {
-		t.Fatalf("policy = %q, want weighted", c.Scheduler.Policy)
-	}
-	if c.Scheduler.PerPathCapacityFPS <= 0 || c.Scheduler.EngageFraction <= 0 ||
-		c.Scheduler.DisengageFraction >= c.Scheduler.EngageFraction || c.Scheduler.LoadTau <= 0 ||
-		c.Scheduler.WeightRTTFloor <= 0 || c.Scheduler.WeightLossFloor <= 0 {
-		t.Fatalf("weighted defaults not applied coherently: %+v", c.Scheduler)
-	}
-}
-
-// TestSchedulerPolicyRejects: the weighted policy fails fast at load on an unknown
-// policy or a non-hysteretic threshold band.
-func TestSchedulerPolicyRejects(t *testing.T) {
-	cases := []struct {
-		name string
-		body string
-		want string
-	}{
-		{
-			name: "unknown policy",
-			body: fill(edgeConfig) + "\n[scheduler]\npolicy = \"round-robin\"\n",
-			want: "scheduler.policy must be",
-		},
-		{
-			name: "disengage not below engage",
-			body: fill(edgeConfig) + "\n[scheduler]\npolicy = \"weighted\"\nengage_fraction = 0.5\ndisengage_fraction = 0.6\n",
-			want: "hysteresis band",
-		},
-		{
-			name: "pacing enabled without burst",
-			body: fill(edgeConfig) + "\n[scheduler]\npolicy = \"weighted\"\npacing_enabled = true\npacing_burst_frames = -1\n",
-			want: "pacing_burst_frames must be > 0",
-		},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			path := writeConfig(t, 0o600, tc.body)
-			_, err := Load(path)
-			if err == nil {
-				t.Fatalf("expected error containing %q, got nil", tc.want)
-			}
-			if !strings.Contains(err.Error(), tc.want) {
-				t.Fatalf("error = %q, want substring %q", err.Error(), tc.want)
-			}
-		})
-	}
-}
-
-// TestDurationKnobsDocumentedStringFormLoads is the acceptance test for the
-// operator-facing duration knobs documented in wanbond.example.toml with Go-duration
-// STRING forms (D43): scheduler.collapse_dwell = "2s", scheduler.load_tau = "200ms",
-// scheduler.weight_rtt_floor = "1ms" (under the weighted policy) and fec.deadline =
-// "5ms" (under an enabled [fec] block) must all load and parse to the documented
-// values — go-toml/v2 cannot decode a TOML string directly into a bare time.Duration,
-// so before the CollapseDwellRaw/LoadTauRaw/WeightRTTFloorRaw/DeadlineRaw fields these
-// forms failed to load.
-func TestDurationKnobsDocumentedStringFormLoads(t *testing.T) {
-	body := fill(edgeConfig) +
-		"\n[scheduler]\npolicy = \"weighted\"\ncollapse_dwell = \"2s\"\nload_tau = \"200ms\"\nweight_rtt_floor = \"1ms\"\n" +
-		"\n[fec]\nenabled = true\ndata_shards = 8\nparity_shards = 3\ndeadline = \"5ms\"\n"
-	path := writeConfig(t, 0o600, body)
-	c, err := Load(path)
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	if c.Scheduler.CollapseDwell != 2*time.Second {
-		t.Fatalf("scheduler.collapse_dwell = %s, want 2s", c.Scheduler.CollapseDwell)
-	}
-	if c.Scheduler.LoadTau != 200*time.Millisecond {
-		t.Fatalf("scheduler.load_tau = %s, want 200ms", c.Scheduler.LoadTau)
-	}
-	if c.Scheduler.WeightRTTFloor != time.Millisecond {
-		t.Fatalf("scheduler.weight_rtt_floor = %s, want 1ms", c.Scheduler.WeightRTTFloor)
-	}
-	if c.FEC.Deadline != 5*time.Millisecond {
-		t.Fatalf("fec.deadline = %s, want 5ms", c.FEC.Deadline)
-	}
-}
-
-// TestDurationKnobsReject is the rejects-table for the four operator-facing duration
-// knobs (D43): an unparseable duration string ("5 parsecs") must fail at parse with an
-// error naming the field, and a value outside each knob's documented range ("-1s",
-// which violates every knob's own >= 0 / > 0 bound) must fail the SAME EXISTING
-// validate() range check the knob had before this change (preserved unchanged).
-func TestDurationKnobsReject(t *testing.T) {
-	cases := []struct {
-		name string
-		body string
-		want string
-	}{
-		{
-			name: "collapse_dwell unparseable",
-			body: fill(edgeConfig) + "\n[scheduler]\npolicy = \"weighted\"\ncollapse_dwell = \"5 parsecs\"\n",
-			want: "scheduler.collapse_dwell: invalid duration",
-		},
-		{
-			name: "collapse_dwell negative",
-			body: fill(edgeConfig) + "\n[scheduler]\npolicy = \"weighted\"\ncollapse_dwell = \"-1s\"\n",
-			want: "scheduler.collapse_dwell must be >= 0",
-		},
-		{
-			name: "load_tau unparseable",
-			body: fill(edgeConfig) + "\n[scheduler]\npolicy = \"weighted\"\nload_tau = \"5 parsecs\"\n",
-			want: "scheduler.load_tau: invalid duration",
-		},
-		{
-			name: "load_tau non-positive",
-			body: fill(edgeConfig) + "\n[scheduler]\npolicy = \"weighted\"\nload_tau = \"-1s\"\n",
-			want: "scheduler.load_tau must be > 0",
-		},
-		{
-			name: "weight_rtt_floor unparseable",
-			body: fill(edgeConfig) + "\n[scheduler]\npolicy = \"weighted\"\nweight_rtt_floor = \"5 parsecs\"\n",
-			want: "scheduler.weight_rtt_floor: invalid duration",
-		},
-		{
-			name: "weight_rtt_floor non-positive",
-			body: fill(edgeConfig) + "\n[scheduler]\npolicy = \"weighted\"\nweight_rtt_floor = \"-1s\"\n",
-			want: "scheduler.weight_rtt_floor must be > 0",
-		},
-		{
-			name: "fec deadline unparseable",
-			body: fill(edgeConfig) + "\n[fec]\nenabled = true\ndata_shards = 8\nparity_shards = 3\ndeadline = \"5 parsecs\"\n",
-			want: "fec.deadline: invalid duration",
-		},
-		{
-			name: "fec deadline non-positive",
-			body: fill(edgeConfig) + "\n[fec]\nenabled = true\ndata_shards = 8\nparity_shards = 3\ndeadline = \"-1s\"\n",
-			want: "fec.deadline must be > 0",
-		},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			path := writeConfig(t, 0o600, tc.body)
-			_, err := Load(path)
-			if err == nil {
-				t.Fatalf("expected error containing %q, got nil", tc.want)
-			}
-			if !strings.Contains(err.Error(), tc.want) {
-				t.Fatalf("error = %q, want substring %q", err.Error(), tc.want)
-			}
-		})
 	}
 }
 
@@ -1594,29 +1269,12 @@ func exampleDNSBlock(t *testing.T, content, mode string) string {
 	return extractExampleSection(t, content, m[0], m[1])
 }
 
-// exampleSchedulerBlock extracts and uncomments the documented [scheduler] block
-// (D43), including the collapse_dwell/load_tau/weight_rtt_floor Go-duration-string
-// knobs — the whole block loads even at its documented (commented-out) default
-// policy = "active-backup", since the duration knobs are parsed unconditionally in
-// normalize() regardless of policy.
+// exampleSchedulerBlock extracts and uncomments the documented [scheduler] block.
 func exampleSchedulerBlock(t *testing.T, content string) string {
 	t.Helper()
 	return extractExampleSection(t, content,
-		"# ── scheduler: OPTIONAL. Omitted => active-backup, pacing off ─────────────────",
-		"\n# ── fec: OPTIONAL, OFF by default (no parity on the wire) ─────────────────────",
-	)
-}
-
-// exampleFECBaseBlock extracts and uncomments the documented [fec] block's base
-// fields (enabled/data_shards/parity_shards/deadline) — D43's deadline = "5ms" among
-// them — stopping BEFORE the adaptive/target_residual/safety_factor lines, which are
-// mutually exclusive with each other (see FEC.validate) and not meant to be uncommented
-// together with a plain fixed-ratio block.
-func exampleFECBaseBlock(t *testing.T, content string) string {
-	t.Helper()
-	return extractExampleSection(t, content,
-		"# ── fec: OPTIONAL, OFF by default (no parity on the wire) ─────────────────────",
-		"\n# adaptive = false",
+		"# ── scheduler: OPTIONAL. Omitted => adaptive (the only transport) ────────────",
+		"\n# ── liveness: OPTIONAL. Omitted => 1200ms down_after (today's fixed value) ────",
 	)
 }
 
@@ -1769,30 +1427,21 @@ func TestExampleConfigLoads(t *testing.T) {
 		}
 	})
 
-	// D43: the documented [scheduler]/[fec] duration-string knobs (collapse_dwell,
-	// load_tau, weight_rtt_floor, deadline) must load once uncommented, not just
-	// parse in isolation — an operator following wanbond.example.toml verbatim must
-	// not hit a decode failure.
-	t.Run("scheduler_and_fec_duration_knobs", func(t *testing.T) {
-		body := top + exampleLiteralPeer(t, content) + "\n" +
-			exampleSchedulerBlock(t, content) + "\n" +
-			exampleFECBaseBlock(t, content)
+	// The documented [scheduler] block must load once uncommented and select the
+	// adaptive transport, the only one.
+	t.Run("scheduler_block", func(t *testing.T) {
+		block := exampleSchedulerBlock(t, content)
+		if !strings.Contains(block, "[scheduler]\npolicy = \"adaptive\"") {
+			t.Fatalf("documented [scheduler] block does not set policy = \"adaptive\":\n%s", block)
+		}
+		body := top + exampleLiteralPeer(t, content) + "\n" + block
 		path := writeConfig(t, 0o600, body)
 		cfg, err := Load(path)
 		if err != nil {
-			t.Fatalf("load [scheduler]/[fec] duration knobs example:\n%s\n\nerror: %v", body, err)
+			t.Fatalf("load [scheduler] example:\n%s\n\nerror: %v", body, err)
 		}
-		if cfg.Scheduler.CollapseDwell != 2*time.Second {
-			t.Fatalf("scheduler.collapse_dwell = %s, want 2s", cfg.Scheduler.CollapseDwell)
-		}
-		if cfg.Scheduler.LoadTau != 200*time.Millisecond {
-			t.Fatalf("scheduler.load_tau = %s, want 200ms", cfg.Scheduler.LoadTau)
-		}
-		if cfg.Scheduler.WeightRTTFloor != time.Millisecond {
-			t.Fatalf("scheduler.weight_rtt_floor = %s, want 1ms", cfg.Scheduler.WeightRTTFloor)
-		}
-		if cfg.FEC.Deadline != 5*time.Millisecond {
-			t.Fatalf("fec.deadline = %s, want 5ms", cfg.FEC.Deadline)
+		if cfg.Scheduler.Policy != PolicyAdaptive {
+			t.Fatalf("scheduler.policy = %q, want %q", cfg.Scheduler.Policy, PolicyAdaptive)
 		}
 	})
 
@@ -1856,151 +1505,6 @@ func extractFencedTOMLAfter(t *testing.T, content, headingMarker string) string 
 		t.Fatalf("unterminated ```toml fence after heading %q in docs/install.md", headingMarker)
 	}
 	return rest[:end]
-}
-
-// TestInstallMDFullConfigShaperContract keeps the shipped full-reference
-// scheduler commentary on the exact-byte shaper model rather than the retired
-// frame-token pacing model.
-func TestInstallMDFullConfigShaperContract(t *testing.T) {
-	block := extractFencedTOMLAfter(t, readInstallMD(t),
-		"### 3z. Full configuration reference (all keys)")
-
-	for _, want := range []string{
-		"this path's live",
-		"exact-byte R/B envelope",
-		"WEIGHTED synthetic DEFAULT 10000",
-		"Active-backup: NO default",
-		"WEIGHTED synthetic DEFAULT 64",
-		"raw exact-byte rate input",
-		"B must be >=",
-		"Runtime derives C=Lmax and Q=B+C",
-		"links use R=link_bandwidth/8",
-		"B=ceil(R*link_rtt)",
-		"raw knobs use",
-		"B=ceil(pacing_burst_frames*1500)",
-		"batches stream per buffer under pre-copy",
-		"future debt P0",
-		"assigned shaped deadlines stay immutable",
-		"Dp=(P0+Pburst)/(R-Rp)",
-		"bounded by Dp+Q/R+Lmax/R",
-		"T302 tests add 10ms",
-		"normative bound",
-		"accepted/emitted prefix",
-		"FEC parity",
-		"old shaper/socket",
-	} {
-		if !strings.Contains(block, want) {
-			t.Errorf("full configuration reference missing exact-byte shaper contract %q", want)
-		}
-	}
-	for _, stale := range []string{
-		"shared pacing refill",
-		"per-path pacing refill",
-		"Raw burst input",
-		"DEFAULT 10000. Weighted",
-		"DEFAULT 64. Raw",
-		"BDP-derived B",
-	} {
-		if strings.Contains(block, stale) {
-			t.Errorf("full configuration reference retains retired pacing contract %q", stale)
-		}
-	}
-}
-
-// TestExamplePacingCommentaryContract applies the same policy/default,
-// raw-versus-declared, and delivery-bound contract to the canonical example.
-func TestExamplePacingCommentaryContract(t *testing.T) {
-	content := readExampleFile(t)
-	for _, want := range []string{
-		"WEIGHTED synthetic DEFAULT 10000",
-		"Active-backup: NO default",
-		"WEIGHTED synthetic DEFAULT 64",
-		"links use R=link_bandwidth/8",
-		"B=ceil(R*link_rtt)",
-		"B=ceil(pacing_burst_frames*1500)",
-		"bounded by Dp+Q/R+Lmax/R",
-		"T302 tests add 10ms",
-		"normative bound",
-	} {
-		if !strings.Contains(content, want) {
-			t.Errorf("canonical example missing exact-byte commentary %q", want)
-		}
-	}
-	for _, stale := range []string{
-		"DEFAULT 10000. Weighted",
-		"DEFAULT 64. Raw",
-		"BDP-derived B",
-	} {
-		if strings.Contains(content, stale) {
-			t.Errorf("canonical example retains stale exact-byte commentary %q", stale)
-		}
-	}
-}
-
-// TestInstallMDPacingMeasurementAndSizingContract prevents the CPU/PPS-bound
-// fixture and weighted aggregation compatibility scalar from being documented
-// as production bandwidth/shaping measurements.
-func TestInstallMDPacingMeasurementAndSizingContract(t *testing.T) {
-	content := readInstallMD(t)
-	for _, want := range []string{
-		"only a real-link",
-		"measurement may supply `link_bandwidth`",
-		"CPU/PPS-bound capped-path diagnostic",
-		"strictly **report-only**",
-		"Do not copy its achieved",
-		"shared frame-domain aggregation compatibility reference",
-		"every live byte",
-		"shaper still uses its own path's declared `R` and `B`",
-	} {
-		if !strings.Contains(content, want) {
-			t.Errorf("install guide missing pacing measurement/sizing contract %q", want)
-		}
-	}
-	for _, stale := range []string{
-		"deterministic bandwidth-measurement sub-test",
-		"true link-limited throughput (not CPU-bound)",
-		"sizes the shared\n  pace to the slowest link",
-	} {
-		if strings.Contains(content, stale) {
-			t.Errorf("install guide retains stale pacing measurement/sizing claim %q", stale)
-		}
-	}
-}
-
-// TestDesignAndManualPacingNarrativeContract keeps the aggregation denominator
-// and netns fixture within their frame-domain and functional-only scopes.
-func TestDesignAndManualPacingNarrativeContract(t *testing.T) {
-	read := func(name string) string {
-		t.Helper()
-		raw, err := os.ReadFile(filepath.Join("..", "..", "docs", name))
-		if err != nil {
-			t.Fatalf("read docs/%s: %v", name, err)
-		}
-		return string(raw)
-	}
-	design := read("design.md")
-	for _, want := range []string{
-		"1500-byte denominator translates",
-		"does not police or protect",
-		"R=link_bandwidth/8",
-	} {
-		if !strings.Contains(design, want) {
-			t.Errorf("design guide missing aggregation/shaper distinction %q", want)
-		}
-	}
-	if strings.Contains(design, "ensures the shaper does not let the link overfill") {
-		t.Error("design guide attributes exact-byte shaper protection to the aggregation denominator")
-	}
-
-	manual := read("manual-checklist.md")
-	for _, want := range []string{"functional", "impairment/counter check", "no\n      throughput or loaded-RTT claim"} {
-		if !strings.Contains(manual, want) {
-			t.Errorf("manual checklist missing functional-only netns contract %q", want)
-		}
-	}
-	if strings.Contains(manual, "capped-fixture aggregation/bufferbloat") {
-		t.Error("manual checklist retains a netns aggregation/bufferbloat measurement claim")
-	}
 }
 
 // TestInstallMDMultiConcentratorEdgeExampleLoads verifies that docs/install.md's
@@ -2124,7 +1628,7 @@ func TestMonitorAllowedHosts(t *testing.T) {
 }
 
 // TestMonitorUnknownKeyRejected mirrors D41's strict-decoding coverage for
-// [metrics]/[fec]/etc: a misspelled [monitor] key is rejected at Load with the
+// [metrics]/[dns]/etc: a misspelled [monitor] key is rejected at Load with the
 // dotted key path named, rather than silently dropped (DisallowUnknownFields).
 func TestMonitorUnknownKeyRejected(t *testing.T) {
 	body := fill(edgeConfig) + "\n[monitor]\nlisten = \"127.0.0.1:9096\"\ntokenn = \"s3cret\"\n"
@@ -2254,7 +1758,7 @@ func TestPathMTURoundTrip(t *testing.T) {
 			},
 			PSK: mustKey(t, 3),
 			Scheduler: SchedulerConfig{
-				Policy: PolicyActiveBackup,
+				Policy: PolicyAdaptive,
 			},
 			DNS: DNS{
 				Resolver:     DNSResolverSystem,

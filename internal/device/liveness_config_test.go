@@ -63,11 +63,11 @@ allowed_ips = ["10.0.0.0/24"]
 	return cfg
 }
 
-// TestBuildSchedulerLivenessFromConfig is the D86/T207 acceptance: buildScheduler must build a
+// TestBuildSchedulerLivenessFromConfig is the D86/T207 acceptance: buildProbers must build a
 // PER-PATH telemetry.ProberConfig from the loaded config — DownAfter from the global
 // cfg.Liveness.DownAfter and RideThrough from THAT path's cfg.Paths[i].RideThrough — NOT the
 // pre-T207 single hardcoded telemetry.Default* literal. proberConfigForPath is the mapping
-// under test (the same function buildScheduler's newProber closure and the runtime
+// under test (the same function buildProbers's newProber closure and the runtime
 // bind.ProberFactory call for every boot-time and runtime path).
 func TestBuildSchedulerLivenessFromConfig(t *testing.T) {
 	// Custom: down_after=2s globally; path "a" rides through 2s, path "b" leaves it at 0.

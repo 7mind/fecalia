@@ -7,7 +7,6 @@ import (
 	"testing"
 
 	"github.com/7mind/wanbond/internal/config"
-	"github.com/7mind/wanbond/internal/frame"
 )
 
 // TestRemoveDeferredPathMisalignedPeerProbersFailsFast is the D42 residual regression for
@@ -28,10 +27,10 @@ func TestRemoveDeferredPathMisalignedPeerProbersFailsFast(t *testing.T) {
 	pskB := testKey(t, 0x92)
 	clk := newFakeClock()
 	paths := loopbackPaths(1) // boot path "a"
-	m, _, _ := newProbingMultipath(t, paths, pskA, clk)
+	m, _ := newProbingMultipath(t, paths, pskA, clk)
 
-	betaSched, betaProbers, betaFactory := concPeerWiring(t, paths, pskB, 0x0BAD1, clk)
-	if err := m.AddConcentratorPeer("beta", pskB, betaSched, betaProbers, betaFactory); err != nil {
+	betaProbers, betaFactory := concPeerWiring(t, paths, pskB, 0x0BAD1, clk)
+	if err := m.AddConcentratorPeer("beta", pskB, betaProbers, betaFactory); err != nil {
 		t.Fatalf("AddConcentratorPeer: %v", err)
 	}
 	if _, _, err := m.Open(0); err != nil {
@@ -97,10 +96,10 @@ func TestRemoveDeferredPathInRangeMisalignedPeerProbersFailsFast(t *testing.T) {
 	pskB := testKey(t, 0x96)
 	clk := newFakeClock()
 	paths := loopbackPaths(1) // boot path "a"
-	m, _, _ := newProbingMultipath(t, paths, pskA, clk)
+	m, _ := newProbingMultipath(t, paths, pskA, clk)
 
-	betaSched, betaProbers, betaFactory := concPeerWiring(t, paths, pskB, 0x0BAD3, clk)
-	if err := m.AddConcentratorPeer("beta", pskB, betaSched, betaProbers, betaFactory); err != nil {
+	betaProbers, betaFactory := concPeerWiring(t, paths, pskB, 0x0BAD3, clk)
+	if err := m.AddConcentratorPeer("beta", pskB, betaProbers, betaFactory); err != nil {
 		t.Fatalf("AddConcentratorPeer: %v", err)
 	}
 	if _, _, err := m.Open(0); err != nil {
@@ -149,16 +148,16 @@ func TestRemoveDeferredPathInRangeMisalignedPeerProbersFailsFast(t *testing.T) {
 	}
 }
 
-// TestReconcilePromotionFansViewAndSchedulerToEveryPeer is the T124/D42 core acceptance: on a
+// TestReconcilePromotionFansViewToEveryPeer is the T124/D42 core acceptance: on a
 // 2-peer concentrator, a deferred boot path's PROMOTION (StartReconcileLoop's background
 // reconcile, once the source_addr becomes assignable) must give EVERY bound peer — not just
-// the primary — a receive-demux VIEW of the freshly-bound socket and a scheduler entry, and
-// each peer's DATA must actually flow (demux + resequencer delivery) over the promoted path.
+// the primary — a receive-demux VIEW of the freshly-bound socket, and each peer's data must
+// actually flow (demux + transport + resequencer delivery) over the promoted path.
 // Pre-fix, promoteDeferredLocked attached only the primary's view, leaving beta view-less: its
-// frames on the promoted socket would never demux to it (this test's demuxInbound/DATA
+// frames on the promoted socket would never demux to it (this test's demuxInbound/data
 // assertions fail pre-fix — beta's view is nil, so peerPathByName(beta, "deferred") is nil and
-// the test fails before it can even attempt the DATA exchange).
-func TestReconcilePromotionFansViewAndSchedulerToEveryPeer(t *testing.T) {
+// the test fails before it can even attempt the data exchange).
+func TestReconcilePromotionFansViewToEveryPeer(t *testing.T) {
 	pskA := testKey(t, 0x81)
 	pskB := testKey(t, 0x82)
 	clk := newFakeClock()
@@ -166,10 +165,10 @@ func TestReconcilePromotionFansViewAndSchedulerToEveryPeer(t *testing.T) {
 		{Name: "bindable", SourceAddr: netip.MustParseAddr("127.0.0.1")},
 		{Name: "deferred", SourceAddr: netip.MustParseAddr(unassignableSource)},
 	}
-	m, _, _ := newProbingMultipath(t, paths, pskA, clk)
+	m, _ := newProbingMultipath(t, paths, pskA, clk)
 
-	betaSched, betaProbers, betaFactory := concPeerWiring(t, paths, pskB, 0x0B00B00, clk)
-	if err := m.AddConcentratorPeer("beta", pskB, betaSched, betaProbers, betaFactory); err != nil {
+	betaProbers, betaFactory := concPeerWiring(t, paths, pskB, 0x0B00B00, clk)
+	if err := m.AddConcentratorPeer("beta", pskB, betaProbers, betaFactory); err != nil {
 		t.Fatalf("AddConcentratorPeer: %v", err)
 	}
 	binder := &fakeDeferredBinder{}
@@ -212,20 +211,9 @@ func TestReconcilePromotionFansViewAndSchedulerToEveryPeer(t *testing.T) {
 	assertProberKeyedOn(t, "primary promoted prober", primaryView.prober, pskA, pskB)
 	assertProberKeyedOn(t, "beta promoted prober", betaView.prober, pskB, pskA)
 
-	// Both peers got a SCHEDULER entry too: exercised behaviourally below by proving each
-	// peer's DATA actually demuxes and delivers over the promoted (now-shared) socket — the
-	// "frames never demux to it" residual this task fixes. (A missing scheduler entry would
-	// leave the peer's view built but the path unschedulable for egress; the receive-side
-	// behavioural proof below is this test's DATA-flow acceptance.)
-	dataCodecA, err := frame.NewCodec(pskA)
-	if err != nil {
-		t.Fatalf("build peer A data codec: %v", err)
-	}
-	dataCodecB, err := frame.NewCodec(pskB)
-	if err != nil {
-		t.Fatalf("build peer B data codec: %v", err)
-	}
-
+	// Both peers' views are usable: exercised behaviourally below by proving each peer's
+	// data actually demuxes and delivers over the promoted (now-shared) socket — the
+	// "frames never demux to it" residual this task fixes.
 	srcA := netip.MustParseAddrPort("203.0.113.10:51820")
 	srcB := netip.MustParseAddrPort("198.51.100.10:51820")
 
@@ -241,18 +229,22 @@ func TestReconcilePromotionFansViewAndSchedulerToEveryPeer(t *testing.T) {
 		t.Fatalf("srcB did not bind to beta over the promoted path: bound=%v ok=%v", bound, ok)
 	}
 
-	// A DATA frame from each bound source demuxes to that peer's OWN resequencer over the
-	// promoted path — the acceptance's "both peers' DATA flows on the promoted path".
-	m.demuxInbound(primaryView, mustEncodeData(t, dataCodecA, 0, primaryView.id, "A-data"), srcA)
-	m.demuxInbound(primaryView, mustEncodeData(t, dataCodecB, 0, betaView.id, "B-data"), srcB)
+	// A data frame from each bound source demuxes to that peer's OWN resequencer over the
+	// promoted path — the acceptance's "both peers' data flows on the promoted path".
+	remoteA := newRemoteTransport(t, primary, 987)
+	remoteA.join(primaryView, srcA)
+	remoteB := newRemoteTransport(t, beta, 988)
+	remoteB.join(betaView, srcB)
+	m.demuxInbound(primaryView, remoteA.wire(remoteA.bulk(primaryView, []byte("A-data"))), srcA)
+	m.demuxInbound(primaryView, remoteB.wire(remoteB.bulk(betaView, []byte("B-data"))), srcB)
 
 	itA, ok := primary.resequencer.Load().Pop()
 	if !ok || string(itA.Payload) != "A-data" {
-		t.Fatalf("primary did not receive DATA over the promoted path (ok=%v)", ok)
+		t.Fatalf("primary did not receive data over the promoted path (ok=%v)", ok)
 	}
 	itB, ok := beta.resequencer.Load().Pop()
 	if !ok || string(itB.Payload) != "B-data" {
-		t.Fatalf("beta did not receive DATA over the promoted path (ok=%v) — the promotion left beta's frames un-demuxed", ok)
+		t.Fatalf("beta did not receive data over the promoted path (ok=%v) — the promotion left beta's frames un-demuxed", ok)
 	}
 }
 
@@ -271,10 +263,10 @@ func TestConcentratorCloseOpenAfterDeferredPromoteRebuildsBothPeers(t *testing.T
 	pskB := testKey(t, 0x84)
 	clk := newFakeClock()
 	paths := loopbackPaths(1) // boot path "a"
-	m, _, _ := newProbingMultipath(t, paths, pskA, clk)
+	m, _ := newProbingMultipath(t, paths, pskA, clk)
 
-	betaSched, betaProbers, betaFactory := concPeerWiring(t, paths, pskB, 0x0C105E, clk)
-	if err := m.AddConcentratorPeer("beta", pskB, betaSched, betaProbers, betaFactory); err != nil {
+	betaProbers, betaFactory := concPeerWiring(t, paths, pskB, 0x0C105E, clk)
+	if err := m.AddConcentratorPeer("beta", pskB, betaProbers, betaFactory); err != nil {
 		t.Fatalf("AddConcentratorPeer: %v", err)
 	}
 	if _, _, err := m.Open(0); err != nil {

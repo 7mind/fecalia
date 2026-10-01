@@ -18,7 +18,7 @@ import (
 func twoPeerConcentrator(t *testing.T, pskA, pskB config.Key) (m *Multipath, primary, second *peerState) {
 	t.Helper()
 	clk := newFakeClock()
-	m, _, _ = newProbingMultipath(t, loopbackPaths(1), pskA, clk) // one shared path "a"
+	m, _ = newProbingMultipath(t, loopbackPaths(1), pskA, clk) // one shared path "a"
 	if _, _, err := m.Open(0); err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -49,19 +49,18 @@ func TestConcentratorBindsSourceToPeerViaAuthenticatedProbe(t *testing.T) {
 		// SOURCE and receives the reflected echo. Its address is a fresh, unbound source.
 		peer, peerAP := rawPeer(t)
 
-		// A DATA frame from this source BEFORE any PROBE has bound it must be dropped — a
-		// binding is established ONLY by an authenticated PROBE (D9/D11), never by DATA.
-		dataCodecB, _ := frame.NewCodec(pskB)
-		preData, err := dataCodecB.Encode(nil, frame.Data{OuterSeq: 5, PathID: secondView.id, Payload: []byte("early")})
-		if err != nil {
-			t.Fatalf("encode pre-bind DATA: %v", err)
-		}
-		m.demuxInbound(m.paths[0], preData, peerAP)
+		// A transport data frame from this source BEFORE any PROBE has bound it must be
+		// dropped — a binding is established ONLY by an authenticated PROBE (D9/D11), never
+		// by a data frame, even one peer B's transport would accept on that lane.
+		remote := newRemoteTransport(t, second, 987)
+		remote.join(secondView, peerAP)
+		unbound := remote.clone()
+		m.demuxInbound(m.paths[0], unbound.wire(unbound.bulk(secondView, []byte("early"))), peerAP)
 		if it, ok := second.resequencer.Load().Pop(); ok {
-			t.Fatalf("DATA from an UNBOUND source was delivered up peer B (%q); only a PROBE may bind first", it.Payload)
+			t.Fatalf("data from an UNBOUND source was delivered up peer B (%q); only a PROBE may bind first", it.Payload)
 		}
 		if _, ok := m.lookupPeerBySource(peerAP); ok {
-			t.Fatal("an unauthenticated DATA frame established a source->peer binding (D9/D11 violated)")
+			t.Fatal("a transport data frame established a source->peer binding (D9/D11 violated)")
 		}
 
 		// The authenticated PROBE, encoded under peer B's psk, from the same source.
@@ -99,18 +98,14 @@ func TestConcentratorBindsSourceToPeerViaAuthenticatedProbe(t *testing.T) {
 			t.Fatalf("reflected echo = %+v, want IsEcho=true seq=%d path=%d under psk B", echo, seq, secondView.id)
 		}
 
-		// With the source now bound, a subsequent DATA from it is demuxed to peer B's
+		// With the source now bound, a subsequent data frame from it is demuxed to peer B's
 		// resequencer (the binding's purpose) — and NOT the primary's.
-		postData, err := dataCodecB.Encode(nil, frame.Data{OuterSeq: 9, PathID: secondView.id, Payload: []byte("late")})
-		if err != nil {
-			t.Fatalf("encode post-bind DATA: %v", err)
-		}
-		m.demuxInbound(m.paths[0], postData, peerAP)
+		m.demuxInbound(m.paths[0], remote.wire(remote.bulk(secondView, []byte("late"))), peerAP)
 		if it, ok := second.resequencer.Load().Pop(); !ok || !bytes.Equal(it.Payload, []byte("late")) {
-			t.Fatalf("DATA from the BOUND source was not delivered to peer B: ok=%v payload=%q", ok, it.Payload)
+			t.Fatalf("data from the BOUND source was not delivered to peer B: ok=%v payload=%q", ok, it.Payload)
 		}
 		if it, ok := primary.resequencer.Load().Pop(); ok {
-			t.Fatalf("bound peer B's DATA leaked into the PRIMARY resequencer (%q)", it.Payload)
+			t.Fatalf("bound peer B's data leaked into the PRIMARY resequencer (%q)", it.Payload)
 		}
 	})
 
@@ -196,81 +191,6 @@ func TestConcentratorBindsSourceToPeerViaAuthenticatedProbe(t *testing.T) {
 		buf := make([]byte, maxDatagram)
 		if _, _, rerr := peer.ReadFromUDPAddrPort(buf); rerr == nil {
 			t.Fatal("a SECOND echo was reflected — the trial-decode did not STOP after the primary matched (both views dispatched)")
-		}
-	})
-
-	t.Run("a non-PROBE decode under one psk does not abort the trial of the remaining psks", func(t *testing.T) {
-		// Reviewer criticism (R2 #1): the trial-decode must key its stop on the first PROBE that
-		// AUTHENTICATES, not the first successful DECODE. KindData/KindParity carry no MAC and are
-		// forgeable by design, so a genuine peer-B PROBE can cross-psk-garble into a DATA/PARITY
-		// kind under the PRIMARY's codec (~0.4%). If the loop aborted on that non-PROBE decode
-		// (the pre-fix `return`) it would drop peer B's genuine, MAC-verifying PROBE without ever
-		// trying peer B's psk. The loop must instead `continue` past a non-PROBE decode.
-		//
-		// Construct exactly that collision deterministically: encode a genuine PROBE under peer
-		// B's psk, redrawing its random nonce until the SAME bytes decode under the PRIMARY's psk
-		// as a valid non-PROBE kind (DATA/PARITY). Feeding it to demuxInbound must still bind and
-		// dispatch to peer B — proving view[0]'s non-PROBE decode did not abort the trial.
-		m, primary, second := twoPeerConcentrator(t, pskA, pskB)
-		secondView := peerPathByName(second, "a")
-		peer, peerAP := rawPeer(t)
-
-		const seq = 13
-		ts := newFakeClock().Now().UnixNano()
-		primaryCodec, err := frame.NewCodec(pskA) // decodes identically to the primary's view codec (same psk)
-		if err != nil {
-			t.Fatalf("build primary codec: %v", err)
-		}
-		var probeRaw []byte
-		// The primary decodes a foreign PROBE as a non-PROBE with probability ~2/256 (kind lands
-		// on DATA or PARITY); this budget is ~800x the mean and effectively never exhausts.
-		const searchBudget = 100_000
-		for i := 0; i < searchBudget; i++ {
-			raw, encErr := frame.Encode(pskB, frame.Probe{PathID: secondView.id, ProbeSeq: seq, TimestampNanos: ts, IsEcho: false})
-			if encErr != nil {
-				t.Fatalf("encode probe under psk B: %v", encErr)
-			}
-			fr, decErr := primaryCodec.Decode(raw)
-			if decErr != nil {
-				continue // failed under the primary's psk (ErrAuth/ErrMalformed): not the collision we need
-			}
-			if _, isProbe := fr.(frame.Probe); isProbe {
-				continue // a foreign PROBE can never MAC-verify as a PROBE under psk A; guard anyway
-			}
-			probeRaw = raw // decodes as DATA/PARITY under psk A, yet is a genuine PROBE under psk B
-			break
-		}
-		if probeRaw == nil {
-			t.Fatalf("could not construct a cross-garbling PROBE within %d attempts", searchBudget)
-		}
-
-		m.demuxInbound(m.paths[0], probeRaw, peerAP)
-
-		// Peer B's PROBE authenticated on the SECOND trial (after the primary's non-PROBE decode
-		// did NOT abort the loop): the source bound to peer B.
-		bound, ok := m.lookupPeerBySource(peerAP)
-		if !ok {
-			t.Fatal("a genuine peer-B PROBE that decoded as a non-PROBE under the primary's psk was dropped — the trial-decode aborted at the first successful DECODE instead of the first MAC")
-		}
-		if bound != second {
-			t.Fatalf("source bound to the wrong peer: got %q, want peer B", bound.name)
-		}
-		// Peer B learned the source as its remote and reflected the echo under psk B.
-		if remote, ok := secondView.getRemote(); !ok || remote != peerAP {
-			t.Fatalf("peer B view remote = %v (ok=%v), want %v learned from the probe", remote, ok, peerAP)
-		}
-		echoCodec, _ := frame.NewCodec(pskB)
-		echo := readProbe(t, peer, echoCodec)
-		if !echo.IsEcho || echo.ProbeSeq != seq || echo.PathID != secondView.id {
-			t.Fatalf("reflected echo = %+v, want IsEcho=true seq=%d path=%d under psk B", echo, seq, secondView.id)
-		}
-		// The primary's non-PROBE decode was NOT dispatched: its resequencer stays empty and it
-		// learned no remote (a non-PROBE carries no binding authority and is dropped).
-		if _, ok := m.paths[0].getRemote(); ok {
-			t.Fatal("the primary learned a remote from a frame that only cross-garbled into a non-PROBE kind under its psk")
-		}
-		if it, ok := primary.resequencer.Load().Pop(); ok {
-			t.Fatalf("a non-PROBE cross-garble was delivered up the primary (%q)", it.Payload)
 		}
 	})
 }

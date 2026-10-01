@@ -10,10 +10,10 @@ import (
 )
 
 // trafficProvider is the read seam the metrics adapter consumes: the multipath Bind's
-// per-PEER traffic+telemetry, FEC, and resequencer snapshot (T93/T94). *bind.Multipath
+// per-PEER traffic+telemetry and resequencer snapshot (T93/T94). *bind.Multipath
 // satisfies it; a fake satisfies it in the adapter's unit test, so the mapping and rate
 // derivation are testable without a running engine. PeerSnapshots generalizes the
-// pre-T94 PathSnapshots/FECSnapshot (primary-peer-only) to every bound peer, so a
+// pre-T94 PathSnapshots (primary-peer-only) to every bound peer, so a
 // single-peer edge/hub still maps 1:1 onto today's series (len(PeerSnapshots())==1) and
 // a multi-peer concentrator's additional peers surface as additional entries.
 type trafficProvider interface {
@@ -64,8 +64,7 @@ type metricsSource struct {
 	// returns a path's discovered outer PMTU via the T226 converged accessor: 0 until the
 	// first search converges, so the T209 resizer keeps the configured-or-default fallback
 	// and wanbond0 does not dip at boot. nil before it is wired -> PMTU reported as 0.
-	pmtu   func(pathName string) int
-	tunAQM func() *metrics.TUNAQMSnapshot
+	pmtu func(pathName string) int
 }
 
 // byteSample is the previous scrape's cumulative (tx+rx) total for one (peer,path) and
@@ -75,7 +74,7 @@ type byteSample struct {
 	atNanos int64
 }
 
-// newMetricsSource builds a metrics.Source over the Bind (per-peer path traffic, FEC,
+// newMetricsSource builds a metrics.Source over the Bind (per-peer path traffic
 // and resequencer counters) and the engine session seams (the connection-scoped and the
 // per-peer WG-session snapshots, T256/G28/M106). The clock is injected so the
 // throughput derivation is deterministic under test.
@@ -105,12 +104,6 @@ func (s *metricsSource) EngineOutbound() metrics.EngineOutboundSnapshot {
 		ActiveSendBytes:           stats.ActiveSendBytes,
 		ActiveSendFramesHighWater: stats.ActiveSendFramesHighWater,
 		ActiveSendBytesHighWater:  stats.ActiveSendBytesHighWater,
-		AdmissionLimitBytes:       stats.AdmissionLimitBytes,
-		AdmissionRetainedBytes:    stats.AdmissionRetainedBytes,
-		AdmissionHighWaterBytes:   stats.AdmissionHighWaterBytes,
-		AdmissionWaits:            stats.AdmissionWaits,
-		AdmissionWaitNanoseconds:  stats.AdmissionWaitNanoseconds,
-		AdmissionOversizeBatches:  stats.AdmissionOversizeBatches,
 	}
 }
 
@@ -130,22 +123,6 @@ func (s *metricsSource) setPMTULookup(fn func(pathName string) int) {
 	s.mu.Lock()
 	s.pmtu = fn
 	s.mu.Unlock()
-}
-
-func (s *metricsSource) setTUNAQMLookup(fn func() *metrics.TUNAQMSnapshot) {
-	s.mu.Lock()
-	s.tunAQM = fn
-	s.mu.Unlock()
-}
-
-func (s *metricsSource) TUNAQM() *metrics.TUNAQMSnapshot {
-	s.mu.Lock()
-	fn := s.tunAQM
-	s.mu.Unlock()
-	if fn == nil {
-		return nil
-	}
-	return fn()
 }
 
 // Paths implements metrics.Source. It is called on the scrape goroutine (the /metrics
@@ -202,129 +179,21 @@ func (s *metricsSource) Paths() []metrics.PathSnapshot {
 				Remote:                  t.Remote,
 				PMTU:                    pmtu,
 				ProbeSendErrors:         t.ProbeSendErrors,
-				ProbePriorityCoalesced:  t.ProbePriorityCoalesced,
-				PMTUAdmissionCanceled:   t.PMTUAdmissionCanceled,
-				EchoPriorityOverflow:    t.EchoPriorityOverflow,
-				ShaperAcceptedDatagrams: t.ShaperAcceptedDatagrams,
-				ShaperEmittedDatagrams:  t.ShaperEmittedDatagrams,
-				ShaperWriteErrors:       t.ShaperWriteErrors,
 				SocketWriteErrors:       t.SocketWriteErrors,
-				Shaper:                  t.Shaper,
-				Congestion:              t.Congestion,
 			})
 		}
 	}
 	return out
 }
 
-// FEC implements metrics.Source: it reads the Bind's per-peer connection-scoped FEC
-// counters (T24, T94) verbatim at scrape time, one entry per bound peer. Unlike the
-// per-path throughput, the FEC counters are cumulative and need no rate derivation or
-// prior-sample state, so this is a direct pass-through of the Bind's lock-free snapshot.
-func (s *metricsSource) FEC() []metrics.FECSnapshot {
-	peers := s.provider.PeerSnapshots()
-	out := make([]metrics.FECSnapshot, len(peers))
-	for i, peer := range peers {
-		f := peer.FEC
-		snap := metrics.FECSnapshot{
-			Peer:                 peer.Name,
-			DataPackets:          f.DataFrames,
-			RepairPackets:        f.ParityFrames,
-			RecoveredPackets:     f.Recovered,
-			UnrecoverablePackets: f.Unrecoverable,
-			DataBytes:            f.DataBytes,
-			RepairBytes:          f.ParityBytes,
-			ResidualLossRatio:    f.ResidualLoss,
-			StagedGroups:         f.StagedGroups,
-			StagedDataFrames:     f.StagedDataFrames,
-			GroupDecisions:       f.GroupDecisions,
-			DeadlineDecisions:    f.DeadlineDecisions,
-			DeadlineMisses:       f.DeadlineMisses,
-			DeadlineMaxOvershoot: f.DeadlineMaxOvershoot,
-			OpenGroupDeadline:    f.OpenGroupDeadline,
-			Recovery: metrics.RecoveryStats{
-				Sender: metrics.RecoveryDirectionStats{
-					OfferPresent:     f.Recovery.Sender.OfferPresent,
-					FastEligible:     f.Recovery.Sender.FastEligible,
-					TransitionFrozen: f.Recovery.Sender.TransitionFrozen,
-					WriterExclusive:  f.Recovery.Sender.WriterExclusive,
-					FreshUntil:       f.Recovery.Sender.FreshUntil,
-					OfferWrites:      f.Recovery.Sender.OfferWrites,
-					ACKAccepts:       f.Recovery.Sender.ACKAccepts,
-					Rotations:        f.Recovery.Sender.Rotations,
-					StaleRejections:  f.Recovery.Sender.StaleRejections,
-					WrongRejections:  f.Recovery.Sender.WrongRejections,
-					ReplayRejections: f.Recovery.Sender.ReplayRejections,
-					FallbackReason:   f.Recovery.Sender.FallbackReason,
-					ServiceBound:     f.Recovery.Sender.ServiceBound,
-				},
-				Receiver: metrics.RecoveryDirectionStats{
-					OfferPresent:     f.Recovery.Receiver.OfferPresent,
-					FastEligible:     f.Recovery.Receiver.FastEligible,
-					TransitionFrozen: f.Recovery.Receiver.TransitionFrozen,
-					WriterExclusive:  f.Recovery.Receiver.WriterExclusive,
-					FreshUntil:       f.Recovery.Receiver.FreshUntil,
-					ACKWrites:        f.Recovery.Receiver.ACKWrites,
-					OfferAccepts:     f.Recovery.Receiver.OfferAccepts,
-					SessionRestarts:  f.Recovery.Receiver.SessionRestarts,
-					StaleRejections:  f.Recovery.Receiver.StaleRejections,
-					WrongRejections:  f.Recovery.Receiver.WrongRejections,
-					ReplayRejections: f.Recovery.Receiver.ReplayRejections,
-					FallbackReason:   f.Recovery.Receiver.FallbackReason,
-					ServiceBound:     f.Recovery.Receiver.ServiceBound,
-					RTTAge:           f.Recovery.Receiver.RTTAge,
-					Headroom:         f.Recovery.Receiver.Headroom,
-					Window:           f.Recovery.Receiver.Window,
-				},
-			},
-		}
-		if f.Adaptive != nil {
-			snap.Adaptive = &metrics.AdaptiveFECStats{
-				Parity:        f.Adaptive.Parity,
-				SmoothedLoss:  f.Adaptive.SmoothedLoss,
-				EligibleLoss:  f.Adaptive.EligibleLoss,
-				EligiblePaths: f.Adaptive.EligiblePaths,
-			}
-		}
-		out[i] = snap
-	}
-	return out
-}
-
 // Reseq implements metrics.Source: it reads the Bind's per-peer resequencer counters
 // (T94) verbatim at scrape time, one entry per bound peer — a direct pass-through of
-// the resequencer's own cumulative Stats(), like FEC needing no rate derivation.
+// the resequencer's own cumulative Stats(), needing no rate derivation.
 func (s *metricsSource) Reseq() []metrics.ReseqSnapshot {
 	peers := s.provider.PeerSnapshots()
 	out := make([]metrics.ReseqSnapshot, len(peers))
 	for i, peer := range peers {
 		out[i] = metrics.ReseqSnapshot{Peer: peer.Name, Stats: peer.Reseq}
-	}
-	return out
-}
-
-// Aggregation implements metrics.Source: it reads each peer's weighted-scheduler
-// aggregation-gate snapshot (T146) from the Bind's per-peer snapshot at scrape time,
-// emitting ONE entry per peer whose scheduler exposes a gate. A peer without one
-// (active-backup) carries a nil PeerSnapshot.Aggregation and is skipped, so the four
-// aggregation series are absent for it — like FEC/Reseq, a direct pass-through of a
-// lock-free snapshot the Bind already computed (the gate read happens in PeerSnapshots,
-// off the send lock), needing no rate derivation or prior-sample state here.
-func (s *metricsSource) Aggregation() []metrics.AggregationSnapshot {
-	peers := s.provider.PeerSnapshots()
-	out := make([]metrics.AggregationSnapshot, 0, len(peers))
-	for _, peer := range peers {
-		if peer.Aggregation == nil {
-			continue
-		}
-		a := peer.Aggregation
-		out = append(out, metrics.AggregationSnapshot{
-			Peer:                  peer.Name,
-			Aggregating:           a.Aggregating,
-			OfferedLoadFPS:        a.OfferedLoadFPS,
-			EngageThresholdFPS:    a.EngageThresholdFPS,
-			DisengageThresholdFPS: a.DisengageThresholdFPS,
-		})
 	}
 	return out
 }
@@ -352,7 +221,7 @@ func (s *metricsSource) PeerNames() []string {
 }
 
 // Session implements metrics.Source: it reads the connection-scoped WG-session snapshot
-// (I2) from the engine seam at scrape time. Like FEC it is a direct pass-through of a
+// (I2) from the engine seam at scrape time. Like Reseq it is a direct pass-through of a
 // snapshot the underlying monitor computes on demand — no per-scrape state is kept here
 // (the 0->1 edge log is driven by the separate session-monitor poll loop, not by scrapes).
 func (s *metricsSource) Session() metrics.SessionSnapshot {

@@ -129,7 +129,6 @@ func (device *Device) flushOutboundQueue(q *autodrainingOutboundQueue) {
 				device.PutMessageBuffer(elem.buffer)
 				device.PutOutboundElement(elem)
 			}
-			elemsContainer.releaseOutboundAdmission()
 			device.PutOutboundElementsContainer(elemsContainer)
 		default:
 			return

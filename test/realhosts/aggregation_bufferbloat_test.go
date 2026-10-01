@@ -15,8 +15,7 @@ import (
 // Aggregation + bufferbloat parameters for the real-host tier. This test reuses the
 // P1 multipath topology (the NAT'd edge gets TWO source IPs on its single physical
 // uplink, each pinned by one wanbond path, both reaching the ONE concentrator public
-// endpoint — see multipath_failover_test.go) but runs the T21 WEIGHTED aggregation
-// scheduler with T53 per-link pacing, and records two families of numbers the
+// endpoint — see multipath_failover_test.go) and records two families of numbers the
 // CPU-bound netns e2e fixture cannot produce:
 //
 //  1. Per-path throughput and the BONDED-vs-SUM aggregation ratio. Each path is
@@ -26,33 +25,18 @@ import (
 //     leaves both paths up. ratio = bonded / (path0 + path1).
 //
 //  2. Loaded RTT vs idle RTT (the bufferbloat delta) under a sustained saturating
-//     transfer, with the weighted scheduler PACING the paths from the operator-
-//     declared per-link bandwidth/RTT (aggDeclaredBandwidth / aggDeclaredRTT →
-//     SizePacingFromBDP). Idle RTT is a no-load ping; loaded RTT is a ping taken
+//     transfer. Idle RTT is a no-load ping; loaded RTT is a ping taken
 //     while a saturating iperf3 fills the pipe; delta = loaded − idle.
 //
 // CAVEAT (documented, not a defect): both edge source IPs egress the SAME physical
 // uplink through the symmetric NAT, so the two logical paths share one physical
-// bottleneck. The aggregation ratio therefore measures the scheduler's multiplexing
+// bottleneck. The aggregation ratio therefore measures the transport's multiplexing
 // behaviour over a shared link — it is NOT expected to approach 2.0 (true bandwidth
 // aggregation would need two DISTINCT physical uplinks). The number is recorded
 // as-is; per Q12/M10 this tier is REPORT-ONLY and gates nothing.
-//
-// The declared per-link values are OPERATOR-DECLARED inputs to the pacing sizer, not
-// runtime-measured link capacities (wanbond never auto-tunes them live — Q20).
 const (
-	// aggDeclaredBandwidth / aggDeclaredRTT are the operator-declared per-link pacing
-	// inputs written on BOTH edge paths (link_bandwidth must be all-or-nothing under
-	// the weighted policy). They are conservative placeholders for a cross-region
-	// internet path between the two standing hosts; they size the BDP-derived pace
-	// (config.SizePacingFromBDP), nothing else, and never gate the recorded results.
-	aggDeclaredBandwidth = "100Mbit"
-	aggDeclaredRTT       = "60ms"
-
 	// aggParallelStreams is the iperf3 stream count used for EVERY throughput sample
 	// (bonded and each isolated path) so the aggregation ratio is apples-to-apples.
-	// A saturating parallel offer also drives offered load past the weighted gate's
-	// engage fraction so aggregation actually engages for the bonded sample.
 	aggParallelStreams = 8
 
 	// aggPathDownTimeout bounds the wait for a blackholed path to be marked liveness
@@ -72,7 +56,7 @@ const (
 )
 
 // TestRealAggregationBufferbloat brings the P1 multipath bond up over the real
-// internet under the WEIGHTED aggregation scheduler with per-link pacing, then
+// internet, then
 // records (a) per-path + bonded throughput and their aggregation ratio and (b) the
 // idle-vs-loaded RTT bufferbloat delta under a saturating transfer. REPORT-ONLY per
 // Q12/M10: bringing the tunnel up and recording the numbers IS the acceptance; the
@@ -120,13 +104,9 @@ func TestRealAggregationBufferbloat(t *testing.T) {
 	concSrc := primaryIP(t, r, cfg.Conc)
 	t.Logf("concentrator source addr: %s", concSrc)
 
-	// 6. Write the 0600 configs. The concentrator is a plain single-path listener
-	//    (the scheduler is send-side, so only the EDGE carries the weighted policy).
-	//    The edge lists TWO paths pinning the two source IPs, each declaring the
-	//    operator per-link bandwidth/RTT, and selects the weighted scheduler with
-	//    pacing enabled (T53: link_bandwidth/link_rtt → SizePacingFromBDP → paced
-	//    weighted policy). Both ends run at "info" so liveness/scheduler transitions
-	//    are journalled.
+	// 6. Write the 0600 configs. The concentrator is a plain single-path listener.
+	//    The edge lists TWO paths pinning the two source IPs. Both ends run at "info"
+	//    so liveness transitions are journalled.
 	concCfg := fmt.Sprintf(`role = "concentrator"
 psk = "%s"
 
@@ -152,18 +132,10 @@ psk = "%s"
 [[paths]]
 name = "%s"
 source_addr = "%s"
-link_bandwidth = "%s"
-link_rtt = "%s"
 
 [[paths]]
 name = "%s"
 source_addr = "%s"
-link_bandwidth = "%s"
-link_rtt = "%s"
-
-[scheduler]
-policy = "weighted"
-pacing_enabled = true
 
 [wireguard]
 private_key = "%s"
@@ -176,11 +148,9 @@ allowed_ips = ["%s/32"]
 [log]
 level = "info"
 `, psk,
-		mpPrimaryPathName, plan.primaryIP, aggDeclaredBandwidth, aggDeclaredRTT,
-		mpBackupPathName, plan.altIP, aggDeclaredBandwidth, aggDeclaredRTT,
+		mpPrimaryPathName, plan.primaryIP,
+		mpBackupPathName, plan.altIP,
 		edgePriv, concPub, cfg.ConcPubIP, smokeListenPort, smokeConcInner)
-	t.Logf("edge scheduler: policy=weighted pacing_enabled=true; per-link (operator-declared) bandwidth=%s rtt=%s on %s+%s",
-		aggDeclaredBandwidth, aggDeclaredRTT, mpPrimaryPathName, mpBackupPathName)
 
 	concCfgPath := smokeRemoteDir + "/conc.toml"
 	edgeCfgPath := smokeRemoteDir + "/edge.toml"
@@ -212,7 +182,7 @@ level = "info"
 		dumpDaemonLog(t, r, cfg.Edge)
 		t.Fatalf("handshake never completed: %s unreachable from the edge through the tunnel", smokeConcInner)
 	}
-	t.Logf("HANDSHAKE OK over the weighted bond")
+	t.Logf("HANDSHAKE OK over the bond")
 
 	// 10. Both paths must ESTABLISH (each reaches liveness "up" only after authenticated
 	//     echoes on its own source-IP 4-tuple), so "both up" is the "traffic observed on
@@ -227,7 +197,7 @@ level = "info"
 
 	// --- Throughput aggregation ---------------------------------------------------
 
-	// 12a. Bonded: both paths up, weighted aggregation engaged under the saturating offer.
+	// 12a. Bonded: both paths up under the saturating offer.
 	bonded := iperfTCP(t, r, cfg.Edge, smokeConcInner, aggParallelStreams)
 	t.Logf("BONDED throughput (%s+%s, %d streams): %.2f Mbit/s (retransmits=%d)",
 		mpPrimaryPathName, mpBackupPathName, aggParallelStreams, bonded.mbps, bonded.retransmits)
@@ -289,7 +259,6 @@ level = "info"
 
 	// Final report block (report-only; nothing below gates the test).
 	t.Logf("=== REAL-HOST AGGREGATION + BUFFERBLOAT RESULTS ===\n"+
-		"  scheduler:        weighted, pacing on (declared %s / %s per link)\n"+
 		"  per-path %s:     %.2f Mbit/s\n"+
 		"  per-path %s:     %.2f Mbit/s\n"+
 		"  sum of paths:     %.2f Mbit/s\n"+
@@ -298,7 +267,6 @@ level = "info"
 		"  idle RTT:         %.3f ms\n"+
 		"  loaded RTT:       %.3f ms\n"+
 		"  bufferbloat delta: %.3f ms",
-		aggDeclaredBandwidth, aggDeclaredRTT,
 		mpPrimaryPathName, path0.mbps,
 		mpBackupPathName, path1.mbps,
 		sumMbps, bonded.mbps, ratio,

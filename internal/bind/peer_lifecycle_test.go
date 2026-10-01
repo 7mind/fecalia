@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/rand"
 	"net/netip"
+	"sync"
 	"testing"
 
 	"github.com/7mind/wanbond/internal/config"
@@ -13,9 +14,8 @@ import (
 
 // bindLazyPeer binds a SECOND concentrator peer over the shared sockets exactly as
 // bindSecondPeer does, then clears its heavy receive datapath so the peer starts from the
-// genuine LAZY baseline T91 pins: a configured concentrator peer carries NO ~2048-frame
-// resequencer ring and NO FEC decoder buffers until its FIRST authenticated source->peer
-// binding. bindSecondPeer predates lazy instantiation and eagerly stored a resequencer; we
+// genuine LAZY baseline T91 pins: a configured concentrator peer carries NO resequencer
+// ring until its FIRST authenticated source->peer binding. bindSecondPeer predates lazy instantiation and eagerly stored a resequencer; we
 // drop it here so every state transition asserted below is driven by PRODUCTION code
 // (ensurePeerReceiveInstantiated on bind, teardownPeerLocked on session loss), not by the
 // fixture. Its LIGHT state — psk-derived codecs, per-(peer,path) views, probers, reflector —
@@ -24,7 +24,6 @@ func bindLazyPeer(t *testing.T, m *Multipath, name string, psk config.Key, clk t
 	t.Helper()
 	p := bindSecondPeer(t, m, name, psk, clk)
 	p.resequencer.Store(nil)
-	p.fecRecv.Store(nil)
 	return p
 }
 
@@ -34,7 +33,7 @@ func bindLazyPeer(t *testing.T, m *Multipath, name string, psk config.Key, clk t
 func lazyConcentrator(t *testing.T, pskA, pskB config.Key) (m *Multipath, primary, second *peerState, clk *fakeClock) {
 	t.Helper()
 	clk = newFakeClock()
-	m, _, _ = newProbingMultipath(t, loopbackPaths(1), pskA, clk)
+	m, _ = newProbingMultipath(t, loopbackPaths(1), pskA, clk)
 	if _, _, err := m.Open(0); err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -93,7 +92,7 @@ func driveConcentratorPathUp(t *testing.T, pp *peerPathState, psk config.Key, cl
 }
 
 // TestConcentratorLazyInstantiationTeardownRebind is the T91 per-peer-lifecycle acceptance: a
-// configured concentrator peer's HEAVY receive datapath (the resequencer ring + FEC buffers)
+// configured concentrator peer's HEAVY receive datapath (the resequencer ring)
 // is ABSENT before its first authenticated binding, INSTANTIATED on that binding, TORN DOWN
 // after session/liveness loss (freeing the ring), and RE-INSTANTIATED + passing traffic on the
 // next authenticated PROBE.
@@ -102,17 +101,10 @@ func TestConcentratorLazyInstantiationTeardownRebind(t *testing.T) {
 	pskB := testKey(t, 0x22) // lazy second peer
 	m, primary, second, clk := lazyConcentrator(t, pskA, pskB)
 	secondView := peerPathByName(second, "a")
-	dataCodecB, err := frame.NewCodec(pskB)
-	if err != nil {
-		t.Fatalf("build peer B data codec: %v", err)
-	}
 
 	// (1) Heavy fields absent before the first authenticated binding.
 	if second.resequencer.Load() != nil {
 		t.Fatal("a configured concentrator peer holds a resequencer ring before any binding (heavy state not lazy)")
-	}
-	if second.fecRecv.Load() != nil {
-		t.Fatal("a configured concentrator peer holds FEC receive buffers before any binding")
 	}
 
 	// (2) An authenticated PROBE from a fresh source binds it to peer B and INSTANTIATES the
@@ -128,18 +120,20 @@ func TestConcentratorLazyInstantiationTeardownRebind(t *testing.T) {
 		t.Fatal("peer B's resequencer ring was not instantiated on its first authenticated binding")
 	}
 
-	// Traffic flows: DATA from the now-bound source lands in peer B's freshly-built ring, and
+	// Traffic flows: data from the now-bound source lands in peer B's freshly-built ring, and
 	// only B's (never the primary's).
-	m.demuxInbound(m.paths[0], mustEncodeData(t, dataCodecB, 100, secondView.id, "hello-b"), src)
+	remote := newRemoteTransport(t, second, 987)
+	remote.join(secondView, src)
+	m.demuxInbound(m.paths[0], remote.wire(remote.bulk(secondView, []byte("hello-b"))), src)
 	if it, ok := second.resequencer.Load().Pop(); !ok || !bytes.Equal(it.Payload, []byte("hello-b")) {
-		t.Fatalf("post-bind DATA did not reach peer B's ring: ok=%v payload=%q", ok, it.Payload)
+		t.Fatalf("post-bind data did not reach peer B's ring: ok=%v payload=%q", ok, it.Payload)
 	}
 	if it, ok := primary.resequencer.Load().Pop(); ok {
-		t.Fatalf("peer B's DATA leaked into the primary ring (%q)", it.Payload)
+		t.Fatalf("peer B's data leaked into the primary ring (%q)", it.Payload)
 	}
 
 	// (3) Session/liveness loss: the peer is DOWN (no probe echoes fed), so TearDownPeer frees
-	// its ring + FEC buffers and releases its source binding.
+	// its ring and releases its source binding.
 	if m.peerIsLiveLocked(second) {
 		t.Fatal("peer B is unexpectedly live before any echo was fed")
 	}
@@ -149,20 +143,21 @@ func TestConcentratorLazyInstantiationTeardownRebind(t *testing.T) {
 	if second.resequencer.Load() != nil {
 		t.Fatal("teardown did not free peer B's resequencer ring")
 	}
-	if second.fecRecv.Load() != nil {
-		t.Fatal("teardown did not free peer B's FEC receive buffers")
-	}
 	if _, ok := m.lookupPeerBySource(src); ok {
 		t.Fatal("teardown did not release peer B's source->peer binding")
 	}
 
-	// DATA from the (now unbound) source is dropped — no ring, no binding, never misrouted.
-	m.demuxInbound(m.paths[0], mustEncodeData(t, dataCodecB, 101, secondView.id, "after-teardown"), src)
+	// Data from the (now unbound) source is dropped — no ring, no binding, never misrouted.
+	unbound := remote.clone()
+	m.demuxInbound(m.paths[0], unbound.wire(unbound.bulk(secondView, []byte("after-teardown"))), src)
+	if second.resequencer.Load() != nil {
+		t.Fatal("a data frame from an unbound source re-instantiated peer B's ring")
+	}
 	if primary.resequencer.Load() == nil {
 		t.Fatal("primary ring vanished (teardown must never touch another peer)")
 	}
 	if it, ok := primary.resequencer.Load().Pop(); ok {
-		t.Fatalf("post-teardown DATA for peer B leaked into the primary ring (%q)", it.Payload)
+		t.Fatalf("post-teardown data for peer B leaked into the primary ring (%q)", it.Payload)
 	}
 
 	// (4) Re-bind: a fresh authenticated PROBE re-instantiates the ring cleanly, and traffic
@@ -178,7 +173,7 @@ func TestConcentratorLazyInstantiationTeardownRebind(t *testing.T) {
 	if second.resequencer.Load() == rq {
 		t.Fatal("re-bind reused the torn-down resequencer instance instead of a fresh one")
 	}
-	m.demuxInbound(m.paths[0], mustEncodeData(t, dataCodecB, 200, secondView.id, "hello-again"), src)
+	m.demuxInbound(m.paths[0], remote.wire(remote.bulk(secondView, []byte("hello-again"))), src)
 	if it, ok := second.resequencer.Load().Pop(); !ok || !bytes.Equal(it.Payload, []byte("hello-again")) {
 		t.Fatalf("re-bound peer B did not pass traffic: ok=%v payload=%q", ok, it.Payload)
 	}
@@ -195,20 +190,18 @@ func TestConcentratorDemuxCapBoundsBootstrapFlood(t *testing.T) {
 
 	t.Run("a flood of spoofed unbound sources binds nothing and disturbs no live bound peer", func(t *testing.T) {
 		m, primary, _, clk := lazyConcentrator(t, pskA, pskB)
-		dataCodecA, err := frame.NewCodec(pskA)
-		if err != nil {
-			t.Fatalf("build primary data codec: %v", err)
-		}
 
 		// Establish a LIVE bound peer: bind a source to the primary via an authenticated PROBE,
-		// drive its path Up, and leave a DATA frame buffered in its ring.
+		// drive its path Up, and leave a data frame buffered in its ring.
 		live := synthSource(0)
 		m.demuxInbound(m.paths[0], authProbe(t, pskA, m.paths[0].id, 1, clk), live)
 		if bound, ok := m.lookupPeerBySource(live); !ok || bound != primary {
 			t.Fatalf("live source did not bind to the primary: bound=%v ok=%v", bound, ok)
 		}
 		driveConcentratorPathUp(t, m.paths[0], pskA, clk)
-		m.demuxInbound(m.paths[0], mustEncodeData(t, dataCodecA, 500, m.paths[0].id, "live-payload"), live)
+		remote := newRemoteTransport(t, primary, 987)
+		remote.join(m.paths[0], live)
+		m.demuxInbound(m.paths[0], remote.wire(remote.bulk(m.paths[0], []byte("live-payload"))), live)
 
 		before := m.peerBySourceLenForTest()
 
@@ -304,16 +297,14 @@ func TestConcentratorLivePeerNeverTornDown(t *testing.T) {
 	secondView := peerPathByName(second, "a")
 	third := bindLazyPeer(t, m, "peer-c", pskC, clk)
 	thirdView := peerPathByName(third, "a")
-	dataCodecB, err := frame.NewCodec(pskB)
-	if err != nil {
-		t.Fatalf("build peer B data codec: %v", err)
-	}
 
 	// Make peer B live: bind a source, instantiate its ring, drive its path Up, buffer a frame.
 	srcB := synthSource(1)
 	m.demuxInbound(m.paths[0], authProbe(t, pskB, secondView.id, 1, clk), srcB)
 	driveConcentratorPathUp(t, secondView, pskB, clk)
-	m.demuxInbound(m.paths[0], mustEncodeData(t, dataCodecB, 700, secondView.id, "live-b"), srcB)
+	remote := newRemoteTransport(t, second, 987)
+	remote.join(secondView, srcB)
+	m.demuxInbound(m.paths[0], remote.wire(remote.bulk(secondView, []byte("live-b"))), srcB)
 	ringB := second.resequencer.Load()
 	if ringB == nil {
 		t.Fatal("peer B has no ring after binding")
@@ -382,12 +373,102 @@ func (m *Multipath) peerBindingCountForTest(p *peerState) int {
 	return count
 }
 
-// mustEncodeData encodes a DATA frame or fails the test.
-func mustEncodeData(t *testing.T, codec *frame.Codec, seq uint64, pathID uint8, payload string) []byte {
-	t.Helper()
-	raw, err := codec.Encode(nil, frame.Data{OuterSeq: seq, PathID: pathID, Payload: []byte(payload)})
-	if err != nil {
-		t.Fatalf("encode DATA: %v", err)
+// TestDispatchInboundNilGuardsDropNotPanic pins the receive-side guard a concurrent teardown
+// relies on: a bound source's data frame that reaches the peer's transport AFTER TearDownPeer
+// niled its resequencer must be DROPPED, never dereference the nil ring. The source stays
+// BOUND and the transport keeps its lane, so the frame really does reach the dispatch (with the
+// source unbound it would stop at the demux gate and the guard would go unexercised).
+func TestDispatchInboundNilGuardsDropNotPanic(t *testing.T) {
+	pskA := testKey(t, 0x11)
+	pskB := testKey(t, 0x22)
+
+	for _, class := range []string{"ordered", "small"} {
+		t.Run(class+" data to a bound peer whose resequencer was niled mid-flight is dropped without panic", func(t *testing.T) {
+			m, primary, second, clk := lazyConcentrator(t, pskA, pskB)
+			secondView := peerPathByName(second, "a")
+			src := synthSource(1)
+			m.demuxInbound(m.paths[0], authProbe(t, pskB, secondView.id, 1, clk), src)
+			if bound, ok := m.lookupPeerBySource(src); !ok || bound != second {
+				t.Fatalf("probe did not bind source to peer B: bound=%v ok=%v", bound, ok)
+			}
+			remote := newRemoteTransport(t, second, 987)
+			remote.join(secondView, src)
+			raced := remote.bulk(secondView, []byte("raced-data"))
+			if class == "small" {
+				raced = remote.small(secondView, []byte("raced-data"))
+			}
+			// The source stays BOUND; only the ring is torn out — the ordering the guard defends.
+			second.resequencer.Store(nil)
+			m.demuxInbound(m.paths[0], remote.wire(raced), src)
+			// The frame was dropped, never misrouted into the primary nor queued for the engine.
+			if it, ok := primary.resequencer.Load().Pop(); ok {
+				t.Fatalf("raced data leaked into the primary ring (%q)", it.Payload)
+			}
+			if it, ok := second.adaptive.Load().popInteractive(); ok {
+				t.Fatalf("raced data was queued for a peer without a ring (%q)", it.Payload)
+			}
+		})
 	}
-	return raw
+}
+
+// TestConcentratorTeardownRebindDemuxRace drives the CONCURRENT ordering the receive nil-guard
+// and the per-peer lifecycleMu exist for: the peer's SINGLE per-path readLoop resolves a
+// still-bound source and dispatches data (and re-binds, re-instantiating the ring) WHILE
+// TearDownPeer — driven from the device's session-event goroutine — clears the ring. It is
+// exactly one demux driver against one teardown driver, matching production's one-readLoop-per-path
+// discipline (a frame.Codec is single-goroutine by design; two concurrent demuxes on one path would
+// be a test artifact, not a real race). Under -race it proves (a) no data race across the atomic
+// resequencer pointer nor the lifecycleMu-ordered (re)instantiation-vs-teardown, and (b) no
+// nil-dereference panic — a frame whose ring was niled mid-flight is dropped rather than
+// dereferencing it.
+func TestConcentratorTeardownRebindDemuxRace(t *testing.T) {
+	pskA := testKey(t, 0x11)
+	pskB := testKey(t, 0x22)
+	m, _, second, clk := lazyConcentrator(t, pskA, pskB)
+	secondView := peerPathByName(second, "a")
+	src := synthSource(1)
+	remote := newRemoteTransport(t, second, 987)
+
+	const rounds = 400
+	for i := 0; i < rounds; i++ {
+		// Precompute every wire serially in the test goroutine (the fake clock and the stateful
+		// codecs are NOT concurrency-safe), so the demux goroutine below only touches the
+		// concurrent targets under test: m.demuxInbound (a single per-path reader) and, on the
+		// other goroutine, m.TearDownPeer. The lane is renewed as a probe cadence renews it.
+		remote.join(secondView, src)
+		probeWire := authProbe(t, pskB, secondView.id, uint64(2*i+2), clk)
+		dataWire := remote.wire(remote.bulk(secondView, []byte("d")))
+		smallWire := remote.wire(remote.small(secondView, []byte("s")))
+
+		var wg sync.WaitGroup
+		wg.Add(2)
+		// The one per-path reader: re-bind (ensurePeerReceiveInstantiated), then dispatch both
+		// datagram classes through the nil-guard, all on ONE goroutine as a real readLoop would.
+		go func() {
+			defer wg.Done()
+			m.demuxInbound(m.paths[0], probeWire, src)
+			m.demuxInbound(m.paths[0], dataWire, src)
+			m.demuxInbound(m.paths[0], smallWire, src)
+		}()
+		// The session-event driver: teardown — clears the ring under m.mu+lifecycleMu, racing
+		// the reader's dispatch and re-instantiation.
+		go func() {
+			defer wg.Done()
+			m.TearDownPeer("peer-b")
+		}()
+		wg.Wait()
+	}
+
+	// Positive postcondition: after all the churn the peer still re-binds cleanly and carries
+	// data — the guard drops raced frames, it does not wedge the datapath.
+	m.TearDownPeer("peer-b") // ensure a known torn-down starting point (no-op if already down)
+	m.demuxInbound(m.paths[0], authProbe(t, pskB, secondView.id, 999999, clk), src)
+	if second.resequencer.Load() == nil {
+		t.Fatal("peer B did not re-instantiate its ring after the concurrent churn")
+	}
+	remote.join(secondView, src)
+	m.demuxInbound(m.paths[0], remote.wire(remote.bulk(secondView, []byte("final"))), src)
+	if it, ok := second.resequencer.Load().Pop(); !ok || !bytes.Equal(it.Payload, []byte("final")) {
+		t.Fatalf("peer B did not carry data after the concurrent churn: ok=%v payload=%q", ok, it.Payload)
+	}
 }

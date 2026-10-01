@@ -17,8 +17,8 @@ import (
 // it asserts ONLY liveness (the transfer continues or resumes) and LOGS the
 // failover timing — no absolute Mbit/s or ms threshold gates anything.
 //
-//  1. LINK failover  — the P1 active-backup scheduler: a sustained flow spans a
-//     mid-transfer kill of the ACTIVE WAN path's egress (an iptables OUTPUT DROP
+//  1. LINK failover  — a sustained flow spans a
+//     mid-transfer kill of one WAN path's egress (an iptables OUTPUT DROP
 //     on the EDGE, scoped to that path's source IP toward the concentrator), and
 //     the SAME TCP flow must survive on the backup path.
 //  2. HUB failover   — the Q18/T57 edge-side ordered-endpoint switch: the edge is
@@ -116,7 +116,7 @@ func TestRealMidTransferWANKill(t *testing.T) {
 // brings the bond up, starts a sustained TCP transfer, then MID-TRANSFER drops the
 // ACTIVE path's egress with an iptables OUTPUT DROP on the EDGE (scoped to that path's
 // source IP toward the concentrator public IP) and confirms the SAME flow survives on
-// the backup path — recording the edge-side scheduler failover time.
+// the backup path — recording the edge-side detection time.
 func runLinkFailoverT63(t *testing.T, r *Runner, cfg Config) {
 	// 1. Resolve the edge uplink and set up the two source-IP paths + policy routing.
 	plan := resolveEdgePathPlan(t, r, cfg.Edge, cfg.ConcPubIP)
@@ -140,7 +140,7 @@ func runLinkFailoverT63(t *testing.T, r *Runner, cfg Config) {
 
 	// 4. Configs: the edge lists TWO paths pinning the two source IPs, both reusing the
 	//    single concentrator public endpoint (source-routed multipath). Both ends run at
-	//    "info" so scheduler/liveness transitions are journalled.
+	//    "info" so liveness transitions are journalled.
 	concCfg := fmt.Sprintf(`role = "concentrator"
 psk = "%s"
 
@@ -240,17 +240,16 @@ level = "info"
 	// 10. Await the spanning flow.
 	flowErr := flow.Wait()
 
-	// 11. Edge-side failover latency: the earliest "scheduler active path change" to the
-	//     backup index logged after T0 (single edge-clock domain; the reroute is sub-ms
-	//     so the transition timestamp is the recovery instant).
+	// 11. Edge-side detection latency: the earliest "path liveness transition" of the
+	//     killed path to "down" logged after T0 (single edge-clock domain).
 	journal := readDaemonJournal(t, r, cfg.Edge, smokeUnit)
-	failover := schedulerSwitchAfter(journal, killAt, mpBackupPathIdx)
+	failover := pathDownAfter(journal, mpPrimaryPathName, killAt)
 	if failover < 0 {
 		dumpDaemonLog(t, r, cfg.Edge)
-		t.Errorf("no edge scheduler transition to the backup (idx %d) logged after the kill — did the active path actually go down?", mpBackupPathIdx)
+		t.Errorf("no edge liveness transition of %q to down logged after the kill — did the path actually go down?", mpPrimaryPathName)
 	} else {
-		t.Logf("LINK_FAILOVER_MS=%d (edge egress %q[%d] -> %q[%d])",
-			failover.Milliseconds(), mpPrimaryPathName, mpPrimaryPathIdx, mpBackupPathName, mpBackupPathIdx)
+		t.Logf("LINK_FAILOVER_MS=%d (edge marked %q down; %q survives)",
+			failover.Milliseconds(), mpPrimaryPathName, mpBackupPathName)
 	}
 
 	// 12. Data-plane survival: the SAME spanning TCP flow must have completed with
@@ -572,8 +571,8 @@ func waitHubSwitchT63(t *testing.T, r *Runner, edge Host, after time.Time, toIdx
 
 // hubSwitchAfterT63 returns the delay from `after` to the EARLIEST edge-side "hub
 // failover ... switched endpoint" transition whose to_index is toIdx logged strictly
-// after `after`, or -1 if none. It mirrors schedulerSwitchAfter but reads the T57
-// hub-failover Warn line (device/failover.go) instead of the per-path scheduler line.
+// after `after`, or -1 if none. It mirrors pathDownAfter but reads the T57
+// hub-failover Warn line (device/failover.go) instead of the per-path liveness line.
 func hubSwitchAfterT63(journal string, after time.Time, toIdx int) time.Duration {
 	best := time.Duration(-1)
 	for _, line := range strings.Split(journal, "\n") {

@@ -25,7 +25,7 @@ def main():
     profile = profile_from(args.profile)
     manifest = {"binary_sha256": hashlib.sha256(args.binary.read_bytes()).hexdigest(), "profile": profile, "phases": []}
     apply_profile(lab, profile)
-    provision(lab, args.binary, "adaptive")
+    provision(lab, args.binary)
     for guest in GUESTS:
         address = "10.77.0.1" if guest == "hub" else "10.77.0.2"
         lab.put(guest, Path(__file__).with_name("voice.py"), "/root/voice.py")

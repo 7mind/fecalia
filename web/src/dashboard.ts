@@ -1,11 +1,9 @@
 import type {
-  AggregationSnapshot,
   DaemonSnapshot,
   EndpointSnapshot,
   ExitError,
   ExitRequest,
   ExitResponse,
-  FECSnapshot,
   MonitorSnapshot,
   PathSnapshot,
   PeerSessionSnapshot,
@@ -21,7 +19,7 @@ import { pushSample, renderSparklineSvg } from './sparkline';
 //
 // Peer-label rule (mirrors metrics.md / types.ts's multiPeer contract):
 // single-bound-peer sources render ONE flat section with no peer label at
-// all; multi-peer sources on either role group paths/FEC/reseq/aggregation/
+// all; multi-peer sources on either role group paths/reseq/
 // endpoints into one section PER peer, keyed off snapshot.peerNames (T259,
 // G28/M107), each carrying its own session state (from peerSessions) and an
 // ACTIVE-EXIT badge when that peer is snapshot.activeExit.
@@ -151,22 +149,12 @@ export function mountDashboard(container: HTMLElement): DashboardHandle {
   // anywhere, never persisted, gone on reload. Keyed so multi-peer streams
   // don't collide across peers sharing a path name.
   const pathBuffers = new Map<string, PathBuffers>();
-  const fecBuffers = new Map<string, number[]>();
 
   function pathBufferFor(key: string): PathBuffers {
     let b = pathBuffers.get(key);
     if (!b) {
       b = { loss: [], rtt: [], throughput: [] };
       pathBuffers.set(key, b);
-    }
-    return b;
-  }
-
-  function fecBufferFor(key: string): number[] {
-    let b = fecBuffers.get(key);
-    if (!b) {
-      b = [];
-      fecBuffers.set(key, b);
     }
     return b;
   }
@@ -191,16 +179,6 @@ export function mountDashboard(container: HTMLElement): DashboardHandle {
     } else {
       addressingRow = '';
     }
-    const shaperRows = p.shaper
-      ? `
-          <tr data-testid="path-shaper-queue"><td>shaper queue</td><td colspan="2">${formatBytes(p.shaper.queueDataBytes)} DATA / ${formatBytes(p.shaper.queueControlBytes)} control / ${formatBytes(p.shaper.queueBytes)} total / ${formatBytes(p.shaper.inFlightBytes)} in flight</td></tr>
-          <tr data-testid="path-shaper-envelope"><td>shaper envelope</td><td colspan="2">${formatBytes(p.shaper.dataBudgetBytes)} B / ${formatBytes(p.shaper.controlReserveBytes)} C / ${formatBytes(p.shaper.queueBudgetBytes)} Q / ${formatBytes(p.shaper.maxDatagramBytes)} Lmax</td></tr>
-          <tr><td>shaper delay</td><td colspan="2">${formatMs(p.shaper.scheduledDelaySeconds)} scheduled / ${formatBytes(p.shaper.priorityDebtBytes)} P0 / ${formatMs(p.shaper.priorityDelayBoundSeconds)} Dp</td></tr>
-          <tr><td>shaper rate</td><td colspan="2">${formatBytesPerSec(p.shaper.rateBytesPerSecond)} R / ${formatBytesPerSec(p.shaper.priorityRateBytesPerSecond)} Rp / ${formatBytes(p.shaper.priorityBurstBytes)} Pburst</td></tr>
-          <tr><td>shaper bytes</td><td colspan="2">${formatBytes(p.shaper.acceptedBytes)} accepted / ${formatBytes(p.shaper.emittedBytes)} emitted / ${formatBytes(p.shaper.outerPriorityBytes)} priority</td></tr>
-          <tr><td>admission</td><td colspan="2">${p.shaper.admissionWaits} waits (${formatMs(p.shaper.admissionWaitSeconds)}) / ${p.shaper.admissionCanceledDatagrams} canceled</td></tr>
-          <tr><td>async errors</td><td colspan="2">${p.shaper.asyncWriteErrors} generic (${formatBytes(p.shaper.asyncWriteErrorBytes)}) / ${p.shaper.asyncWriteEmsgsizeErrors} EMSGSIZE (${formatBytes(p.shaper.asyncWriteEmsgsizeBytes)})</td></tr>`
-      : '';
     return `
       <div class="path-card ${p.up ? 'is-up' : 'is-down'}" data-testid="path-card" data-path="${escapeHtml(p.name)}">
         <div class="path-card-heading">
@@ -214,23 +192,8 @@ export function mountDashboard(container: HTMLElement): DashboardHandle {
           <tr><td>throughput</td><td>${formatBytesPerSec(p.throughputBps / 8)}</td><td>${renderSparklineSvg(buf.throughput)}</td></tr>
           <tr><td>tx / rx</td><td colspan="2">${formatBytes(p.txBytes)} / ${formatBytes(p.rxBytes)}</td></tr>
           <tr><td>bind</td><td colspan="2" data-testid="path-bind">${bindLabel}</td></tr>
-          <tr><td>link</td><td colspan="2" data-testid="path-link">${formatBytesPerSec(p.linkBandwidthBps / 8)} / ${formatMs(p.linkRttSeconds)}</td></tr>
         </table>
-        ${shaperRows || addressingRow ? `<details class="path-details" data-path-detail="${encodeURIComponent(p.peer)}:${encodeURIComponent(p.name)}"><summary>Path details</summary><table>${shaperRows}${addressingRow}</table></details>` : ''}
-      </div>`;
-  }
-
-  function renderFecCard(f: FECSnapshot, bufferKey: string): string {
-    const buf = fecBufferFor(bufferKey);
-    pushSample(buf, f.residualLossRatio);
-    return `
-      <div class="fec-card" data-testid="fec-card">
-        <table>
-          <tr><td>data pkts</td><td>${f.dataPackets}</td><td>repair pkts</td><td>${f.repairPackets}</td></tr>
-          <tr><td>recovered</td><td>${f.recoveredPackets}</td><td>unrecoverable</td><td>${f.unrecoverablePackets}</td></tr>
-          <tr><td>data bytes</td><td>${formatBytes(f.dataBytes)}</td><td>repair bytes</td><td>${formatBytes(f.repairBytes)}</td></tr>
-          <tr><td>residual loss</td><td colspan="3">${formatPct(f.residualLossRatio)} ${renderSparklineSvg(buf)}</td></tr>
-        </table>
+        ${addressingRow ? `<details class="path-details" data-path-detail="${encodeURIComponent(p.peer)}:${encodeURIComponent(p.name)}"><summary>Path details</summary><table>${addressingRow}</table></details>` : ''}
       </div>`;
   }
 
@@ -243,16 +206,6 @@ export function mountDashboard(container: HTMLElement): DashboardHandle {
           <tr><td>suspect dropped</td><td>${r.droppedSuspect}</td><td>resyncs</td><td>${r.resyncs}</td></tr>
           <tr><td>rebaselines</td><td colspan="3">${r.rebaselines}</td></tr>
         </table>
-      </div>`;
-  }
-
-  function renderAggregationCard(a: AggregationSnapshot): string {
-    return `
-      <div class="aggregation-card" data-testid="aggregation-card">
-        aggregating: ${a.aggregating ? 'yes' : 'no'} &middot;
-        offered: ${a.offeredLoadFps.toFixed(1)}fps &middot;
-        engage: ${a.engageThresholdFps.toFixed(1)}fps &middot;
-        disengage: ${a.disengageThresholdFps.toFixed(1)}fps
       </div>`;
   }
 
@@ -334,15 +287,12 @@ export function mountDashboard(container: HTMLElement): DashboardHandle {
   function renderSection(
     peerLabel: string | null,
     paths: PathSnapshot[],
-    fec: FECSnapshot[],
     reseq: ReseqSnapshot[],
-    aggregation: AggregationSnapshot[],
     addressingHidden: boolean,
     endpoints: EndpointSnapshot[] = [],
     peerSession?: PeerSessionSnapshot,
     isActiveExit = false,
   ): string {
-    const keyPrefix = peerLabel ?? ' flat';
     const activeExitBadge = isActiveExit
       ? `<span class="active-exit-badge" data-testid="active-exit-badge">ACTIVE-EXIT</span>`
       : '';
@@ -354,14 +304,6 @@ export function mountDashboard(container: HTMLElement): DashboardHandle {
       peerLabel !== null
         ? `<div class="peer-heading"><h3 class="peer-label" data-testid="peer-label">${escapeHtml(peerLabel)}${activeExitBadge}</h3>${peerSession ? renderSessionCard(peerSession, 'peer-session-card') : ''}</div>`
         : '';
-    const aggregationGroup =
-      aggregation.length > 0
-        ? `
-      <div class="stat-group" data-kind="aggregation" data-testid="stat-group-aggregation">
-        <h4>Aggregation</h4>
-        ${aggregation.map((a) => renderAggregationCard(a)).join('')}
-      </div>`
-        : '';
     const endpointsGroup = renderEndpointsSection(endpoints, addressingHidden);
     return `
       <section class="${peerLabel !== null ? 'dashboard-peer-section' : 'dashboard-flat-section'}"
@@ -372,15 +314,10 @@ export function mountDashboard(container: HTMLElement): DashboardHandle {
           <h4>Paths</h4>
           <div class="path-grid">${paths.map((p) => renderPathCard(p, addressingHidden)).join('')}</div>
         </div>
-        <div class="stat-group" data-kind="fec" data-testid="stat-group-fec">
-          <h4>FEC</h4>
-          ${fec.map((f, i) => renderFecCard(f, `${keyPrefix} fec ${i}`)).join('')}
-        </div>
         <div class="stat-group" data-kind="reseq" data-testid="stat-group-reseq">
           <h4>Resequencer</h4>
           ${reseq.map((r) => renderReseqCard(r)).join('')}
         </div>
-        ${aggregationGroup}
         ${endpointsGroup}
       </section>`;
   }
@@ -448,9 +385,7 @@ export function mountDashboard(container: HTMLElement): DashboardHandle {
     const grouped = snapshot.multiPeer && snapshot.peerNames.length > 1;
     if (grouped) {
       const pathsByPeer = groupByPeer(snapshot.paths);
-      const fecByPeer = groupByPeer(snapshot.fec);
       const reseqByPeer = groupByPeer(snapshot.reseq);
-      const aggByPeer = groupByPeer(snapshot.aggregation);
       const endpointsByPeer = groupByPeer(snapshot.endpoints);
       const peerSessionsByPeer = groupByPeer(snapshot.peerSessions);
       sectionsHtml = snapshot.peerNames
@@ -458,9 +393,7 @@ export function mountDashboard(container: HTMLElement): DashboardHandle {
           renderSection(
             peer,
             pathsByPeer.get(peer) ?? [],
-            fecByPeer.get(peer) ?? [],
             reseqByPeer.get(peer) ?? [],
-            aggByPeer.get(peer) ?? [],
             snapshot.addressingHidden,
             endpointsByPeer.get(peer) ?? [],
             peerSessionsByPeer.get(peer)?.[0],
@@ -476,9 +409,7 @@ export function mountDashboard(container: HTMLElement): DashboardHandle {
       sectionsHtml = renderSection(
         null,
         snapshot.paths,
-        snapshot.fec,
         snapshot.reseq,
-        snapshot.aggregation,
         snapshot.addressingHidden,
       );
     }

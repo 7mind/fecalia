@@ -41,7 +41,7 @@ func TestPathNamesIncludesDeferred(t *testing.T) {
 		{Name: "bindable", SourceAddr: netip.MustParseAddr("127.0.0.1")},
 		{Name: "deferred", SourceAddr: netip.MustParseAddr(unassignableSource)},
 	}
-	m, _, _ := newProbingMultipath(t, paths, psk, clk)
+	m, _ := newProbingMultipath(t, paths, psk, clk)
 	if _, _, err := m.Open(0); err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -90,7 +90,7 @@ func diffNames(live []string, desired []config.Path) (add []string, remove []str
 func TestAddPathDefersUnassignable(t *testing.T) {
 	psk := testKey(t, 0x55)
 	clk := newFakeClock()
-	m, _, _ := newProbingMultipath(t, loopbackPaths(1), psk, clk)
+	m, _ := newProbingMultipath(t, loopbackPaths(1), psk, clk)
 	if _, _, err := m.Open(0); err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -99,7 +99,7 @@ func TestAddPathDefersUnassignable(t *testing.T) {
 	if err := m.AddPath(config.Path{Name: "deferred", SourceAddr: netip.MustParseAddr(unassignableSource)}); err != nil {
 		t.Fatalf("AddPath of a not-yet-assignable path returned an error, want a deferred no-op success: %v", err)
 	}
-	// It did NOT join the live/scheduler set...
+	// It did NOT join the live set...
 	if len(m.paths) != 1 {
 		t.Fatalf("live paths = %d, want 1 (the deferred add must not become a live path)", len(m.paths))
 	}
@@ -126,7 +126,7 @@ func TestRemovePathAfterDeferredPreservesMembership(t *testing.T) {
 		{Name: "mid", SourceAddr: netip.MustParseAddr(unassignableSource)}, // deferred
 		{Name: "third", SourceAddr: netip.MustParseAddr("127.0.0.1")},
 	}
-	m, _, _ := newProbingMultipath(t, paths, psk, clk)
+	m, _ := newProbingMultipath(t, paths, psk, clk)
 	if _, _, err := m.Open(0); err != nil {
 		t.Fatalf("Open: %v", err)
 	}

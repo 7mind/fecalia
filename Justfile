@@ -37,7 +37,7 @@ release: web-build
 # The e2e/realhosts sources are gated behind //go:build tags, so a tagless
 # vet/lint never compiles them and silently skips them (see D28). The tagged
 # passes below are additive — the tagless run still analyses the default build
-# exactly as before. E2e-tagged sources under internal/ (e.g. adaptive_real_loss_e2e_test.go)
+# exactly as before. E2e-tagged sources under internal/ (e.g. monitor_e2e_test.go)
 # are covered by the tagged passes below.
 # Vet + lint the default build plus the e2e- and realhosts-tagged sources.
 lint:

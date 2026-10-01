@@ -3,76 +3,54 @@
 package e2e
 
 // TestE2EResequencerHoLLatency (T243, defect D93) is the END-TO-END confirmation, over a
-// real socket/TUN/netem path, of the D93 single-delivering-path immediate-release fix
-// (T240 reseq policy + T241 bind pathKey wiring, both merged at 381fc66). On ONE active
-// delivering path with deterministic p% DATA loss, the fixed resequencer releases a
-// head-of-line gap's already-arrived successors with ~0 hold instead of stalling them the
-// full resequencerTimeout (250 ms). This test pins that post-fix invariant end-to-end:
+// real socket/TUN/netem path, that deterministic p% loss of full-sized data datagrams on one
+// path does not head-of-line block the tunnel:
 //
 //   (a) LOADED RTT through the tunnel under a concurrent inner stream stays near the idle
 //       baseline (the worst sampled inner-RTT rises < d93MaxHoLDeltaMs above idle) — NOT the
-//       ~250 ms-per-drop spike the pre-fix fixed hold produced;
+//       ~250 ms-per-drop spike a fixed receive hold produces;
 //   (b) single-stream inner TCP under the SAME loss does not collapse — its throughput stays
 //       >= d93MinLossyTCPMbps (a Mathis-model-derived absolute floor; the loss itself caps
 //       TCP far below the loss-free baseline, so a fraction-of-baseline bound is unsound);
-//   (c) two-path reorder correctness is unaffected — pinned by TestP2Aggregation (the weighted
-//       two-real-socket aggregation e2e) end-to-end and by internal/bind/multipath_d93_test.go
-//       (TestSameSrcInterleavedPathIDsStillHeld) + internal/reseq at the unit level.
+//   (c) two-path reorder correctness is unaffected — pinned by TestP2Aggregation (the
+//       two-real-socket aggregation e2e) end-to-end and by internal/reseq at the unit level.
 //
-// D93 FIELD SIGNATURE (what this reproduces). On a single active path (active-backup steady
-// state, only the primary delivering DATA) packets arrive already in order, so the ONLY source
-// of an OuterSeq gap is a genuine path drop — never cross-path reorder. The pre-fix resequencer
-// nonetheless held every in-order frame buffered AHEAD of the gap for the full 250 ms
-// resequencerTimeout (internal/bind/multipath.go) before skipping the never-arriving head, then
-// released the run as one burst. On a ~ms-RTT path that fixed hold is ~6x the base RTT and pays
-// PER drop, inflating the effective RTT (field: ~40 ms idle -> ~305 ms loaded) and collapsing
-// single-stream TCP (throughput proportional to 1/RTT: field ~8-14 Mbit tunneled vs ~31 Mbit
-// raw) — with ZERO reordering benefit, because a lone path cannot reorder against itself. The
-// fix (internal/reseq/reseq.go singleSourceImmediate): when exactly one delivering pathKey has
-// been observed within singleSourceTrailingWindow, a gap is genuine loss and its successors
-// release immediately; a second distinct key re-arms the full hold, preserving reorder safety.
+// D93 FIELD SIGNATURE (what this guards against). A receive resequencer that holds every
+// in-order frame buffered AHEAD of a gap for a fixed 250 ms before skipping the
+// never-arriving head, then releases the run as one burst, pays that hold PER drop: on a
+// ~ms-RTT path it inflated the effective RTT (field: ~40 ms idle -> ~305 ms loaded) and
+// collapsed single-stream TCP (throughput proportional to 1/RTT: field ~8-14 Mbit tunneled vs
+// ~31 Mbit raw). The transport keeps the ping out of that hold — small datagrams are
+// delivered on arrival, bypassing bulk receive ordering — and repairs a lost bulk datagram
+// with a bounded cross-path retry.
 //
-// TOPOLOGY. TWO bonded veth paths under the DEFAULT scheduler (empty [scheduler] normalizes to
-// active-backup, config.go PolicyActiveBackup): paths[0] is the PRIMARY active path carrying ALL
-// DATA (sched.NewActiveBackup Pick returns the single active), paths[1] a healthy standby that
-// carries no DATA in steady state — this two-path config IS the single-delivering-path state
-// D93 targets (a lone delivering pathKey at the receiver). The standby keeps the bond robustly
-// UP (a real second configured path, exercising the min-across-paths sizing) but never delivers
-// DATA, so the concentrator's receive resequencer observes exactly ONE delivering pathKey and
-// the fix's immediate release engages. NO mtu knob (auto-1500), FEC OFF (no [fec] block, so the
-// FEC-active suppression of immediate release is not in play — singleSourceImmediate requires
-// !fecActive). Low per-path delay (d93PathDelayMs) keeps the veth RTT ~ms, so the pre-fix
-// 250 ms hold is an unmistakable multiple of the base and post-fix loss-induced TCP degradation
-// stays mild enough that the lenient (b) bound is meaningful (Mathis: on a ~ms RTT the fast
-// retransmit recovers within ~ms, so throughput stays a large fraction of the loss-free rate).
+// TOPOLOGY. TWO bonded veth paths: the drop rule lives on paths[0]'s ingress veth at the
+// concentrator, paths[1] is drop-free. NO mtu knob (auto-1500). Low per-path delay
+// (d93PathDelayMs) keeps the veth RTT ~ms, so a 250 ms hold is an unmistakable multiple of
+// the base.
 //
 // DETERMINISTIC LOSS (the crux — deterministic so -count=3 is stable, unlike netem's random
 // loss). installD93DataDrop installs, in the CONCENTRATOR (transit) netns on the input hook, an
-// nft rule dropping every d93DropEveryNth-th FULL-SIZED DATA datagram arriving on the ACTIVE
-// path's ingress veth in the edge->concentrator direction (the upload leg; the D93 receive-HoL
-// mechanism is direction-symmetric — the resequencer runs per-peer on BOTH roles — so dropping
-// the upload DATA stalls the CONCENTRATOR's resequencer, which HoL-blocks the ping REQUEST and
-// the inner TCP data exactly as the field download stalled the edge's). The rule matches, IN
+// nft rule dropping every d93DropEveryNth-th FULL-SIZED data datagram arriving on paths[0]'s
+// ingress veth in the edge->concentrator direction (the upload leg). The rule matches, IN
 // ORDER:
-//   - iifname concVeth[active] — scope to the active path so its numgen counter advances ONLY by
-//     that path's DATA (a counter shared across paths would not be per-path deterministic; the
-//     standby carries no DATA anyway);
+//   - iifname concVeth[paths[0]] — scope to one path so its numgen counter advances ONLY by
+//     that path's datagrams (a counter shared across paths would not be per-path
+//     deterministic);
 //   - udp dport listenPort     — the tunnel's outer datagrams only;
-//   - ip length > d93DataSizeThreshold — FULL-SIZED DATA only. This SPARES two frame classes:
-//     (1) PROBE liveness frames (small) — so active-backup liveness stays UP and never fails DATA
-//     over to the drop-free standby, which would mask the HoL effect; (2) the inner ICMP ping
-//     frames (small) — so the ping is never DROPPED, only HoL-BLOCKED behind a dropped stream
-//     datagram ahead of it in the shared per-peer OuterSeq space (this IS the HoL amplifier the
-//     test measures: a tiny in-order frame stalled waiting for a big dropped one);
-//   - numgen inc mod d93DropEveryNth == 0 — increments only for MATCHED (full DATA) datagrams,
-//     dropping every Nth. Deterministic.
+//   - ip length > d93DataSizeThreshold — FULL-SIZED datagrams only. This SPARES two frame
+//     classes: (1) PROBE liveness frames (small) — so the path's liveness stays UP; (2) the
+//     inner ICMP ping frames (small) — so the ping is never DROPPED, only exposed to
+//     head-of-line blocking behind a dropped stream datagram;
+//   - numgen inc mod d93DropEveryNth == 0 — increments only for MATCHED (full-sized)
+//     datagrams, dropping every Nth. Deterministic.
 //
 // LOSS-FRACTION / THRESHOLD ARITHMETIC (outer IP total-length units; mirrors the InnerMTU
 // accounting in internal/bind and the T237 fixture's overhead notes). A full inner packet of
-// InnerMTU(1500) = 1400 bytes rides in an outer datagram of 1400 + 40 (outer DATA frame) + 32
+// InnerMTU(1500) = 1339 bytes rides in an outer datagram of 1339 + 101 (outer data frame) + 32
 // (WG transport) + 28 (outer IPv4+UDP) = 1500 bytes IP length; a modest d93UDPDatagramLen-byte
-// UDP stream datagram rides in 1300 + 8 (inner UDP) + 20 (inner IP) + 40 + 32 + 28 = 1428 bytes.
-// A default inner ICMP ping (56-byte payload) rides in 56 + 8 + 20 + 40 + 32 + 28 = 184 bytes; a
+// UDP stream datagram rides in 1300 + 8 (inner UDP) + 20 (inner IP) + 101 + 32 + 28 = 1489 bytes.
+// A default inner ICMP ping (56-byte payload) rides in 56 + 8 + 20 + 101 + 32 + 28 = 245 bytes; a
 // PROBE frame is a few dozen bytes. d93DataSizeThreshold = 1000 therefore sits strictly ABOVE
 // every ping/probe/handshake datagram and strictly BELOW every full DATA/stream datagram, so
 // `ip length > 1000` selects DATA-and-only-DATA. With numgen inc mod 15 == 0 the middlebox drops
@@ -134,8 +112,8 @@ const (
 
 	// d93DataSizeThreshold selects FULL-SIZED DATA datagrams (ip length > this) while sparing
 	// small PROBE/handshake and inner-ICMP-ping datagrams (see the file header's arithmetic:
-	// full DATA outer >= 1428 bytes, ping outer ~184, probe a few dozen). Sparing probes keeps
-	// active-backup liveness UP (no failover to the drop-free standby); sparing pings makes the
+	// full DATA outer >= 1489 bytes, ping outer ~245, probe a few dozen). Sparing probes keeps
+	// the path's liveness UP; sparing pings makes the
 	// ping HoL-BLOCKED behind a dropped stream datagram rather than directly dropped.
 	d93DataSizeThreshold = 1000
 
@@ -179,19 +157,15 @@ const (
 func TestE2EResequencerHoLLatency(t *testing.T) {
 	bin := buildWanbond(t)
 
-	// paths[0] is the PRIMARY active path (all DATA, and where the drop rule lives); paths[1] a
-	// healthy standby that carries only probes (no DATA) so the receiver sees a single delivering
-	// pathKey — the D93 single-delivering-path steady state. NO mtu knob (auto-1500); FEC OFF
-	// (no [fec] block). Veth names match the other netns tests; the suite is sequential (fixed
+	// paths[0] is where the drop rule lives; paths[1] is drop-free. NO mtu knob (auto-1500).
+	// Veth names match the other netns tests; the suite is sequential (fixed
 	// names forbid parallel) and Setup idempotently pre-deletes them.
 	active := pathSpec{name: "cellular", edgeIP: "10.100.2.1", concIP: "10.100.2.2", edgeVeth: "wbBe", concVeth: "wbBc", delayMs: d93PathDelayMs}
-	standby := pathSpec{name: "starlink", edgeIP: "10.100.1.1", concIP: "10.100.1.2", edgeVeth: "wbAe", concVeth: "wbAc", delayMs: d93PathDelayMs}
-	paths := []pathSpec{active, standby}
+	dropFree := pathSpec{name: "starlink", edgeIP: "10.100.1.1", concIP: "10.100.1.2", edgeVeth: "wbAe", concVeth: "wbAc", delayMs: d93PathDelayMs}
+	paths := []pathSpec{active, dropFree}
 
 	top := SetupWithPaths(t, paths)
 
-	// Default [scheduler] (omitted) normalizes to active-backup, so setupMultipathTunnel brings
-	// the bond up with paths[0] as the sole DATA-carrying path — no scheduler block to add.
 	edge, conc := setupMultipathTunnel(t, top, bin, paths)
 	if !top.pingUntil(concInner, 15*time.Second) {
 		t.Fatalf("tunnel never came up\n--- edge ---\n%s\n--- conc ---\n%s", edge.log(), conc.log())
@@ -209,19 +183,19 @@ func TestE2EResequencerHoLLatency(t *testing.T) {
 	}
 	t.Logf("baseline: idle inner RTT=%.1fms, loss-free single-stream TCP=%.1f Mbit/s", idleRTTms, baselineMbps)
 
-	// Arm the deterministic drop on the ACTIVE path's DATA (edge->concentrator), sparing
-	// probes/pings by size. Probes stay UP so active-backup never fails DATA over to the standby.
+	// Arm the deterministic drop on paths[0]'s full-sized datagrams (edge->concentrator),
+	// sparing probes/pings by size.
 	installD93DataDrop(t, top, active.concVeth, d93DataSizeThreshold, d93DropEveryNth)
 
 	// (a) LOADED RTT: a modest, non-saturating background inner UDP stream generates the drop
-	// events; the concurrent ping is HoL-blocked behind them iff the pre-fix fixed hold is in
+	// events; the concurrent ping is HoL-blocked behind them iff a fixed receive hold is in
 	// force. The worst sampled loaded RTT must stay within d93MaxHoLDeltaMs of idle.
 	worstLoadedRTTms := top.rttUnderUDPLoadMaxMs(t, concInner, concInner, d93UDPRateMbit, d93UDPDatagramLen, d93UDPLoadSecs)
 	loadedDeltaMs := worstLoadedRTTms - idleRTTms
 	t.Logf("(a) loaded worst inner RTT=%.1fms (idle=%.1fms, Δ=%.1fms) under a %d Mbit/s UDP stream with every-%dth DATA dropped (p=%.1f%%)",
 		worstLoadedRTTms, idleRTTms, loadedDeltaMs, d93UDPRateMbit, d93DropEveryNth, 100.0/float64(d93DropEveryNth))
 	if loadedDeltaMs >= d93MaxHoLDeltaMs {
-		t.Fatalf("(a) worst loaded inner RTT rose %.1fms above idle (idle=%.1fms, worst=%.1fms), want < %.0fms — the pre-fix fixed %s head-of-line hold stalls each in-order frame behind a dropped one; the D93 single-delivering-path immediate release is NOT engaged\n--- edge ---\n%s",
+		t.Fatalf("(a) worst loaded inner RTT rose %.1fms above idle (idle=%.1fms, worst=%.1fms), want < %.0fms — a fixed %s head-of-line hold stalls each in-order frame behind a dropped one\n--- edge ---\n%s",
 			loadedDeltaMs, idleRTTms, worstLoadedRTTms, d93MaxHoLDeltaMs, resequencerTimeoutStr, edge.log())
 	}
 
@@ -239,14 +213,12 @@ func TestE2EResequencerHoLLatency(t *testing.T) {
 	}
 
 	// (c) Two-path reorder correctness is UNAFFECTED. It is pinned end-to-end by TestP2Aggregation
-	// (weighted, two real per-path UDP sockets delivering DATA concurrently through the same
-	// per-peer resequencer) and at the unit level by internal/bind/multipath_d93_test.go
-	// (TestSameSrcInterleavedPathIDsStillHeld: two delivering pathKeys keep the full hold) plus
-	// internal/reseq. This file deliberately reuses that coverage rather than standing up parallel
-	// two-path-reorder infrastructure.
-	t.Logf("(c) two-path reorder correctness pinned by TestP2Aggregation (e2e) + internal/bind/multipath_d93_test.go and internal/reseq (unit) — not re-implemented here")
+	// (two real per-path UDP sockets delivering data concurrently through the same
+	// per-peer resequencer) and at the unit level by internal/reseq. This file deliberately
+	// reuses that coverage rather than standing up parallel two-path-reorder infrastructure.
+	t.Logf("(c) two-path reorder correctness pinned by TestP2Aggregation (e2e) + internal/reseq (unit) — not re-implemented here")
 
-	t.Logf("D93 end-to-end: on ONE delivering path with %.1f%% deterministic DATA loss, loaded worst RTT stayed within %.0fms of idle and single-stream TCP cleared the %.1f Mbit/s Mathis floor — the single-delivering-path immediate release holds (T240/T241, D93, G26)",
+	t.Logf("D93 end-to-end: with %.1f%% deterministic loss of one path's full-sized datagrams, loaded worst RTT stayed within %.0fms of idle and single-stream TCP cleared the %.1f Mbit/s Mathis floor (D93, G26)",
 		100.0/float64(d93DropEveryNth), d93MaxHoLDeltaMs, d93MinLossyTCPMbps)
 }
 
@@ -264,7 +236,7 @@ const resequencerTimeoutStr = "250ms"
 //     path's DATA (a counter shared across paths would not be per-path deterministic);
 //   - udp dport listenPort — the tunnel's outer datagrams only;
 //   - ip length > threshold — FULL-SIZED DATA only, sparing small PROBE/handshake frames (so
-//     active-backup liveness stays UP and never fails DATA over to the drop-free standby) and the
+//     the path's liveness stays UP) and the
 //     inner ICMP ping frames (so the ping is HoL-BLOCKED behind a dropped stream datagram, not
 //     dropped itself);
 //   - numgen inc mod everyNth == 0 — increments only for MATCHED (full DATA) datagrams and fires

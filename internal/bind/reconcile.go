@@ -7,7 +7,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/7mind/wanbond/internal/sched"
 	"github.com/7mind/wanbond/internal/telemetry"
 )
 
@@ -35,7 +34,7 @@ func defaultDeferredListen(src netip.Addr, port uint16, dev string) (*net.UDPCon
 // StartReconcileLoop launches the background deferred-path reconciler (T55): every
 // interval it re-attempts the bind of the paths a tolerant Open (T51) left DEFERRED
 // (a well-formed source_addr that was not yet assignable at boot) and PROMOTES any
-// that now binds to a live path — into m.paths, the scheduler, and its own reader —
+// that now binds to a live path — into m.paths and its own reader —
 // so a source_addr that becomes assignable after boot (a 5G modem that finally got
 // its DHCP lease) is brought into the running bond WITHOUT a restart. It stops when
 // the returned stopper is invoked (idempotent), so the daemon shuts it down before
@@ -87,8 +86,7 @@ func (m *Multipath) StartReconcileLoop(interval time.Duration) (stop func()) {
 // retried; a bind fault never becomes fatal to the RUNNING bond (the tunnel is already
 // up on the paths that bound). Membership mutation runs under m.mu and transitionMu
 // serializes it with Open/Close/AddPath/RemovePath; a failed promotion's blocking
-// shaper/socket retirement runs after m.mu is released. The path slice and scheduler
-// therefore mutate together, and it
+// socket retirement runs after m.mu is released. It
 // is a no-op on a CLOSED bind (len(m.paths)==0) — so it races a concurrent Close
 // harmlessly (Close either ran first, and this no-ops, or runs after and joins the
 // reader this step just spawned via readersWG) — or when nothing is deferred (the
@@ -99,25 +97,10 @@ func (m *Multipath) reconcileDeferred() {
 
 	m.mu.Lock()
 	canPromote := len(m.paths) > 0 && len(m.deferred) > 0
-	if canPromote {
-		_, canPromote = m.scheduler.(sched.DynamicScheduler)
-	}
 	m.mu.Unlock()
 	if !canPromote {
 		return
 	}
-
-	var frozenPeers []*peerState
-	servicesFrozen := false
-	rotateContract := false
-	defer func() {
-		if !servicesFrozen {
-			return
-		}
-		if err := m.finishPeerServiceTransition(frozenPeers, rotateContract); err != nil {
-			m.log.Error("bind: recovery contract rotation failed", "error", err)
-		}
-	}()
 
 	var retirement socketGenerationRetirement
 	m.mu.Lock()
@@ -129,16 +112,6 @@ func (m *Multipath) reconcileDeferred() {
 	}()
 	if len(m.paths) == 0 || len(m.deferred) == 0 {
 		return // closed, or nothing to promote
-	}
-	// A deferred path exists only under the runtime path-down model tolerance requires
-	// (probe transport + DynamicScheduler); Open never defers without it, so this
-	// assertion holds. Guard defensively rather than type-assert-panic on the hot lock.
-	// (Each peer's OWN scheduler is independently type-asserted inside the promotion
-	// fan-out below — attachPeerPathLocked, via attachSharedPathLocked — so this check is
-	// only the primary's early opt-out: a primary without dynamic membership support never
-	// defers in the first place, per Open's tolerateDefer gate.)
-	if _, ok := m.scheduler.(sched.DynamicScheduler); !ok {
-		return
 	}
 	// In-place filter: keep the paths that did NOT promote this tick. kept aliases the
 	// deferred backing array, and its length never exceeds the loop index, so appending
@@ -170,18 +143,8 @@ func (m *Multipath) reconcileDeferred() {
 		// below) warns again. This is keyed to the LISTEN outcome, not the promote
 		// outcome, so it clears unconditionally here — round 3 / CRITICISM 2.
 		dp.warnedUnresolvable = false
-		if !servicesFrozen {
-			// Do not stop DATA for the normal still-unassignable retry. Once a socket
-			// has materialized, take the service write side before the first possible
-			// scheduler/path mutation. transitionMu keeps the deferred set stable
-			// while m.mu is temporarily released for the blocking drain.
-			m.mu.Unlock()
-			frozenPeers = m.freezePeerServices()
-			m.mu.Lock()
-			servicesFrozen = true
-		}
 		if err := m.promoteDeferredLocked(dp, c, &retirement); err != nil {
-			// The bind succeeded but promotion did not (a scheduler/path index skew, or a
+			// The bind succeeded but promotion did not (a prober fan-out desync, or a
 			// codec build error): close the fresh socket and keep the path deferred so the
 			// next tick retries cleanly, rather than leaking the socket or half-admitting.
 			// No fallback socket PERSISTS here — it was just closed — so the two D53
@@ -203,12 +166,11 @@ func (m *Multipath) reconcileDeferred() {
 			continue
 		}
 		// Promotion ALSO succeeded: the fresh socket is now actually installed (every
-		// bound peer has a receive-demux view and a scheduler entry — promoteDeferredLocked's
+		// bound peer has a receive-demux view — promoteDeferredLocked's
 		// fan-out) and dp is dropped from m.deferred below, so the D53 fallback facts are
 		// finally backed by a real, live, installed socket — log them only now.
 		m.warnForcedDeviceUnresolvable(dp.def.Name, dp.def.Bind, dp.def.SourceAddr, dev)
 		m.warnDeviceBindFallback(dp.def.Name, dp.def.Bind, dev, deviceErr)
-		rotateContract = true
 	}
 	m.deferred = kept
 }
@@ -219,14 +181,14 @@ func (m *Multipath) reconcileDeferred() {
 // p.probers already carries that peer's OWN index-aligned prober for it (the AddPath/Open
 // admission that first recorded it fanned that far already) — so promotion REUSES each peer's
 // existing prober (located by dp's index in m.defs) rather than minting a fresh one, giving
-// every peer a receive-demux VIEW of the freshly-bound socket and a scheduler entry, not just
-// the primary. Pre-fix, only the primary got a view/scheduler entry, leaving every non-primary
-// concentrator peer's frames on this socket un-demuxed and its scheduler without an entry for
-// the path until the next Close→Open. It mirrors AddPath's admission MINUS touching the
+// every peer a receive-demux VIEW of the freshly-bound socket, not just
+// the primary. Pre-fix, only the primary got a view, leaving every non-primary
+// concentrator peer's frames on this socket un-demuxed
+// until the next Close→Open. It mirrors AddPath's admission MINUS touching the
 // durable membership (already in place) and MINUS minting fresh probers (reused instead), so
 // the caller need only drop dp from m.deferred on success. On any peer's failure it rolls the
 // WHOLE fan-out back (mirroring attachSharedPathLocked) and returns the error, leaving
-// m.shared, every peer's paths, and every peer's scheduler as they were found.
+// m.shared and every peer's paths as they were found.
 func (m *Multipath) promoteDeferredLocked(
 	dp deferredPath,
 	c *net.UDPConn,
@@ -235,10 +197,9 @@ func (m *Multipath) promoteDeferredLocked(
 	// Large SO_RCVBUF, best-effort (kernel-capped, needs no privilege) — as in Open/AddPath.
 	_ = c.SetReadBuffer(socketRecvBuffer)
 	shared := &sharedPathState{
-		name:           dp.def.Name,
-		src:            dp.def.SourceAddr,
-		conn:           c,
-		openGeneration: m.openGeneration.Load(),
+		name: dp.def.Name,
+		src:  dp.def.SourceAddr,
+		conn: c,
 	}
 	promoted := false
 	defer func() {
@@ -272,17 +233,16 @@ func (m *Multipath) promoteDeferredLocked(
 		probers[pi] = p.probers[defIdx]
 	}
 
-	// Reuse the boot prober's IMMUTABLE stamp for the DATA-frame path-id, exactly as Open
-	// and AddPath do, so DATA and PROBE agree on the wire and the promoted path is never
+	// Reuse the boot prober's IMMUTABLE stamp for the path-id, exactly as Open
+	// and AddPath do, so lanes and PROBE agree on the wire and the promoted path is never
 	// renumbered. probers[0] is the primary's — the same dp.prober the deferred record held.
 	shared.id = probers[0].PathID()
 
 	// FAN-OUT (single owner, shared with AddPath): instantiate the per-(peer,path) state for
-	// EVERY currently-bound peer, reusing each peer's resolved prober and admitting it to
-	// that peer's scheduler. attached[k] is m.peers[k]'s view of the freshly-bound socket. A
+	// EVERY currently-bound peer, reusing each peer's resolved prober. attached[k] is m.peers[k]'s view of the freshly-bound socket. A
 	// failure in any peer rolls back every peer already attached, so a partial fan-out never
 	// leaks a half-admitted path.
-	attached, err := m.attachSharedPathLocked(shared, dp.def, shared.id, probers, nil, retirement)
+	attached, err := m.attachSharedPathLocked(shared, dp.def, shared.id, probers, retirement)
 	if err != nil {
 		return err
 	}

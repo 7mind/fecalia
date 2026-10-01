@@ -120,9 +120,6 @@ type Prober struct {
 	learnedChallenge uint64
 	est              *Estimator
 	live             *Liveness
-	lastRTTSample    time.Time
-	haveRTTSample    bool
-	recoveryRevision uint64
 }
 
 // NewProber builds a Prober for one path. sessionID is this node's per-boot
@@ -161,8 +158,7 @@ func (p *Prober) SendProbe() ([]byte, error) {
 }
 
 // SendProbePayload emits an ordinary unpadded probe with a MAC-covered payload
-// and returns the exact header stamped into it. Callers use the header to bind a
-// recovery-contract ACK to an actually emitted offer.
+// and returns the exact header stamped into it.
 func (p *Prober) SendProbePayload(payload []byte) ([]byte, frame.Probe, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -204,8 +200,7 @@ func (p *Prober) SendPaddedProbe(onWire int) ([]byte, uint64, error) {
 // touching RTT or liveness (T226, defect D88). A PMTU binary search (EchoAwaitProbe)
 // deliberately sends oversized probes it EXPECTS to be dropped; those dropped seqs
 // would otherwise read as genuine per-path loss in the shared 512-wide probe-echo
-// window (estimator ObserveProbeEcho), inflating the loss the scheduler and adaptive
-// FEC controller consume. Calling this on a padded probe that timed out awaiting its
+// window (estimator ObserveProbeEcho), inflating the loss the path estimate reports. Calling this on a padded probe that timed out awaiting its
 // echo (or was rejected locally as too large) fills that seq's window slot so the
 // intentional drop is not counted as loss. It is a no-op-safe idempotent mark: an
 // echoed probe already got its ObserveProbeEcho via HandleEcho, so a redundant call
@@ -248,7 +243,7 @@ func (p *Prober) HandleEcho(raw []byte) error {
 }
 
 // HandleEchoProbe applies the ordinary liveness/freshness checks and returns the
-// authenticated fresh echo for peer-scoped recovery-contract processing.
+// authenticated fresh echo, whose payload the caller may consume.
 func (p *Prober) HandleEchoProbe(raw []byte) (frame.Probe, error) {
 	f, err := frame.Decode(p.psk, raw)
 	if err != nil {
@@ -293,10 +288,7 @@ func (p *Prober) HandleEchoProbe(raw []byte) (frame.Probe, error) {
 		rtt = 0
 	}
 	p.est.ObserveRTT(rtt)
-	p.lastRTTSample = now
-	p.haveRTTSample = true
 	p.live.RecordEcho()
-	p.bumpRecoveryRevisionLocked()
 	return probe, nil
 }
 
@@ -305,18 +297,7 @@ func (p *Prober) HandleEchoProbe(raw []byte) (frame.Probe, error) {
 func (p *Prober) Tick() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	before := p.live.State()
 	p.live.Tick()
-	if p.live.State() != before {
-		p.bumpRecoveryRevisionLocked()
-	}
-}
-
-func (p *Prober) bumpRecoveryRevisionLocked() {
-	p.recoveryRevision++
-	if p.recoveryRevision == 0 {
-		p.recoveryRevision++
-	}
 }
 
 // Estimate returns the current per-path quality snapshot.
@@ -333,45 +314,11 @@ func (p *Prober) State() PathState {
 	return p.live.State()
 }
 
-// RecoveryRTTSnapshot is the authenticated RTT evidence available to the
-// receiver recovery-window decision. FreshUntil uses the liveness DownAfter
-// horizon, not RideThrough: a sample too old to keep the base path heartbeat
-// current cannot shorten a receive gap.
-type RecoveryRTTSnapshot struct {
-	Revision     uint64
-	RTT          time.Duration
-	RTTVariation time.Duration
-	SampledAt    time.Time
-	FreshUntil   time.Time
-	State        PathState
-	Present      bool
-}
-
-// RecoveryRTT returns one coherent snapshot under the Prober lock. Only a
-// successful fresh echo updates SampledAt.
-func (p *Prober) RecoveryRTT() RecoveryRTTSnapshot {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	estimate := p.est.Estimate()
-	snapshot := RecoveryRTTSnapshot{
-		Revision:     p.recoveryRevision,
-		RTT:          estimate.RTT,
-		RTTVariation: estimate.Jitter,
-		State:        p.live.State(),
-		Present:      p.haveRTTSample,
-	}
-	if p.haveRTTSample {
-		snapshot.SampledAt = p.lastRTTSample
-		snapshot.FreshUntil = p.lastRTTSample.Add(p.live.cfg.DownAfter)
-	}
-	return snapshot
-}
-
 // PathID returns this path's stable on-wire probe stamp, set at construction and
 // immutable for the Prober's life (so it is read without the lock). It is the
 // canonical path identity the peer's Reflector keys anti-replay/session-challenge
-// on; the bind reconciles a path's DATA-frame id (pathState.id) to it across a
-// Close->Open cycle so DATA and PROBE agree and a survivor is never renumbered.
+// on; the bind reconciles a path's id (sharedPathState.id) to it across a Close->Open
+// cycle so the transport's lane ids and PROBE agree and a survivor is never renumbered.
 func (p *Prober) PathID() uint8 { return p.pathID }
 
 // SessionID returns this prober's immutable process/boot epoch.
@@ -500,8 +447,7 @@ func (r *Reflector) Reflect(raw []byte) (echo []byte, epochChanged bool, err err
 }
 
 // AcceptProbe authenticates and classifies a probe without publishing its echo.
-// This lets a receiver install contract/FEC/resequencer state before encoding
-// and admitting the corresponding ACK.
+// This lets a receiver act on the probe's payload before encoding the echo.
 func (r *Reflector) AcceptProbe(raw []byte) (AcceptedProbe, error) {
 	f, err := frame.Decode(r.psk, raw)
 	if err != nil {

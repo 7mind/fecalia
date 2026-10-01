@@ -11,16 +11,15 @@ import (
 	"github.com/7mind/wanbond/internal/config"
 	"github.com/7mind/wanbond/internal/frame"
 	"github.com/7mind/wanbond/internal/log"
-	"github.com/7mind/wanbond/internal/sched"
 	"github.com/7mind/wanbond/internal/telemetry"
 )
 
-// concPeerWiring builds ONE concentrator peer's send scheduler, boot-time per-path prober set,
-// and runtime prober factory — all keyed on psk — over paths, exactly as device.buildScheduler
-// does in production. sessionID is distinct per call so a test can prove the fan-out mints
-// genuinely per-peer probers (not shared handles), though the load-bearing per-peer distinction
-// is the psk.
-func concPeerWiring(t testing.TB, paths []config.Path, psk config.Key, sessionID uint64, clk telemetry.Clock) (sched.Scheduler, []*telemetry.Prober, ProberFactory) {
+// concPeerWiring builds ONE concentrator peer's boot-time per-path prober set and runtime
+// prober factory — both keyed on psk — over paths, exactly as device.buildProbers does in
+// production. sessionID is distinct per call so a test can prove the fan-out mints genuinely
+// per-peer probers (not shared handles), though the load-bearing per-peer distinction is the
+// psk.
+func concPeerWiring(t testing.TB, paths []config.Path, psk config.Key, sessionID uint64, clk telemetry.Clock) ([]*telemetry.Prober, ProberFactory) {
 	t.Helper()
 	lg, err := log.New("error", io.Discard)
 	if err != nil {
@@ -34,16 +33,10 @@ func concPeerWiring(t testing.TB, paths []config.Path, psk config.Key, sessionID
 		return telemetry.NewProber(name, id, sessionID, psk, cfg, clk, lg)
 	}
 	probers := make([]*telemetry.Prober, len(paths))
-	health := make([]sched.PathHealth, len(paths))
 	for i := range paths {
 		probers[i] = newProber(paths[i].Name, uint8(i), paths[i].RideThrough)
-		health[i] = probers[i]
 	}
-	scheduler, err := sched.NewActiveBackup(health, sched.Config{FailbackAfter: time.Hour}, clk, lg)
-	if err != nil {
-		t.Fatalf("build concentrator peer scheduler: %v", err)
-	}
-	return scheduler, probers, newProber
+	return probers, newProber
 }
 
 // decodesAsProbe reports whether raw decodes and MAC-verifies as a PROBE under psk. It is the
@@ -82,7 +75,7 @@ func assertProberKeyedOn(t testing.TB, who string, prober *telemetry.Prober, wan
 
 // TestConcentratorTwoPeersEachOwnWiring is the T93 acceptance: a 2-peer concentrator (the
 // primary keyed on pskA, a second peer registered via AddConcentratorPeer keyed on pskB) yields
-// two peerStates over the SAME shared socket, each with its OWN scheduler, prober set, and
+// two peerStates over the SAME shared socket, each with its OWN transport, prober set, and
 // stable virtual endpoint, and each with a per-(peer,path) view whose prober is keyed on that
 // peer's psk.
 func TestConcentratorTwoPeersEachOwnWiring(t *testing.T) {
@@ -90,10 +83,10 @@ func TestConcentratorTwoPeersEachOwnWiring(t *testing.T) {
 	pskB := testKey(t, 0x22)
 	clk := newFakeClock()
 	paths := loopbackPaths(1) // one shared socket, path "a"
-	m, primaryProbers, primarySched := newProbingMultipath(t, paths, pskA, clk)
+	m, primaryProbers := newProbingMultipath(t, paths, pskA, clk)
 
-	betaSched, betaProbers, betaFactory := concPeerWiring(t, paths, pskB, 0x0BEECAFE, clk)
-	if err := m.AddConcentratorPeer("beta", pskB, betaSched, betaProbers, betaFactory); err != nil {
+	betaProbers, betaFactory := concPeerWiring(t, paths, pskB, 0x0BEECAFE, clk)
+	if err := m.AddConcentratorPeer("beta", pskB, betaProbers, betaFactory); err != nil {
 		t.Fatalf("AddConcentratorPeer: %v", err)
 	}
 
@@ -113,12 +106,12 @@ func TestConcentratorTwoPeersEachOwnWiring(t *testing.T) {
 		t.Fatal("second peer not registered under its name")
 	}
 
-	// Distinct schedulers, prober sets, and virtual endpoints per peer.
-	if primary.scheduler != primarySched || beta.scheduler != betaSched {
-		t.Fatal("peers do not hold their own schedulers")
+	// Distinct transports, prober sets, and virtual endpoints per peer.
+	if primary.adaptive.Load() == nil || beta.adaptive.Load() == nil {
+		t.Fatal("peers do not hold their own transports")
 	}
-	if primary.scheduler == beta.scheduler {
-		t.Fatal("the two peers share ONE scheduler")
+	if primary.adaptive.Load().transport == beta.adaptive.Load().transport {
+		t.Fatal("the two peers share ONE transport")
 	}
 	if primary.virt == beta.virt {
 		t.Fatal("the two peers share ONE virtual endpoint (invariant A1: one virt per peer)")
@@ -164,10 +157,10 @@ func TestConcentratorRuntimePathFanOutPerPeerPSK(t *testing.T) {
 	pskB := testKey(t, 0x44)
 	clk := newFakeClock()
 	paths := loopbackPaths(1) // boot path "a"
-	m, _, _ := newProbingMultipath(t, paths, pskA, clk)
+	m, _ := newProbingMultipath(t, paths, pskA, clk)
 
-	betaSched, betaProbers, betaFactory := concPeerWiring(t, paths, pskB, 0x0FACE, clk)
-	if err := m.AddConcentratorPeer("beta", pskB, betaSched, betaProbers, betaFactory); err != nil {
+	betaProbers, betaFactory := concPeerWiring(t, paths, pskB, 0x0FACE, clk)
+	if err := m.AddConcentratorPeer("beta", pskB, betaProbers, betaFactory); err != nil {
 		t.Fatalf("AddConcentratorPeer: %v", err)
 	}
 	if _, _, err := m.Open(0); err != nil {
@@ -193,7 +186,7 @@ func TestConcentratorRuntimePathFanOutPerPeerPSK(t *testing.T) {
 	if pbPrimary.prober == pbBeta.prober {
 		t.Fatal("both peers share ONE runtime prober — the fan-out did not mint per-peer state")
 	}
-	// The runtime probers agree on the shared DATA-frame path-id (DATA and PROBE must agree on
+	// The runtime probers agree on the shared path-id (lanes and PROBE must agree on
 	// the wire), yet each is keyed on its OWN peer's psk (mutation-sensitive).
 	if pbPrimary.id != pbBeta.id {
 		t.Fatalf("the two peers' runtime path-ids diverge: primary=%d beta=%d", pbPrimary.id, pbBeta.id)
@@ -233,10 +226,10 @@ func TestConcentratorDeferredAddThenReopenFansPerPeerProbers(t *testing.T) {
 	pskB := testKey(t, 0x72)
 	clk := newFakeClock()
 	paths := loopbackPaths(1) // boot path "a"
-	m, _, _ := newProbingMultipath(t, paths, pskA, clk)
+	m, _ := newProbingMultipath(t, paths, pskA, clk)
 
-	betaSched, betaProbers, betaFactory := concPeerWiring(t, paths, pskB, 0x0DEFACE, clk)
-	if err := m.AddConcentratorPeer("beta", pskB, betaSched, betaProbers, betaFactory); err != nil {
+	betaProbers, betaFactory := concPeerWiring(t, paths, pskB, 0x0DEFACE, clk)
+	if err := m.AddConcentratorPeer("beta", pskB, betaProbers, betaFactory); err != nil {
 		t.Fatalf("AddConcentratorPeer: %v", err)
 	}
 	if _, _, err := m.Open(0); err != nil {
@@ -295,14 +288,14 @@ func TestConcentratorPeerRegistrationRefusedAfterOpen(t *testing.T) {
 	pskB := testKey(t, 0x66)
 	clk := newFakeClock()
 	paths := loopbackPaths(1)
-	m, _, _ := newProbingMultipath(t, paths, pskA, clk)
+	m, _ := newProbingMultipath(t, paths, pskA, clk)
 	if _, _, err := m.Open(0); err != nil {
 		t.Fatalf("Open: %v", err)
 	}
 	t.Cleanup(func() { _ = m.Close() })
 
-	betaSched, betaProbers, betaFactory := concPeerWiring(t, paths, pskB, 0x0BAD, clk)
-	if err := m.AddConcentratorPeer("beta", pskB, betaSched, betaProbers, betaFactory); err == nil {
+	betaProbers, betaFactory := concPeerWiring(t, paths, pskB, 0x0BAD, clk)
+	if err := m.AddConcentratorPeer("beta", pskB, betaProbers, betaFactory); err == nil {
 		t.Fatal("AddConcentratorPeer after Open succeeded, want refusal")
 	}
 }
@@ -317,7 +310,7 @@ func TestSetPrimaryPeerNameRenamesPrimaryAndKeepsCollisionCheckCorrect(t *testin
 	pskB := testKey(t, 0x88)
 	clk := newFakeClock()
 	paths := loopbackPaths(1)
-	m, _, _ := newProbingMultipath(t, paths, pskA, clk)
+	m, _ := newProbingMultipath(t, paths, pskA, clk)
 
 	if names := m.BoundPeerNames(); len(names) != 1 || names[0] != "" {
 		t.Fatalf("BoundPeerNames before rename = %v, want [\"\"]", names)
@@ -338,13 +331,13 @@ func TestSetPrimaryPeerNameRenamesPrimaryAndKeepsCollisionCheckCorrect(t *testin
 
 	// A later AddConcentratorPeer registration colliding with the RENAMED primary's name is
 	// refused (proves the name-collision check sees the FINAL name, not the stale "").
-	betaSched, betaProbers, betaFactory := concPeerWiring(t, paths, pskB, 0x0A1FA, clk)
-	if err := m.AddConcentratorPeer("alpha", pskB, betaSched, betaProbers, betaFactory); err == nil {
+	betaProbers, betaFactory := concPeerWiring(t, paths, pskB, 0x0A1FA, clk)
+	if err := m.AddConcentratorPeer("alpha", pskB, betaProbers, betaFactory); err == nil {
 		t.Fatal("AddConcentratorPeer with a name colliding with the renamed primary succeeded, want refusal")
 	}
 
 	// A non-colliding name registers normally, and the two peers stay independently keyed.
-	if err := m.AddConcentratorPeer("beta", pskB, betaSched, betaProbers, betaFactory); err != nil {
+	if err := m.AddConcentratorPeer("beta", pskB, betaProbers, betaFactory); err != nil {
 		t.Fatalf("AddConcentratorPeer(\"beta\"): %v", err)
 	}
 	if names := m.BoundPeerNames(); len(names) != 2 || names[0] != "alpha" || names[1] != "beta" {
@@ -362,20 +355,20 @@ func TestSetPrimaryPeerNameRejectsEmptyAfterOpenAndOnCollision(t *testing.T) {
 	clk := newFakeClock()
 	paths := loopbackPaths(1)
 
-	m, _, _ := newProbingMultipath(t, paths, pskA, clk)
+	m, _ := newProbingMultipath(t, paths, pskA, clk)
 	if err := m.SetPrimaryPeerName(""); err == nil {
 		t.Fatal("SetPrimaryPeerName(\"\") succeeded, want refusal")
 	}
 
-	betaSched, betaProbers, betaFactory := concPeerWiring(t, paths, pskB, 0x0BEEF, clk)
-	if err := m.AddConcentratorPeer("beta", pskB, betaSched, betaProbers, betaFactory); err != nil {
+	betaProbers, betaFactory := concPeerWiring(t, paths, pskB, 0x0BEEF, clk)
+	if err := m.AddConcentratorPeer("beta", pskB, betaProbers, betaFactory); err != nil {
 		t.Fatalf("AddConcentratorPeer: %v", err)
 	}
 	if err := m.SetPrimaryPeerName("beta"); err == nil {
 		t.Fatal("SetPrimaryPeerName(\"beta\") colliding with a registered peer succeeded, want refusal")
 	}
 
-	m2, _, _ := newProbingMultipath(t, paths, pskA, clk)
+	m2, _ := newProbingMultipath(t, paths, pskA, clk)
 	if _, _, err := m2.Open(0); err != nil {
 		t.Fatalf("Open: %v", err)
 	}

@@ -309,7 +309,7 @@ func (d *deviceExitHealth) healthy(name string) bool {
 }
 
 // peerTearer is the seam onto the bind's per-peer teardown: Bind.TearDownPeer frees a dead
-// configured peer's heavy state (resequencer ring, FEC buffers, demux source bindings) and
+// configured peer's heavy state (resequencer ring, demux source bindings) and
 // returns true when it actually reclaimed that state, false on a no-op (peer unknown, the
 // embedded primary, still LIVE, or already torn down). *bind.Multipath satisfies it; a fake
 // records calls in unit tests so the level-triggered wiring runs without a live bind.

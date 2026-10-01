@@ -11,39 +11,37 @@ import (
 	"github.com/7mind/wanbond/internal/telemetry"
 )
 
-// mtuResizeDwell is the debounce a LOOSENING (MTU-increasing) target must remain
-// stable for before it is applied to the live wanbond0 link (T209, defect D85),
-// reusing the scheduler's failback dwell (defaultFailbackDwell): a path flapping
-// DOWN/UP otherwise thrashes the link MTU up and back. A TIGHTENING target (a
-// smaller-PMTU path became the constraint) is applied IMMEDIATELY — running at too
-// large an MTU risks IP fragmentation / PMTUD blackholes, the very failure mode this
-// sizing exists to avoid — so only the loosening direction is debounced, exactly as
-// active-backup fails over instantly but fails back only after the dwell.
-const mtuResizeDwell = defaultFailbackDwell
+// mtuResizeDwell is how long a LOOSENING TUN-MTU target (a larger min) must hold
+// stable for before it is applied to the live wanbond0 link (T209, defect D85):
+// a path flapping DOWN/UP otherwise thrashes the link MTU up and back. A TIGHTENING
+// target (a smaller-PMTU path became the constraint) is applied IMMEDIATELY — running
+// at too large an MTU risks IP fragmentation / PMTUD blackholes, the very failure mode
+// this sizing exists to avoid — so only the loosening direction is debounced.
+const mtuResizeDwell = 5 * time.Second
 
 // pathMTUSample is one path's input to the runtime TUN-resize recompute (T209, D85):
 // its current liveness verdict and its effective outer path MTU (the per-path
 // discovered PMTU from telemetry.PMTUDiscovery once wired through the metrics Source,
 // else its configured-or-default MTU). The resizer folds the samples for every
-// configured path into min(bind.InnerMTU(pmtu, fec)) across the UP ones.
+// configured path into min(bind.InnerMTU(pmtu)) across the UP ones.
 type pathMTUSample struct {
 	state telemetry.PathState
 	pmtu  int
 }
 
-// minInnerMTU returns min(bind.InnerMTU(pmtu, fecEnabled)) across the UP paths in
+// minInnerMTU returns min(bind.InnerMTU(pmtu)) across the UP paths in
 // samples, with ok=true when at least one path is UP. With NO path UP it returns
 // ok=false and the caller keeps the current link MTU (a fully-down tunnel must not
 // resize to a degenerate value). It is a pure function so the recompute decision is
 // unit-testable with no netlink socket (the netlink apply itself is e2e-covered, T212).
-func minInnerMTU(samples []pathMTUSample, fecEnabled bool) (int, bool) {
+func minInnerMTU(samples []pathMTUSample) (int, bool) {
 	min := 0
 	ok := false
 	for _, s := range samples {
 		if s.state != telemetry.StateUp {
 			continue
 		}
-		inner := bind.InnerMTU(s.pmtu, fecEnabled)
+		inner := bind.InnerMTU(s.pmtu)
 		if !ok || inner < min {
 			min = inner
 			ok = true
@@ -61,10 +59,9 @@ func minInnerMTU(samples []pathMTUSample, fecEnabled bool) (int, bool) {
 // the initial applied value; this only adds the runtime adjustment. recompute is safe
 // for concurrent callers; all mutable fields are guarded by mu.
 type mtuResizer struct {
-	name       string
-	fecEnabled bool
-	dwell      time.Duration
-	clock      telemetry.Clock
+	name  string
+	dwell time.Duration
+	clock telemetry.Clock
 	// apply sets the live link MTU (setLinkMTU in production). A returned error is
 	// WARNed and leaves the applied value unchanged so the next recompute retries.
 	apply func(mtu int) error
@@ -81,16 +78,15 @@ type mtuResizer struct {
 
 // newMTUResizer builds the resizer for one tunnel, seeded with the boot-time TUN MTU
 // (T205) as the applied value so the first runtime change is measured against it.
-func newMTUResizer(name string, bootMTU int, fecEnabled bool, dwell time.Duration, clock telemetry.Clock, apply func(mtu int) error, gauge func(mtu int), lg log.Logger) *mtuResizer {
+func newMTUResizer(name string, bootMTU int, dwell time.Duration, clock telemetry.Clock, apply func(mtu int) error, gauge func(mtu int), lg log.Logger) *mtuResizer {
 	return &mtuResizer{
-		name:       name,
-		fecEnabled: fecEnabled,
-		dwell:      dwell,
-		clock:      clock,
-		apply:      apply,
-		gauge:      gauge,
-		log:        lg,
-		applied:    bootMTU,
+		name:    name,
+		dwell:   dwell,
+		clock:   clock,
+		apply:   apply,
+		gauge:   gauge,
+		log:     lg,
+		applied: bootMTU,
 	}
 }
 
@@ -126,7 +122,7 @@ func (r *mtuResizer) decide(samples []pathMTUSample) (int, bool) {
 	defer r.mu.Unlock()
 	now := r.clock.Now()
 
-	target, ok := minInnerMTU(samples, r.fecEnabled)
+	target, ok := minInnerMTU(samples)
 	if !ok || target == r.applied {
 		// No UP path (keep the current MTU) or already at target: cancel any pending
 		// loosen so a resolved flap does not later fire a stale apply.

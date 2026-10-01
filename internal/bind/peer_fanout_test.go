@@ -9,14 +9,13 @@ import (
 	"github.com/7mind/wanbond/internal/config"
 	"github.com/7mind/wanbond/internal/log"
 	"github.com/7mind/wanbond/internal/reseq"
-	"github.com/7mind/wanbond/internal/sched"
 	"github.com/7mind/wanbond/internal/telemetry"
 )
 
 // bindSecondPeer constructs a SECOND peerState over the SAME shared sockets an already-Open
 // Multipath holds, and binds it into m.peers/m.peersByName. It stands in for the concentrator's
 // per-peer wiring (a later G4 task) so this test can exercise the runtime shared-path fan-out
-// while >=2 peerStates are bound: it gives the peer its own DynamicScheduler, its own probe
+// while >=2 peerStates are bound: it gives the peer its own transport, its own probe
 // initiator factory + boot probers (aligned with the durable membership m.defs), and a
 // peerPathState VIEW over each currently-bound shared socket. It must run after m.Open.
 func bindSecondPeer(t testing.TB, m *Multipath, name string, psk config.Key, clk telemetry.Clock) *peerState {
@@ -40,9 +39,8 @@ func bindSecondPeer(t testing.TB, m *Multipath, name string, psk config.Key, clk
 	defer m.mu.Unlock()
 
 	// Boot probers aligned with the durable membership (m.defs), stamped with each shared
-	// socket's path-id so DATA and PROBE agree on the wire, exactly as Open does for the primary.
+	// socket's path-id so lanes and PROBE agree on the wire, exactly as Open does for the primary.
 	probers := make([]*telemetry.Prober, len(m.defs))
-	health := make([]sched.PathHealth, len(m.defs))
 	byName := make(map[string]*telemetry.Prober, len(m.defs))
 	for i := range m.defs {
 		var id uint8
@@ -52,29 +50,21 @@ func bindSecondPeer(t testing.TB, m *Multipath, name string, psk config.Key, clk
 			}
 		}
 		probers[i] = newProber(m.defs[i].Name, id, m.defs[i].RideThrough)
-		health[i] = probers[i]
 		byName[m.defs[i].Name] = probers[i]
-	}
-	scheduler, err := sched.NewActiveBackup(health, sched.Config{FailbackAfter: time.Hour}, clk, lg)
-	if err != nil {
-		t.Fatalf("build second-peer scheduler: %v", err)
 	}
 	// Build the peer through the SAME seam production uses (newPeerState), so its Reflector
 	// and every codec derive from THIS peer's psk (T84) rather than being hand-wired.
-	p := newPeerState(name, psk, scheduler, newProber, probers)
-	sendCodec, err := p.newCodec()
-	if err != nil {
-		t.Fatalf("build second-peer send codec: %v", err)
-	}
-	p.sendCodec = sendCodec
-	// A per-peer receive resequencer, exactly as Open Stores for the primary — the
-	// concentrator's per-peer wiring (a later G4 task) builds this; the helper stands in
-	// so handleInbound can route this peer's DATA stream into its OWN buffer and the
-	// engine-facing drainer can release it under this peer's virtual endpoint.
+	p := newPeerState(name, psk, newProber, probers)
+	// A per-peer receive resequencer and transport, exactly as Open builds for the
+	// primary — the concentrator's per-peer wiring (a later G4 task) builds these; the
+	// helper stands in so handleInbound can route this peer's datagram stream into its OWN
+	// buffer and the engine-facing drainer can release it under this peer's virtual endpoint.
 	p.resequencer.Store(reseq.New(resequencerWindow, resequencerTimeout, reseq.SystemClock{}))
+	if err := m.openAdaptivePeer(p); err != nil {
+		t.Fatalf("open second-peer transport: %v", err)
+	}
 	// A peerPathState VIEW over each bound shared socket, index-aligned with m.shared (which,
-	// with no deferred paths, is also aligned with m.defs) so the peer's scheduler and paths
-	// stay index-aligned exactly as the primary's do.
+	// with no deferred paths, is also aligned with m.defs) exactly as the primary's are.
 	for _, sp := range m.shared {
 		codec, cerr := p.newCodec()
 		if cerr != nil {
@@ -125,7 +115,7 @@ func peerPathByName(p *peerState, name string) *peerPathState {
 func TestMultipathSharedPathFanOutAcrossPeers(t *testing.T) {
 	psk := testKey(t, 0x41)
 	clk := newFakeClock()
-	m, _, _ := newProbingMultipath(t, loopbackPaths(1), psk, clk) // one shared path, "a"
+	m, _ := newProbingMultipath(t, loopbackPaths(1), psk, clk) // one shared path, "a"
 	if _, _, err := m.Open(0); err != nil {
 		t.Fatalf("Open: %v", err)
 	}

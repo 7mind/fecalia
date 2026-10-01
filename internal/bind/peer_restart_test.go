@@ -8,10 +8,7 @@ import (
 )
 
 func TestAdaptivePeerRestartIsReportedOnce(t *testing.T) {
-	m, _, _ := newProbingMultipath(t, loopbackPaths(1), testKey(t, 0x42), newFakeClock())
-	if err := m.EnableAdaptive(); err != nil {
-		t.Fatal(err)
-	}
+	m, _ := newProbingMultipath(t, loopbackPaths(1), testKey(t, 0x42), newFakeClock())
 	restarts := make(chan string, 4)
 	m.SetOnPeerRestart(func(peer string) { restarts <- peer })
 	if _, _, err := m.Open(0); err != nil {

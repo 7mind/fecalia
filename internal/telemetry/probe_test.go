@@ -96,25 +96,16 @@ func TestProbeEchoRTT(t *testing.T) {
 	if got := p.Estimate().RTT; got != rtt {
 		t.Fatalf("measured RTT = %v, want %v", got, rtt)
 	}
-	snapshot := p.RecoveryRTT()
-	if !snapshot.Present || snapshot.SampledAt != clk.Now() ||
-		snapshot.FreshUntil != clk.Now().Add(proberCfg().Liveness.DownAfter) {
-		t.Fatalf("recovery RTT snapshot = %+v, want injected-clock sample/freshness", snapshot)
-	}
-	if snapshot.RTT != rtt || snapshot.RTTVariation != rtt/2 {
-		t.Fatalf("recovery RTT estimate = %s/%s, want RTT/variation %s/%s",
-			snapshot.RTT, snapshot.RTTVariation, rtt, rtt/2)
-	}
-	if snapshot.Revision != 1 {
-		t.Fatalf("first authenticated RTT revision = %d, want 1", snapshot.Revision)
+	estimate := p.Estimate()
+	if estimate.Jitter != rtt/2 {
+		t.Fatalf("first-sample RTT variation = %s, want %s", estimate.Jitter, rtt/2)
 	}
 	clk.advance(time.Second)
 	if err := p.HandleEcho(echo); !errors.Is(err, ErrReplay) {
 		t.Fatalf("replayed echo = %v, want ErrReplay", err)
 	}
-	afterReplay := p.RecoveryRTT()
-	if afterReplay != snapshot {
-		t.Fatalf("replay changed recovery snapshot from %+v to %+v", snapshot, afterReplay)
+	if afterReplay := p.Estimate(); afterReplay != estimate {
+		t.Fatalf("replay changed the estimate from %+v to %+v", estimate, afterReplay)
 	}
 }
 
@@ -791,7 +782,6 @@ func TestProberDrivesLiveness(t *testing.T) {
 	if got := p.Estimate().RTT; absDuration(got-rtt) > 5*time.Millisecond {
 		t.Fatalf("RTT estimate = %v, want ~%v", got, rtt)
 	}
-	upRevision := p.RecoveryRTT().Revision
 
 	// Blackhole: no more echoes. After the detection threshold elapses, Tick marks
 	// the path down.
@@ -800,7 +790,53 @@ func TestProberDrivesLiveness(t *testing.T) {
 	if p.State() != StateDown {
 		t.Fatalf("after blackhole state = %v, want down", p.State())
 	}
-	if revision := p.RecoveryRTT().Revision; revision != upRevision+1 {
-		t.Fatalf("Down liveness revision = %d, want %d", revision, upRevision+1)
+}
+
+// TestProbePayloadRidesAuthenticatedProbeAndEcho: a payload attached to an
+// ordinary probe reaches the responder inside the authenticated probe, the
+// responder answers with a payload of its own choosing, and the originator gets
+// that payload from the fresh echo while the exchange counts as liveness.
+func TestProbePayloadRidesAuthenticatedProbeAndEcho(t *testing.T) {
+	psk := testPSK(t, 0x5C)
+	clk := newFakeClock()
+	p := newTestProber(t, psk, clk)
+	r := NewReflector(psk, newTestRand())
+
+	// An ordinary probe is a padded probe without the 2-byte PadLen field.
+	const unpaddedProbeOnWire = frame.ProbeBaseOnWire - 2
+	request := []byte("request payload")
+	response := []byte("response payload chosen by the responder")
+	for i := range proberCfg().Liveness.UpAfterSuccesses {
+		raw, sent, err := p.SendProbePayload(request)
+		if err != nil {
+			t.Fatalf("send %d: %v", i, err)
+		}
+		if len(raw) != unpaddedProbeOnWire+len(request) {
+			t.Fatalf("send %d: datagram is %d bytes, want %d", i, len(raw), unpaddedProbeOnWire+len(request))
+		}
+		accepted, err := r.AcceptProbe(raw)
+		if err != nil {
+			t.Fatalf("accept %d: %v", i, err)
+		}
+		if string(accepted.Probe.Payload) != string(request) || accepted.Probe.ProbeSeq != sent.ProbeSeq {
+			t.Fatalf("accept %d: payload %q seq %d, want %q seq %d", i, accepted.Probe.Payload, accepted.Probe.ProbeSeq, request, sent.ProbeSeq)
+		}
+		echo, err := r.EncodeAcceptedProbe(accepted, response)
+		if err != nil {
+			t.Fatalf("encode echo %d: %v", i, err)
+		}
+		fresh, err := p.HandleEchoProbe(echo)
+		if err != nil {
+			t.Fatalf("handle echo %d: %v", i, err)
+		}
+		if !fresh.IsEcho || fresh.ProbeSeq != sent.ProbeSeq || string(fresh.Payload) != string(response) {
+			t.Fatalf("echo %d: IsEcho=%v seq %d payload %q, want echo of seq %d carrying %q", i, fresh.IsEcho, fresh.ProbeSeq, fresh.Payload, sent.ProbeSeq, response)
+		}
+		if _, err := p.HandleEchoProbe(echo); !errors.Is(err, ErrReplay) {
+			t.Fatalf("replayed echo %d: got %v, want ErrReplay", i, err)
+		}
+	}
+	if p.State() != StateUp {
+		t.Fatalf("liveness after payload-carrying exchanges = %v, want up", p.State())
 	}
 }

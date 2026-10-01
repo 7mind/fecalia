@@ -8,8 +8,7 @@ import (
 // defaultLivenessDownAfter mirrors telemetry.DefaultDownAfter (T203, D86 decision
 // 3): internal/telemetry imports internal/config (probe.go), so config cannot
 // import telemetry without a cycle — the value is restated here with this
-// cross-reference, mirroring the defaultAdaptiveSafetyFactor/
-// defaultAvgWireFrameBytes precedent elsewhere in this package. Applied by
+// cross-reference. Applied by
 // Liveness.applyDefaults when down_after is left unset, so an existing config
 // with no [liveness] block keeps today's fixed 1200ms detection threshold
 // byte-for-byte.
@@ -60,10 +59,9 @@ func livenessFailoverBudget(downAfter, rideThrough, probeInterval time.Duration)
 // 3): down_after is the silence duration that marks an UP path DOWN,
 // overriding the compiled-in telemetry.DefaultDownAfter. An ABSENT [liveness]
 // block is INERT — DownAfter defaults to defaultLivenessDownAfter, byte-
-// identical to today's hardcoded behaviour. This task (T203) adds ONLY the
-// config surface (parse + default + validate); plumbing DownAfter into the
-// running scheduler is T207's job — internal/device/device.go and
-// internal/telemetry/liveness.go are untouched here.
+// identical to today's hardcoded behaviour. This file (T203) holds the
+// config surface (parse + default + validate); device.proberConfigForPath
+// plumbs DownAfter into each path's Prober (T207).
 type Liveness struct {
 	// DownAfter is the silence duration that marks an UP path DOWN, parsed from
 	// DownAfterRaw in applyDefaults. Defaults to defaultLivenessDownAfter when
@@ -71,15 +69,14 @@ type Liveness struct {
 	// defaulting (validate).
 	DownAfter time.Duration `toml:"-"`
 	// DownAfterRaw is the TOML Go-duration string form of DownAfter, e.g.
-	// "1200ms" / "2s" (mirrors FEC.DeadlineRaw, config.go:410-458 — go-toml/v2
+	// "1200ms" / "2s" (go-toml/v2
 	// cannot decode a TOML string directly into a bare time.Duration field).
 	// Parsed in applyDefaults; an unparseable value fails fast.
 	DownAfterRaw string `toml:"down_after"`
 }
 
 // applyDefaults fills DownAfter from DownAfterRaw, defaulting to
-// defaultLivenessDownAfter when left empty — mirroring DNS.applyDefaults /
-// FEC.parseDurations+applyDefaults. Only the parse itself is fail-fast here
+// defaultLivenessDownAfter when left empty — mirroring DNS.applyDefaults. Only the parse itself is fail-fast here
 // (unparseable duration syntax); the >0/floor range checks stay in validate,
 // unchanged, matching the rest of this package's *Raw-field convention.
 func (l *Liveness) applyDefaults() error {

@@ -60,7 +60,7 @@ def main():
     output.mkdir()
     profile = profile_from(args.profile)
     apply_profile(lab, profile)
-    provision(lab, args.binary, "adaptive")
+    provision(lab, args.binary)
     summary = {"binary_sha256": hashlib.sha256(args.binary.read_bytes()).hexdigest(), "profile": profile,
                "warmup_seconds": args.warmup, "measurement_seconds": args.seconds, "idle_seconds": args.idle_seconds}
     capacity = {}

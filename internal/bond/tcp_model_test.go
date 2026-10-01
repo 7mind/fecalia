@@ -181,7 +181,6 @@ func (m tcpTransfer) run(t *testing.T) tcpOutcome {
 		p.SetRemote(peers[1-side].Epoch(), true)
 	}
 	resequencer := reseq.New(modelResequencerWindow, modelResequencerTimeout, clock)
-	resequencer.SetMultiPathExpected(true)
 	resequencer.SetHoldBound(modelResequencerHold)
 	source := netip.MustParseAddrPort("192.0.2.1:51820")
 	wire := &events{}

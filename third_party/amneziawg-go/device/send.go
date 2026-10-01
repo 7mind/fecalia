@@ -54,15 +54,14 @@ type QueueOutboundElement struct {
 	keypair     *Keypair              // keypair for encryption
 	peer        *Peer                 // related peer
 	padding     uint32
-	trailing    int // zero bytes appended before encryption, fixed at admission
+	trailing    int // zero bytes appended before encryption, fixed at staging
 	isKeepalive bool
 	metadata    conn.PacketMetadata
 }
 
 type QueueOutboundElementsContainer struct {
 	sync.Mutex
-	elems       []*QueueOutboundElement
-	reservation *outboundAdmissionReservation
+	elems []*QueueOutboundElement
 }
 
 func (device *Device) NewOutboundElement() *QueueOutboundElement {
@@ -509,21 +508,9 @@ top:
 			// add to parallel and sequential queue
 			if peer.isRunning.Load() {
 				mtu := int(peer.device.tun.mtu.Load())
-				var wireBytes int64
 				for _, elem := range elemsContainer.elems {
 					elem.trailing = peer.transportPaddingSize(elem, mtu)
-					wireBytes += int64(int(elem.padding) + MessageTransportSize + len(elem.packet) + elem.trailing)
 				}
-				reservation, admitted := peer.outboundAdmission.reserve(wireBytes)
-				if !admitted {
-					for _, elem := range elemsContainer.elems {
-						peer.device.PutMessageBuffer(elem.buffer)
-						peer.device.PutOutboundElement(elem)
-					}
-					peer.device.PutOutboundElementsContainer(elemsContainer)
-					return
-				}
-				elemsContainer.reservation = reservation
 				peer.queue.outbound.c <- elemsContainer
 				peer.device.outbound.recordPeerQueueDepth(len(peer.queue.outbound.c))
 				peer.device.queue.encryption.c <- elemsContainer
@@ -562,8 +549,7 @@ func (peer *Peer) FlushStagedPackets() {
 	}
 }
 
-// transportPaddingSize chooses the trailing padding before admission so the
-// reserved bytes equal the encrypted datagram. It runs in staging order, which
+// transportPaddingSize chooses the trailing padding. It runs in staging order, which
 // preserves the udpWindow observation order of the encryption worker it replaces.
 func (peer *Peer) transportPaddingSize(elem *QueueOutboundElement, mtu int) int {
 	udpWindow := elem.padding + MinMessageSize + uint32(len(elem.packet))
@@ -733,7 +719,6 @@ func (peer *Peer) RoutineSequentialSender(maxBatchSize int) {
 				device.PutMessageBuffer(elem.buffer)
 				device.PutOutboundElement(elem)
 			}
-			elemsContainer.releaseOutboundAdmission()
 			device.PutOutboundElementsContainer(elemsContainer)
 			continue
 		}
@@ -759,8 +744,7 @@ func (peer *Peer) RoutineSequentialSender(maxBatchSize int) {
 		peer.timersAnyAuthenticatedPacketTraversal()
 		peer.timersAnyAuthenticatedPacketSent()
 
-		completion := elemsContainer.takeOutboundAdmissionCompletion()
-		err := peer.sendBuffers(bufs, metadata, completion)
+		err := peer.sendBuffers(bufs, metadata)
 		device.outbound.addActiveSend(-int64(len(bufs)), -int64(batchBytes))
 		if dataSent {
 			peer.timersDataSent()

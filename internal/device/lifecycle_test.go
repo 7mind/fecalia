@@ -7,7 +7,6 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
-	"net"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -22,7 +21,7 @@ import (
 	"github.com/7mind/wanbond/internal/bind"
 	"github.com/7mind/wanbond/internal/config"
 	"github.com/7mind/wanbond/internal/dnsresolve"
-	"github.com/7mind/wanbond/internal/sched"
+	"github.com/7mind/wanbond/internal/log"
 	"github.com/7mind/wanbond/internal/telemetry"
 )
 
@@ -284,29 +283,50 @@ func TestCloseStopsResolutionLoopNoLeak(t *testing.T) {
 // socket). A hostname-only peer boots endpoint-less; the first successful resolve must (a) INSTALL
 // the resolved endpoint on the engine peer via the UAPI/IpcSet path — so the engine peer reports it
 // through UAPI get — AND (b) rehandshake, so a real handshake initiation actually egresses toward
-// the resolved address (observed at a loopback listener). A fake-rehandshake-counter increment
-// alone is NOT sufficient (R70): SetPeerRemote never populates the engine peer endpoint, so without
-// the install the initiation would have no endpoint to transmit to.
+// the resolved address (observed as a completed handshake at a real concentrator listening there:
+// the transport carries application datagrams only after its authenticated hello exchange, so a
+// bare UDP listener cannot observe one). A fake-rehandshake-counter increment alone is NOT
+// sufficient (R70): SetPeerRemote never populates the engine peer endpoint, so without the install
+// the initiation would have no endpoint to transmit to.
 func TestFirstResolveInstallsEndpointAndInitiatesHandshake(t *testing.T) {
 	lg := discardLogger(t)
 
-	// A loopback UDP listener stands in for the resolved concentrator address.
-	conc, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	edgePrivRaw, edgePubRaw := genX25519(t)
+	hubPrivRaw, hubPubRaw := genX25519(t)
+	pskRaw := mustRandom(t, 32)
+	b64 := base64.StdEncoding.EncodeToString
+
+	// A real concentrator stands in for the resolved address: it answers the edge's probes with
+	// its hello and terminates the handshake the edge initiates.
+	concPort := freeLoopbackUDPPorts(t, 1)[0]
+	concAP := netip.AddrPortFrom(netip.MustParseAddr("127.0.0.1"), uint16(concPort))
+	concCfg := writeLoadedConfig(t, "conc.toml", fmt.Sprintf(`role = "concentrator"
+psk = "%s"
+
+[[paths]]
+name = "a"
+source_addr = "127.0.0.1"
+
+[wireguard]
+private_key = "%s"
+listen_port = %d
+
+[[wireguard.peers]]
+public_key = "%s"
+allowed_ips = ["10.0.0.0/24"]
+`, b64(pskRaw), b64(hubPrivRaw), concPort, b64(edgePubRaw)))
+	inert := func() (dnsresolve.Resolver, error) { return &dnsresolve.FakeResolver{}, nil }
+	conc, err := up(concCfg, lg, tuntest.NewChannelTUN().TUN(), "wbfrc0", inert, "test")
 	if err != nil {
-		t.Fatalf("listen concentrator socket: %v", err)
+		t.Fatalf("up concentrator: %v", err)
 	}
 	defer conc.Close()
-	concAP := netip.MustParseAddrPort(conc.LocalAddr().String())
 
-	// Real multipath bind over one loopback path with an AlwaysUp scheduler, so the scheduler never
-	// gates the initiation (a real prober would boot DOWN with no responder and Send would drop it).
-	psk := keyFromRaw(t, mustRandom(t, 32))
+	// Real multipath bind over one loopback path. Its probe loop runs so the transport completes
+	// its hello exchange with the concentrator once the resolved endpoint is installed.
+	psk := keyFromRaw(t, pskRaw)
 	paths := []config.Path{{Name: "a", SourceAddr: netip.MustParseAddr("127.0.0.1")}}
-	scheduler, err := sched.NewActiveBackup([]sched.PathHealth{sched.AlwaysUp{}}, sched.Config{FailbackAfter: time.Second}, telemetry.SystemClock{}, lg)
-	if err != nil {
-		t.Fatalf("build scheduler: %v", err)
-	}
-	mp, err := bind.NewMultipath(paths, psk, scheduler, nil, nil, nil, nil, config.Amnezia{}, lg)
+	mp, err := bind.NewMultipath(paths, psk, testProbers(paths, psk, lg), nil, lg)
 	if err != nil {
 		t.Fatalf("build multipath bind: %v", err)
 	}
@@ -316,8 +336,6 @@ func TestFirstResolveInstallsEndpointAndInitiatesHandshake(t *testing.T) {
 	dev := awgdevice.NewDevice(chtun.TUN(), mp, engineLogger(lg, "error", mp.EverHadLivePath))
 	defer dev.Close()
 
-	edgePrivRaw, _ := genX25519(t)
-	_, hubPubRaw := genX25519(t)
 	var uapi strings.Builder
 	fmt.Fprintf(&uapi, "private_key=%s\n", hex.EncodeToString(edgePrivRaw))
 	fmt.Fprintf(&uapi, "public_key=%s\n", hex.EncodeToString(hubPubRaw))
@@ -328,6 +346,7 @@ func TestFirstResolveInstallsEndpointAndInitiatesHandshake(t *testing.T) {
 	if err := dev.Up(); err != nil {
 		t.Fatalf("dev.Up: %v", err)
 	}
+	defer mp.StartProbeLoop(telemetry.DefaultProbeInterval)()
 
 	// The controller as the device wires it: install to the engine peer's UAPI endpoint path,
 	// rehandshake to the engine peer, repoint to the bind. A single hostname spec, EMPTY at boot.
@@ -356,17 +375,26 @@ func TestFirstResolveInstallsEndpointAndInitiatesHandshake(t *testing.T) {
 		t.Fatalf("engine peer endpoint not installed on first resolve, want endpoint=%s:\n%s", concAP, after)
 	}
 
-	// (b) A real handshake initiation actually egressed toward the resolved address.
-	if err := conc.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
-		t.Fatalf("set read deadline: %v", err)
-	}
-	buf := make([]byte, 4096)
-	n, from, err := conc.ReadFromUDPAddrPort(buf)
-	if err != nil {
-		t.Fatalf("no handshake initiation observed at the resolved address %s (R70: install alone is not enough — the rehandshake must egress): %v", concAP, err)
-	}
-	if n == 0 {
-		t.Fatalf("observed a zero-length datagram from %s, want a framed handshake initiation", from)
+	// (b) A real handshake initiation actually egressed toward the resolved address: the
+	// concentrator listening there completes a handshake with the edge. Nothing else initiates
+	// one — this hand-wired edge has no first-path-up trigger and no persistent keepalive. The
+	// initiation issued at install time precedes the hello exchange and outlives the transport's
+	// queue-age bound, so the one that lands is the engine's retransmission (awgdevice.RekeyTimeout
+	// later); the budget covers it.
+	edgeHex := hex.EncodeToString(edgePubRaw)
+	deadline := time.Now().Add(2 * awgdevice.RekeyTimeout)
+	for {
+		dump, err := conc.dev.IpcGet()
+		if err != nil {
+			t.Fatalf("concentrator IpcGet: %v", err)
+		}
+		if perPeerHandshakeNano(dump)[edgeHex] > 0 {
+			break
+		}
+		if !time.Now().Before(deadline) {
+			t.Fatalf("no handshake completed at the resolved address %s (R70: install alone is not enough — the rehandshake must egress):\n%s", concAP, dump)
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }
 
@@ -419,6 +447,15 @@ func TestUpFirstResolveInstallsEndpointThroughProductionWiring(t *testing.T) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
+}
+
+// testProbers builds one boot-time prober per path keyed on psk, exactly as buildProbers
+// does for a loaded config with the default liveness thresholds. The session id is fixed:
+// a test bind never restarts within one test.
+func testProbers(paths []config.Path, psk config.Key, lg log.Logger) []*telemetry.Prober {
+	cfg := &config.Config{Paths: paths, Liveness: config.Liveness{DownAfter: telemetry.DefaultDownAfter}}
+	probers, _ := buildProbers(cfg, psk, 1, lg)
+	return probers
 }
 
 // mustRandom returns n random bytes or fails the test.

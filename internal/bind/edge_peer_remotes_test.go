@@ -17,10 +17,10 @@ func TestSeedEdgePeerRemotesRoutesEachPeerToOwnHub(t *testing.T) {
 	pskB := testKey(t, 0x22)
 	clk := newFakeClock()
 	paths := loopbackPaths(2) // two shared sockets ("a","b"), fanned out to both peers
-	m, _, _ := newProbingMultipath(t, paths, pskA, clk)
+	m, _ := newProbingMultipath(t, paths, pskA, clk)
 
-	betaSched, betaProbers, betaFactory := concPeerWiring(t, paths, pskB, 0x0BEECAFE, clk)
-	if err := m.AddConcentratorPeer("beta", pskB, betaSched, betaProbers, betaFactory); err != nil {
+	betaProbers, betaFactory := concPeerWiring(t, paths, pskB, 0x0BEECAFE, clk)
+	if err := m.AddConcentratorPeer("beta", pskB, betaProbers, betaFactory); err != nil {
 		t.Fatalf("AddConcentratorPeer: %v", err)
 	}
 
@@ -86,7 +86,7 @@ func TestSeedEdgePeerRemotesRoutesEachPeerToOwnHub(t *testing.T) {
 func TestSeedEdgePeerRemotesLengthMismatch(t *testing.T) {
 	pskA := testKey(t, 0x33)
 	clk := newFakeClock()
-	m, _, _ := newProbingMultipath(t, loopbackPaths(1), pskA, clk) // one (primary) peer
+	m, _ := newProbingMultipath(t, loopbackPaths(1), pskA, clk) // one (primary) peer
 
 	err := m.SeedEdgePeerRemotes([]netip.AddrPort{
 		netip.MustParseAddrPort("203.0.113.1:51820"),

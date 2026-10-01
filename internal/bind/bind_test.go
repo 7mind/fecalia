@@ -3,8 +3,10 @@ package bind
 import (
 	"bytes"
 	"encoding/base64"
+	"encoding/binary"
 	"errors"
 	"io"
+	"maps"
 	"net"
 	"net/netip"
 	"sync"
@@ -12,34 +14,27 @@ import (
 	"testing"
 	"time"
 
+	"github.com/7mind/wanbond/internal/bond"
 	"github.com/7mind/wanbond/internal/config"
 	"github.com/7mind/wanbond/internal/frame"
 	"github.com/7mind/wanbond/internal/log"
-	"github.com/7mind/wanbond/internal/sched"
 	"github.com/7mind/wanbond/internal/telemetry"
 )
 
-// newMultipath builds a Multipath over paths with a default active-backup
-// scheduler whose paths are all statically Up, so path selection reduces to the
-// preferred primary (index 0) — the T12 send behaviour these tests assert. The
-// scheduler's own failover/hysteresis logic is exercised in internal/sched. It
-// passes no probers, so the probe transport is inert here (exercised separately
-// in probe_test.go).
+// newMultipath builds a Multipath over paths with one wall-clock prober per path and
+// no runtime prober factory, so nothing drives the probers unless a test does: the
+// probe transport is exercised separately in probe_test.go.
 func newMultipath(t testing.TB, paths []config.Path, psk config.Key) (*Multipath, error) {
 	t.Helper()
-	health := make([]sched.PathHealth, len(paths))
-	for i := range health {
-		health[i] = sched.AlwaysUp{}
-	}
 	lg, err := log.New("error", io.Discard)
 	if err != nil {
 		t.Fatalf("build logger: %v", err)
 	}
-	scheduler, err := sched.NewActiveBackup(health, sched.Config{FailbackAfter: time.Second}, telemetry.SystemClock{}, lg)
-	if err != nil {
-		t.Fatalf("build scheduler: %v", err)
+	probers := make([]*telemetry.Prober, len(paths))
+	for i := range paths {
+		probers[i] = telemetry.NewProber(paths[i].Name, uint8(i), testProbeSessionID, psk, telemetry.ProberConfig{}, telemetry.SystemClock{}, lg)
 	}
-	return NewMultipath(paths, psk, scheduler, nil, nil, nil, nil, config.Amnezia{}, lg)
+	return NewMultipath(paths, psk, probers, nil, lg)
 }
 
 // testKey builds a valid 32-byte config.Key seeded by b.
@@ -66,38 +61,176 @@ func loopbackPaths(n int) []config.Path {
 	return paths
 }
 
-// sendDataTo encodes a DATA frame under psk and sends it from a fresh client
-// socket to dst, returning the client's local AddrPort so the test can assert the
-// path learned it.
-func sendDataTo(t testing.TB, psk config.Key, dst *net.UDPAddr, pathID uint8, payload []byte) netip.AddrPort {
+// remoteTransport stands in for the adaptive transport of the process at the far end of
+// one bind peer. It builds the data frames that process would send, in the layout of
+// internal/bond/wire.go, so a test chooses the lane, the arrival order and the class of
+// every datagram; a real bond.Transport paces and waits for acknowledgements instead.
+type remoteTransport struct {
+	t     testing.TB
+	local *adaptivePeer
+	epoch bond.Epoch
+	codec *frame.Codec
+	// path is the far end's own path id: the one its hellos announce and its lanes are
+	// numbered by.
+	path uint8
+	sent *remoteSequences
+}
+
+// remoteSequences is the sequence state of one remote process, shared by all its paths.
+type remoteSequences struct {
+	attempts   map[bond.PathID]uint64
+	seq        uint64
+	bulkOrder  uint64
+	smallOrder uint64
+}
+
+// remoteInteractiveBit marks a delivery order as belonging to the small-datagram class.
+const remoteInteractiveBit uint64 = 1 << 63
+
+// newRemoteTransport returns the far end of peer's transport, running as process boot
+// and sending from its path 0. The bind must be open.
+func newRemoteTransport(t testing.TB, peer *peerState, boot uint64) *remoteTransport {
 	t.Helper()
+	local := peer.adaptive.Load()
+	if local == nil {
+		t.Fatal("peer has no open transport")
+	}
+	codec, err := peer.newCodec()
+	if err != nil {
+		t.Fatalf("new codec: %v", err)
+	}
+	return &remoteTransport{
+		t:     t,
+		local: local,
+		epoch: bond.Epoch{Boot: boot, Generation: 1},
+		codec: codec,
+		sent:  &remoteSequences{attempts: make(map[bond.PathID]uint64)},
+	}
+}
+
+// onPath returns the same process sending from another of its paths.
+func (r *remoteTransport) onPath(path uint8) *remoteTransport {
+	c := *r
+	c.path = path
+	return &c
+}
+
+// clone returns a copy that continues from the same sequence state. A frame the bind is
+// expected to drop before the transport sees it is built from a clone, so it consumes no
+// sequence of the original: had it not been dropped, it would be delivered.
+func (r *remoteTransport) clone() *remoteTransport {
+	c := *r
+	sent := *r.sent
+	sent.attempts = maps.Clone(r.sent.attempts)
+	c.sent = &sent
+	return &c
+}
+
+func (r *remoteTransport) hello() []byte {
+	return bond.Hello(r.epoch, r.path)
+}
+
+// join makes the local transport learn a lane to this process on view at src, as the
+// adopted hello of an authenticated probe exchange does. Repeating it renews the lane.
+func (r *remoteTransport) join(view *peerPathState, src netip.AddrPort) {
+	r.local.learn(view, src, r.hello(), true)
+}
+
+func (r *remoteTransport) data(view *peerPathState, order uint64, payload []byte) frame.Control {
+	lane := bond.PathID(uint16(r.path)<<8 | uint16(view.id))
+	r.sent.attempts[lane]++
+	r.sent.seq++
+	local := r.local.transport.Epoch()
+	b := []byte{bond.Version}
+	for _, value := range []uint64{r.epoch.Boot, r.epoch.Generation} {
+		b = binary.BigEndian.AppendUint64(b, value)
+	}
+	b = binary.BigEndian.AppendUint16(b, uint16(lane))
+	for _, value := range []uint64{local.Boot, local.Generation, r.sent.seq, order} {
+		b = binary.BigEndian.AppendUint64(b, value)
+	}
+	return frame.Control{ControlType: bond.DataType, Seq: r.sent.attempts[lane], Payload: append(b, payload...)}
+}
+
+// bulk is the next datagram of the ordered class on view's lane: the receiver holds it
+// in the resequencer until every earlier one has arrived or its gap has expired.
+func (r *remoteTransport) bulk(view *peerPathState, payload []byte) frame.Control {
+	r.sent.bulkOrder++
+	return r.data(view, r.sent.bulkOrder, payload)
+}
+
+// small is the next datagram of the small class on view's lane: the receiver delivers
+// it at once.
+func (r *remoteTransport) small(view *peerPathState, payload []byte) frame.Control {
+	r.sent.smallOrder++
+	return r.data(view, r.sent.smallOrder|remoteInteractiveBit, payload)
+}
+
+func (r *remoteTransport) wire(f frame.Control) []byte {
+	r.t.Helper()
+	raw, err := r.codec.Encode(nil, f)
+	if err != nil {
+		r.t.Fatalf("encode transport frame: %v", err)
+	}
+	return raw
+}
+
+// dialPath returns a client socket connected to view's socket, and its local address.
+func dialPath(t testing.TB, view *peerPathState) (*net.UDPConn, netip.AddrPort) {
+	t.Helper()
+	dst := view.conn.LocalAddr().(*net.UDPAddr)
 	cl, err := net.DialUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1")}, dst)
 	if err != nil {
 		t.Fatalf("dial %s: %v", dst, err)
 	}
-	defer cl.Close()
-	codec, err := frame.NewCodec(psk)
+	t.Cleanup(func() { _ = cl.Close() })
+	return cl, cl.LocalAddr().(*net.UDPAddr).AddrPort()
+}
+
+// receiveOne blocks on the engine-facing receive func for one datagram.
+func receiveOne(t testing.TB, fn ReceiveFunc) ([]byte, Endpoint) {
+	t.Helper()
+	bufs := [][]byte{make([]byte, 2048)}
+	sizes := make([]int, 1)
+	eps := make([]Endpoint, 1)
+	n, err := fn(bufs, sizes, eps)
 	if err != nil {
-		t.Fatalf("new codec: %v", err)
+		t.Fatalf("receive: %v", err)
 	}
-	wire, err := codec.Encode(nil, frame.Data{OuterSeq: uint64(pathID), PathID: pathID, Payload: payload})
-	if err != nil {
-		t.Fatalf("encode: %v", err)
+	if n != 1 {
+		t.Fatalf("receive: got n=%d, want 1", n)
 	}
-	if _, err := cl.Write(wire); err != nil {
-		t.Fatalf("write: %v", err)
+	return bufs[0][:sizes[0]], eps[0]
+}
+
+// readTransportData reads peer until it holds a transport data frame carrying a
+// datagram, skipping the transport's lane keepalives and acknowledgements, and
+// returns the frame with its on-wire size.
+func readTransportData(t testing.TB, peer *net.UDPConn, codec *frame.Codec) (frame.Control, int) {
+	t.Helper()
+	if err := peer.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatalf("set read deadline: %v", err)
 	}
-	return cl.LocalAddr().(*net.UDPAddr).AddrPort()
+	buf := make([]byte, maxDatagram)
+	for {
+		n, err := peer.Read(buf)
+		if err != nil {
+			t.Fatalf("read transport data: %v", err)
+		}
+		fr, err := codec.Decode(buf[:n])
+		if err != nil {
+			t.Fatalf("decode wire: %v", err)
+		}
+		control, ok := fr.(frame.Control)
+		if ok && control.ControlType == bond.DataType && n > bond.Overhead {
+			return control, n
+		}
+	}
 }
 
 // TestMultipathVirtualEndpointIdentity is the core §3 invariant: N per-path
 // sockets deliver received datagrams under ONE stable virtual endpoint, so the
 // engine never observes per-packet endpoint churn.
-//
-// Note it does NOT assert per-path remote learning from these DATA frames: after
-// D9, remote-learning is authenticated-only (from PROBE/echo frames), so a DATA
-// frame no longer teaches a path its return remote — that is asserted in
-// probe_test.go (TestMultipathRemoteLearnedFromProbeNotData).
 func TestMultipathVirtualEndpointIdentity(t *testing.T) {
 	psk := testKey(t, 0x5A)
 	m, err := newMultipath(t, loopbackPaths(2), psk)
@@ -117,37 +250,23 @@ func TestMultipathVirtualEndpointIdentity(t *testing.T) {
 	}
 	fn := fns[0]
 
-	// Send a DATA frame to EACH path's socket (OuterSeq i on path i); the Bind-owned
-	// readers read them and feed the shared resequencer, and the single drainer
-	// delivers both — under the SAME virtual endpoint.
-	//
-	// INTERLEAVE send+receive per path (defect D19): the two paths are read by
-	// INDEPENDENT reader goroutines with NO cross-path arrival ordering. If both
-	// frames were sent up front and OuterSeq 1 happened to be observed first, the
-	// resequencer would pin its release point to 1 and drop the later OuterSeq 0 as
-	// late — the second receive would then block forever. Sending OuterSeq i and
-	// receiving it before sending OuterSeq i+1 pins the release point deterministically
-	// (0 then 1), so both frames are delivered in order regardless of reader scheduling.
+	// Send a transport datagram to EACH path's socket, each from its own source; the
+	// Bind-owned readers hand them to the transport, and the single drainer delivers
+	// both — under the SAME virtual endpoint.
+	remote := newRemoteTransport(t, m.peerState, 987)
 	payload := []byte("opaque-wireguard-datagram")
 	var gotEps []Endpoint
 	for i := 0; i < 2; i++ {
-		dst := m.paths[i].conn.LocalAddr().(*net.UDPAddr)
-		sendDataTo(t, psk, dst, uint8(i), payload)
-
-		bufs := [][]byte{make([]byte, 2048)}
-		sizes := make([]int, 1)
-		eps := make([]Endpoint, 1)
-		n, err := fn(bufs, sizes, eps)
-		if err != nil {
-			t.Fatalf("receive %d: %v", i, err)
+		cl, src := dialPath(t, m.paths[i])
+		remote.join(m.paths[i], src)
+		if _, err := cl.Write(remote.wire(remote.small(m.paths[i], payload))); err != nil {
+			t.Fatalf("write %d: %v", i, err)
 		}
-		if n != 1 {
-			t.Fatalf("receive %d: got n=%d, want 1", i, n)
+		got, ep := receiveOne(t, fn)
+		if !bytes.Equal(got, payload) {
+			t.Fatalf("receive %d: inner payload = %q, want %q", i, got, payload)
 		}
-		if !bytes.Equal(bufs[0][:sizes[0]], payload) {
-			t.Fatalf("receive %d: inner payload = %q, want %q", i, bufs[0][:sizes[0]], payload)
-		}
-		gotEps = append(gotEps, eps[0])
+		gotEps = append(gotEps, ep)
 	}
 
 	// Virtual-endpoint identity: both delivered frames carried the SAME endpoint.
@@ -311,9 +430,9 @@ func TestMultipathDestAddrOverridesDefault(t *testing.T) {
 	}
 }
 
-// TestMultipathSendPicksHealthyPath round-trips a datagram: with only path 1
-// carrying a remote, Send must route over path 1 (first healthy path with a known
-// remote), wrap it in a DATA frame, and the wire must decode back to the payload.
+// TestMultipathSendRoutesAndFrames round-trips a datagram: Send hands it to the
+// transport, which sends it over the lane a hello established, wrapped in a transport
+// data frame of exactly bond.Overhead bytes, and the wire decodes back to the payload.
 func TestMultipathSendRoutesAndFrames(t *testing.T) {
 	psk := testKey(t, 0x44)
 	m, err := newMultipath(t, loopbackPaths(2), psk)
@@ -326,112 +445,70 @@ func TestMultipathSendRoutesAndFrames(t *testing.T) {
 	t.Cleanup(func() { _ = m.Close() })
 
 	// A receiver socket standing in for the remote peer.
-	peer, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1")})
-	if err != nil {
-		t.Fatalf("listen peer: %v", err)
-	}
-	defer peer.Close()
-	peerAP := peer.LocalAddr().(*net.UDPAddr).AddrPort()
+	peer, peerAP := rawPeer(t)
 
-	// Only path 0 gets a remote → Send must choose it.
-	m.paths[0].setRemote(peerAP)
+	// Only path 0 gets a lane → the transport must send over it.
+	newRemoteTransport(t, m.peerState, 987).join(m.paths[0], peerAP)
 
 	payload := []byte("inner-wg-bytes")
 	if err := m.Send([][]byte{payload}, m.virt); err != nil {
 		t.Fatalf("Send: %v", err)
 	}
 
-	buf := make([]byte, maxDatagram)
-	n, err := peer.Read(buf)
-	if err != nil {
-		t.Fatalf("peer read: %v", err)
-	}
 	codec, _ := frame.NewCodec(psk)
-	fr, err := codec.Decode(buf[:n])
-	if err != nil {
-		t.Fatalf("decode wire: %v", err)
+	data, onWire := readTransportData(t, peer, codec)
+	if data.Seq == 0 {
+		t.Errorf("data frame lane sequence = 0, want a populated own sequence")
 	}
-	data, ok := fr.(frame.Data)
-	if !ok {
-		t.Fatalf("wire frame is %T, want frame.Data", fr)
+	if !bytes.HasSuffix(data.Payload, payload) {
+		t.Errorf("data frame payload = %x, want it to end in %q", data.Payload, payload)
 	}
-	if data.PathID != 0 {
-		t.Errorf("DATA path-id = %d, want 0", data.PathID)
+	if onWire != len(payload)+bond.Overhead {
+		t.Errorf("data frame is %d bytes on the wire, want payload %d + bond.Overhead %d", onWire, len(payload), bond.Overhead)
 	}
-	if data.OuterSeq == 0 {
-		t.Errorf("DATA outer-seq = 0, want a populated own sequence")
-	}
-	if !bytes.Equal(data.Payload, payload) {
-		t.Errorf("DATA payload = %q, want %q", data.Payload, payload)
+	if got := m.paths[1].txBytes.Load(); got != 0 {
+		t.Errorf("path 1 without a lane wrote %d bytes, want 0", got)
 	}
 }
 
-// TestMultipathSendNoHealthyPath: with no path holding a remote, Send fails
-// rather than silently dropping.
-func TestMultipathSendNoHealthyPath(t *testing.T) {
+// TestMultipathSendWaitsForHello: a closed bind refuses a Send rather than silently
+// dropping it; an open one accepts it before any lane exists, writes nothing, and sends
+// the waiting datagram once a hello has established a lane.
+func TestMultipathSendWaitsForHello(t *testing.T) {
 	psk := testKey(t, 0x55)
 	m, err := newMultipath(t, loopbackPaths(1), psk)
 	if err != nil {
 		t.Fatalf("NewMultipath: %v", err)
 	}
+	payload := bytes.Repeat([]byte{0x5A}, 1000)
+	if err := m.Send([][]byte{payload}, m.virt); !errors.Is(err, net.ErrClosed) {
+		t.Fatalf("Send on a bind that was never opened = %v, want net.ErrClosed", err)
+	}
 	if _, _, err := m.Open(0); err != nil {
 		t.Fatalf("Open: %v", err)
 	}
 	t.Cleanup(func() { _ = m.Close() })
-	if err := m.Send([][]byte{[]byte("x")}, m.virt); err == nil {
-		t.Fatal("Send with no remote-bearing path succeeded, want error")
-	}
-}
 
-// stubScheduler returns a fixed Pick value (and a no-op Recompute), to exercise
-// Send's negative-sentinel mapping without a live liveness machine.
-type stubScheduler struct{ pick int }
-
-func (s stubScheduler) Pick(_ sched.FrameClass, _ int) int { return s.pick }
-func (s stubScheduler) SelectPath() int                    { return s.pick }
-func (s stubScheduler) Recompute()                         {}
-func (s stubScheduler) DataPaths() []sched.DataPath        { return nil }
-
-// TestMultipathSendPacerSheddingDistinct: a PickPaced shed (paths healthy, rate
-// limited) maps to errPacerShedding, DISTINCT from the ErrNoHealthyPath a PickNone
-// outage yields, so operator logs and the e2e log-grep harness can tell deliberate
-// pacer shedding from total path failure (criticism #3). The drop behavior is
-// identical (Send returns an error and the datagram is not sent) — only the error, and
-// thus the diagnostic, differs.
-func TestMultipathSendPacerSheddingDistinct(t *testing.T) {
-	psk := testKey(t, 0x5A)
-	cases := []struct {
-		name string
-		pick int
-		want error
-	}{
-		{"paced shed", sched.PickPaced, errPacerShedding},
-		{"no eligible path", sched.PickNone, ErrNoHealthyPath},
+	peer, peerAP := rawPeer(t)
+	m.paths[0].setRemote(peerAP)
+	if err := m.Send([][]byte{payload}, m.virt); err != nil {
+		t.Fatalf("Send before the first hello: %v", err)
 	}
-	lg, err := log.New("error", io.Discard)
-	if err != nil {
-		t.Fatalf("build logger: %v", err)
+	if got := m.paths[0].txBytes.Load(); got != 0 {
+		t.Fatalf("path wrote %d bytes before any hello established a lane, want 0", got)
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			m, err := NewMultipath(loopbackPaths(1), psk, stubScheduler{pick: tc.pick}, nil, nil, nil, nil, config.Amnezia{}, lg)
-			if err != nil {
-				t.Fatalf("NewMultipath: %v", err)
-			}
-			if _, _, err := m.Open(0); err != nil {
-				t.Fatalf("Open: %v", err)
-			}
-			t.Cleanup(func() { _ = m.Close() })
-			err = m.Send([][]byte{[]byte("x")}, m.virt)
-			if !errors.Is(err, tc.want) {
-				t.Fatalf("Send with pick=%d returned %v, want %v", tc.pick, err, tc.want)
-			}
-			// The shed error must NOT be conflated with the outage error (distinct
-			// sentinels), so a paced shed never reads as no-healthy-path.
-			if tc.pick == sched.PickPaced && errors.Is(err, ErrNoHealthyPath) {
-				t.Fatal("pacer shedding conflated with no-healthy-path outage")
-			}
-		})
+
+	newRemoteTransport(t, m.peerState, 987).join(m.paths[0], peerAP)
+	codec, _ := frame.NewCodec(psk)
+	if data, _ := readTransportData(t, peer, codec); !bytes.HasSuffix(data.Payload, payload) {
+		t.Fatalf("datagram sent after the hello does not carry the waiting payload")
+	}
+
+	if err := m.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if err := m.Send([][]byte{payload}, m.virt); !errors.Is(err, net.ErrClosed) {
+		t.Fatalf("Send on a closed bind = %v, want net.ErrClosed", err)
 	}
 }
 
@@ -529,21 +606,20 @@ func rcvBuf(t *testing.T, c *net.UDPConn) int {
 // TestNewMultipathRejectsUnpairedProberFactory pins the constructor pairing invariant
 // (fable low defect): a runtime-path factory (newProber) without a boot-time prober
 // slice would let AddPath append to a nil m.probers, desyncing m.paths from m.probers
-// and panicking on the next Open at m.probers[i]. NewMultipath must reject the pairing.
+// and panicking on the next Open at m.probers[i]. NewMultipath must reject the pairing,
+// as it rejects any prober set that does not hold one prober per path.
 func TestNewMultipathRejectsUnpairedProberFactory(t *testing.T) {
 	psk := testKey(t, 0x37)
 	paths := loopbackPaths(1)
-	health := []sched.PathHealth{sched.AlwaysUp{}}
 	lg, err := log.New("error", io.Discard)
 	if err != nil {
 		t.Fatalf("build logger: %v", err)
 	}
-	scheduler, err := sched.NewActiveBackup(health, sched.Config{FailbackAfter: time.Second}, telemetry.SystemClock{}, lg)
-	if err != nil {
-		t.Fatalf("build scheduler: %v", err)
-	}
 	factory := func(name string, id uint8, _ time.Duration) *telemetry.Prober { return nil }
-	if _, err := NewMultipath(paths, psk, scheduler, nil, factory, nil, nil, config.Amnezia{}, lg); err == nil {
+	if _, err := NewMultipath(paths, psk, nil, factory, lg); err == nil {
 		t.Fatal("NewMultipath(newProber!=nil, probers==nil) succeeded, want rejection")
+	}
+	if _, err := NewMultipath(paths, psk, []*telemetry.Prober{nil}, factory, lg); err == nil {
+		t.Fatal("NewMultipath with a nil prober succeeded, want rejection")
 	}
 }

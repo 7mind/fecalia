@@ -9,16 +9,19 @@ import (
 )
 
 const (
-	DataType        = 0xa1
-	ACKType         = 0xa2
-	Version         = 1
-	headerBytes     = 19
-	ackBytes        = 96
-	ackReceiptWords = 4
-	ackReceiptBits  = 64 * ackReceiptWords
-	// ExtraOverhead is the difference from a legacy DATA frame, including the MAC.
-	ExtraOverhead         = 61
-	interactiveBit uint64 = 1 << 63
+	DataType    = 0xa1
+	ACKType     = 0xa2
+	Version     = 1
+	headerBytes = 19
+	// dataFieldBytes is the destination epoch, lane sequence and order that follow
+	// the lane header in a data frame.
+	dataFieldBytes = 16 + 8 + 8
+	// Overhead is the number of bytes a data frame adds to its payload on the wire.
+	Overhead               = frame.ControlOverhead + headerBytes + dataFieldBytes
+	ackBytes               = 96
+	ackReceiptWords        = 4
+	ackReceiptBits         = 64 * ackReceiptWords
+	interactiveBit  uint64 = 1 << 63
 )
 
 type Epoch struct {

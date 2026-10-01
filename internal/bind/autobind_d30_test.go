@@ -25,7 +25,7 @@ func TestAutoRuntimeDeviceBindClosesD30(t *testing.T) {
 		{Name: "b", SourceAddr: netip.MustParseAddr("10.0.1.1"), Bind: config.BindModeAuto},
 		{Name: "c", SourceAddr: netip.MustParseAddr("10.0.0.2"), Bind: config.BindModeAuto},
 	}
-	m, _, _ := newProbingMultipath(t, paths, psk, clk)
+	m, _ := newProbingMultipath(t, paths, psk, clk)
 	// Deterministic fake interface resolution (no net.Interfaces()): 10.0.0.x -> wan0 (single
 	// family), 10.0.1.1 -> wan1 (single family), anything else unresolvable.
 	m.resolveIface = func(s netip.Addr) ifaceInfo {

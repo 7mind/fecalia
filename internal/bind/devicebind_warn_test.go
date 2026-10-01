@@ -13,7 +13,6 @@ import (
 
 	"github.com/7mind/wanbond/internal/config"
 	"github.com/7mind/wanbond/internal/log"
-	"github.com/7mind/wanbond/internal/sched"
 	"github.com/7mind/wanbond/internal/telemetry"
 )
 
@@ -38,7 +37,7 @@ func (b *syncBuffer) String() string {
 }
 
 // newWarnCapturingMultipath builds an OPEN, runtime-path-capable Multipath (probers +
-// newProber + a DynamicScheduler — AddPath's preconditions) whose logger writes JSON
+// newProber — AddPath's preconditions) whose logger writes JSON
 // records into the returned buffer at "info" level (so the D53 AUTO-fallback
 // informational record is captured too, not just WARN/ERROR). It is the D53 test
 // harness: every scenario below drives AddPath/reconcileDeferred over paths[] and then
@@ -59,16 +58,10 @@ func newWarnCapturingMultipath(t *testing.T, paths []config.Path, psk config.Key
 		return telemetry.NewProber(name, id, testProbeSessionID, psk, cfg, clk, lg)
 	}
 	probers := make([]*telemetry.Prober, len(paths))
-	health := make([]sched.PathHealth, len(paths))
 	for i := range paths {
 		probers[i] = newProber(paths[i].Name, uint8(i), paths[i].RideThrough)
-		health[i] = probers[i]
 	}
-	scheduler, err := sched.NewActiveBackup(health, sched.Config{FailbackAfter: time.Hour}, clk, lg)
-	if err != nil {
-		t.Fatalf("build scheduler: %v", err)
-	}
-	m, err := NewMultipath(paths, psk, scheduler, probers, newProber, nil, nil, config.Amnezia{}, lg)
+	m, err := NewMultipath(paths, psk, probers, newProber, lg)
 	if err != nil {
 		t.Fatalf("NewMultipath: %v", err)
 	}

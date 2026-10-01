@@ -12,7 +12,6 @@ import (
 	"github.com/7mind/wanbond/internal/bind"
 	"github.com/7mind/wanbond/internal/config"
 	"github.com/7mind/wanbond/internal/log"
-	"github.com/7mind/wanbond/internal/sched"
 	"github.com/7mind/wanbond/internal/telemetry"
 )
 
@@ -31,8 +30,8 @@ import (
 // bind.Multipath carrying TWO NAMED bind-level peers "a" and "b" — mirroring the exact naming a
 // multi-exit edge's production wiring gives each configured exit peer (SetPrimaryPeerName renames
 // the embedded primary to the first exit peer's name, AddConcentratorPeer registers each
-// additional one, T252/D101). Each carries its own single-path AlwaysUp scheduler so no liveness
-// goroutine ever runs. Neither peer's paths are ever Open()ed: both IpcSet/IpcGet (an allowed_ip
+// additional one, T252/D101). Each carries its own single-path prober set; no probe loop is
+// started, so no liveness goroutine ever runs. Neither peer's paths are ever Open()ed: both IpcSet/IpcGet (an allowed_ip
 // insert lands in the trie at IpcSet time regardless of the device's up-state) and
 // SetPeerRemoteFor ("safe on a CLOSED bind (no paths)", per its doc comment) work without a live
 // socket, so this test drives neither traffic nor a goroutine — only the two disjoint planes T255
@@ -42,11 +41,7 @@ func twoNamedPeerCompositionEngine(t *testing.T, lg log.Logger) (*awgdevice.Devi
 	paths := []config.Path{{Name: "p", SourceAddr: netip.MustParseAddr("127.0.0.1")}}
 
 	pskA := keyFromRaw(t, mustRandom(t, 32))
-	schedA, err := sched.NewActiveBackup([]sched.PathHealth{sched.AlwaysUp{}}, sched.Config{FailbackAfter: time.Second}, telemetry.SystemClock{}, lg)
-	if err != nil {
-		t.Fatalf("build scheduler a: %v", err)
-	}
-	mp, err := bind.NewMultipath(paths, pskA, schedA, nil, nil, nil, nil, config.Amnezia{}, lg)
+	mp, err := bind.NewMultipath(paths, pskA, testProbers(paths, pskA, lg), nil, lg)
 	if err != nil {
 		t.Fatalf("build multipath bind: %v", err)
 	}
@@ -55,11 +50,7 @@ func twoNamedPeerCompositionEngine(t *testing.T, lg log.Logger) (*awgdevice.Devi
 	}
 
 	pskB := keyFromRaw(t, mustRandom(t, 32))
-	schedB, err := sched.NewActiveBackup([]sched.PathHealth{sched.AlwaysUp{}}, sched.Config{FailbackAfter: time.Second}, telemetry.SystemClock{}, lg)
-	if err != nil {
-		t.Fatalf("build scheduler b: %v", err)
-	}
-	if err := mp.AddConcentratorPeer("b", pskB, schedB, nil, nil); err != nil {
+	if err := mp.AddConcentratorPeer("b", pskB, testProbers(paths, pskB, lg), nil); err != nil {
 		t.Fatalf("AddConcentratorPeer(b): %v", err)
 	}
 

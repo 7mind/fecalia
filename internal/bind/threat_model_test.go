@@ -7,8 +7,6 @@ import (
 	"testing"
 
 	"github.com/7mind/wanbond/internal/config"
-	"github.com/7mind/wanbond/internal/fec"
-	"github.com/7mind/wanbond/internal/frame"
 	"github.com/7mind/wanbond/internal/telemetry"
 )
 
@@ -22,26 +20,21 @@ import (
 //           lookupPeerBySource early-return) — a bound source is never re-trial-decoded, so a
 //           foreign-psk PROBE from it can never re-point the binding.
 //       (2) The trial-decode loop binds a NEW source ONLY on an authenticated PROBE (the
-//           `if !isProbe continue` D9/D11 gate) — forged DATA/PARITY floods bind nothing.
-//     The codec supplies the third leg: PROBE/CONTROL carry an HMAC tag (forging A's tag without
-//     A's psk is infeasible), and DATA/PARITY are psk-keyed-obfuscated, so a frame built under B's
-//     psk decodes under A's psk only as UNCONTROLLED garbage (~2/256) — never attacker-CHOSEN
-//     content. Every assertion below is therefore either fully deterministic or immune to that
-//     garble by keying on a chosen sentinel payload the wrong-key decode can never reproduce.
+//           `if !isProbe continue` D9/D11 gate) — floods of transport frames bind nothing.
+//     The codec supplies the third leg: every frame kind carries an HMAC tag (forging A's tag
+//     without A's psk is infeasible), so a frame built under B's psk never decodes under A's.
 //
 //   - A party with NO valid psk is limited to bounded bootstrap degradation: its floods bind
 //     nothing (no PROBE authenticates), corrupt no peer's stream, and evict no live peer.
 
-// victimPeerFEC stands up a FEC-configured concentrator whose PRIMARY (peer A, pskA) is the
-// isolation VICTIM: a source is bound to it via an authenticated PROBE and its path driven Up
-// (a LIVE peer that must never be disturbed or evicted). Peer B (pskB) is bound LAZILY (no heavy
-// state) and stands in for the peer whose psk the adversary holds. FEC is on so the victim carries
-// an armed decoder whose non-disturbance the FEC-garbage cases can assert. It returns the bind,
-// both peers, the fake clock, and the victim's bound source address.
-func victimPeerFEC(t *testing.T, pskA, pskB config.Key) (m *Multipath, victim, peerB *peerState, clk *fakeClock, victimSrc netip.AddrPort) {
+// victimPeer stands up a concentrator whose PRIMARY (peer A, pskA) is the isolation VICTIM: a
+// source is bound to it via an authenticated PROBE and its path driven Up (a LIVE peer that must
+// never be disturbed or evicted). Peer B (pskB) is bound LAZILY (no heavy state) and stands in
+// for the peer whose psk the adversary holds. It returns the bind, both peers, the fake clock,
+// and the victim's bound source address.
+func victimPeer(t *testing.T, pskA, pskB config.Key) (m *Multipath, victim, peerB *peerState, clk *fakeClock, victimSrc netip.AddrPort) {
 	t.Helper()
-	fecCfg := &fec.Config{DataShards: 4, ParityShards: 1, Deadline: testFECDeadline}
-	m, victim, peerB, clk = lazyConcentratorFEC(t, pskA, pskB, fecCfg)
+	m, victim, peerB, clk = lazyConcentrator(t, pskA, pskB)
 
 	src := synthSource(0)
 	// Bind the victim source to peer A through an authenticated PROBE, then drive its path Up so
@@ -69,7 +62,7 @@ func TestForeignProbeCannotMoveVictimBinding(t *testing.T) {
 	pskC := testKey(t, 0x33) // a psk NO peer holds (the no-valid-psk adversary)
 
 	t.Run("an authenticated PROBE under peer B's psk from A's bound source does NOT re-point the binding", func(t *testing.T) {
-		m, victim, peerB, clk, src := victimPeerFEC(t, pskA, pskB)
+		m, victim, peerB, clk, src := victimPeer(t, pskA, pskB)
 		secondView := peerPathByName(peerB, "a")
 
 		// The adversary holds pskB and forges a valid, authenticated PROBE from the victim's own
@@ -92,9 +85,6 @@ func TestForeignProbeCannotMoveVictimBinding(t *testing.T) {
 		if peerB.resequencer.Load() != nil {
 			t.Fatal("peer B's heavy receive state was instantiated by a foreign PROBE (it was re-bound)")
 		}
-		if peerB.fecRecv.Load() != nil {
-			t.Fatal("peer B's FEC decoder was instantiated by a foreign PROBE")
-		}
 		// The victim was untouched: still Up (not evicted).
 		if m.paths[0].prober.State() != telemetry.StateUp {
 			t.Fatalf("victim liveness disturbed by a foreign PROBE: %v", m.paths[0].prober.State())
@@ -102,7 +92,7 @@ func TestForeignProbeCannotMoveVictimBinding(t *testing.T) {
 	})
 
 	t.Run("a PROBE under a psk NO peer holds neither re-binds nor unbinds A's bound source", func(t *testing.T) {
-		m, victim, _, clk, src := victimPeerFEC(t, pskA, pskB)
+		m, victim, _, clk, src := victimPeer(t, pskA, pskB)
 
 		// The no-valid-psk adversary forges a PROBE under pskC. Routed to A's view, it fails A's MAC;
 		// it must be a per-frame drop that leaves the binding EXACTLY as it was — neither re-pointed
@@ -122,7 +112,7 @@ func TestForeignProbeCannotMoveVictimBinding(t *testing.T) {
 	})
 
 	t.Run("replayed and byte-mutated genuine PROBEs from the bound source do not disturb the binding", func(t *testing.T) {
-		m, victim, _, clk, src := victimPeerFEC(t, pskA, pskB)
+		m, victim, _, clk, src := victimPeer(t, pskA, pskB)
 
 		// A REPLAY of a genuine, authenticated pskA PROBE from the bound source: it decodes cleanly
 		// under A's psk and is reflected, but carries no fresh binding authority — the source is
@@ -146,34 +136,30 @@ func TestForeignProbeCannotMoveVictimBinding(t *testing.T) {
 		}
 	})
 
-	t.Run("a forged DATA storm under B's psk from A's bound source injects no chosen content and moves no release point", func(t *testing.T) {
-		m, victim, peerB, _, src := victimPeerFEC(t, pskA, pskB)
+	t.Run("a data storm under B's psk from A's bound source injects no chosen content and moves no release point", func(t *testing.T) {
+		m, victim, peerB, _, src := victimPeer(t, pskA, pskB)
 		secondView := peerPathByName(peerB, "a")
-		codecA, err := frame.NewCodec(pskA)
-		if err != nil {
-			t.Fatalf("build peer A codec: %v", err)
-		}
-		codecB, err := frame.NewCodec(pskB)
-		if err != nil {
-			t.Fatalf("build peer B codec: %v", err)
-		}
+		remoteA := newRemoteTransport(t, victim, 987)
+		remoteA.join(m.paths[0], src)
 
-		// Establish A's release point at 100 (deliver one legit frame, advancing `next` to 101).
-		m.demuxInbound(m.paths[0], mustEncodeData(t, codecA, 100, m.paths[0].id, "v100"), src)
+		// Establish A's release point (deliver one legit datagram, advancing it by one).
+		m.demuxInbound(m.paths[0], remoteA.wire(remoteA.bulk(m.paths[0], []byte("v100"))), src)
 		if it, ok := victim.resequencer.Load().Pop(); !ok || string(it.Payload) != "v100" {
 			t.Fatalf("victim did not deliver its legit frame: ok=%v payload=%q", ok, it.Payload)
 		}
 
-		// The adversary (holding pskB) floods DATA authenticated under B's psk from the victim's own
-		// bound source, carrying a CHOSEN sentinel payload and wildly discontinuous outer-seqs (the
-		// outer-seq-discontinuity storm). Routed to A's view, each frame fails A's psk-keyed decode
-		// and is dropped; the ~2/256 that garble-decode carry UNCONTROLLED bytes, never the sentinel.
+		// The adversary (holding pskB) floods transport data frames authenticated under B's psk
+		// from the victim's own bound source, carrying a CHOSEN sentinel payload and wildly
+		// discontinuous delivery orders (the discontinuity storm). B's transport would accept
+		// them on that lane; routed to A's view, each frame fails A's MAC and is dropped.
 		const sentinel = "FORGED-BY-B"
-		wildSeqs := []uint64{1, 1 << 20, 1 << 40, 1 << 62, 0xFFFFFFFFFFFFFFFF, 202, 5000}
-		const floodPerSeq = 40
-		for _, seq := range wildSeqs {
-			for i := 0; i < floodPerSeq; i++ {
-				m.demuxInbound(m.paths[0], mustEncodeData(t, codecB, seq, secondView.id, sentinel), src)
+		adversary := newRemoteTransport(t, peerB, 988)
+		adversary.join(secondView, src)
+		wildOrders := []uint64{1, 1 << 20, 1 << 40, 1 << 62, 1<<63 - 1, 202, 5000}
+		const floodPerOrder = 40
+		for _, order := range wildOrders {
+			for i := 0; i < floodPerOrder; i++ {
+				m.demuxInbound(m.paths[0], adversary.wire(adversary.data(secondView, order, []byte(sentinel))), src)
 			}
 		}
 
@@ -185,17 +171,24 @@ func TestForeignProbeCannotMoveVictimBinding(t *testing.T) {
 		if m.paths[0].prober.State() != telemetry.StateUp {
 			t.Fatalf("the forged storm evicted/disturbed the live victim: %v", m.paths[0].prober.State())
 		}
+		if peerB.resequencer.Load() != nil {
+			t.Fatal("peer B's heavy receive state was instantiated by a storm from A's bound source")
+		}
 
-		// The stream still flows AND its release point never moved: a legit pskA frame at the very
-		// NEXT outer-seq (101) delivers immediately. A storm that had dragged A's release point
-		// forward (to one of the wild high seqs) would reject 101 as late and deliver nothing here.
-		m.demuxInbound(m.paths[0], mustEncodeData(t, codecA, 101, m.paths[0].id, "v101"), src)
+		// The stream still flows AND its release point never moved: a legit pskA datagram at the
+		// very NEXT delivery order delivers immediately. A storm that had dragged A's release
+		// point forward (to one of the wild high orders) would reject it as late and deliver
+		// nothing here.
+		m.demuxInbound(m.paths[0], remoteA.wire(remoteA.bulk(m.paths[0], []byte("v101"))), src)
 		var delivered []string
 		for {
 			it, ok := victim.resequencer.Load().Pop()
 			if !ok {
 				break
 			}
+			delivered = append(delivered, string(it.Payload))
+		}
+		if it, ok := victim.adaptive.Load().popInteractive(); ok {
 			delivered = append(delivered, string(it.Payload))
 		}
 		sawNext := false
@@ -208,56 +201,46 @@ func TestForeignProbeCannotMoveVictimBinding(t *testing.T) {
 			}
 		}
 		if !sawNext {
-			t.Fatalf("the victim's release point was moved by the storm: legit seq 101 was not delivered (got %v)", delivered)
+			t.Fatalf("the victim's release point was moved by the storm: the next legit datagram was not delivered (got %v)", delivered)
 		}
 	})
 }
 
 // TestUnauthenticatedFloodBindsNothingAndInjectsNothing is the no-valid-psk / wrong-psk flood
-// case: a flood of DATA/PARITY (forged under peer B's psk) and pure garbage from MANY distinct,
-// unbound spoofed sources binds nothing (no PROBE authenticates), grows no demux state, injects
-// into NO peer's resequencer or FEC decoder, and never disturbs the live victim binding. It
-// mutation-discriminates the trial-decode `if !isProbe continue` D9/D11 gate: with that gate
-// removed, a DATA/PARITY that decodes under peer B's view binds its source to B and dispatches
-// into B's planes, turning the "no binding grew / decoder untouched" assertions red.
+// case: a flood of transport data frames (authenticated under peer B's psk) and pure garbage
+// from MANY distinct, unbound spoofed sources binds nothing (no PROBE authenticates), grows no
+// demux state, injects into NO peer's resequencer, and never disturbs the live victim binding.
+// It mutation-discriminates the trial-decode `if !isProbe continue` D9/D11 gate: with that gate
+// removed, a data frame that decodes under peer B's view binds its source to B and dispatches
+// into B's planes, turning the "no binding grew / B not instantiated" assertions red.
 func TestUnauthenticatedFloodBindsNothingAndInjectsNothing(t *testing.T) {
 	pskA := testKey(t, 0x11)
 	pskB := testKey(t, 0x22)
-	m, victim, peerB, _, victimSrc := victimPeerFEC(t, pskA, pskB)
+	m, victim, peerB, _, victimSrc := victimPeer(t, pskA, pskB)
 	secondView := peerPathByName(peerB, "a")
-	fecCfg := fec.Config{DataShards: 4, ParityShards: 1, Deadline: testFECDeadline}
-	codecB, err := frame.NewCodec(pskB)
-	if err != nil {
-		t.Fatalf("build peer B codec: %v", err)
-	}
 
 	// Buffer a known frame in the victim's ring (not yet popped): the flood must leave it intact.
-	codecA, err := frame.NewCodec(pskA)
-	if err != nil {
-		t.Fatalf("build peer A codec: %v", err)
-	}
-	m.demuxInbound(m.paths[0], mustEncodeData(t, codecA, 500, m.paths[0].id, "victim-buffered"), victimSrc)
+	remoteA := newRemoteTransport(t, victim, 987)
+	remoteA.join(m.paths[0], victimSrc)
+	m.demuxInbound(m.paths[0], remoteA.wire(remoteA.bulk(m.paths[0], []byte("victim-buffered"))), victimSrc)
 
 	before := m.peerBySourceLenForTest()
-	victimDecoderRecoveredBefore := victim.fecRecv.Load().stats().Recovered
 
-	// The flood: from 300 distinct spoofed unbound sources, cycle three adversary shapes —
-	// DATA forged under B's psk, a single-frame reconstructing PARITY forged under B's psk (FEC
-	// garbage that WOULD reconstruct a data frame if it ever reached a decoder), and pure random
-	// garbage (the no-psk adversary). None is an authenticated PROBE, so none may bind.
+	// The flood: from 300 distinct spoofed unbound sources, cycle three adversary shapes — an
+	// ordered data frame and a small-class data frame under B's psk, each on a lane B's
+	// transport holds to that very source, and pure random garbage (the no-psk adversary).
+	// None is an authenticated PROBE, so none may bind.
+	adversary := newRemoteTransport(t, peerB, 988)
 	const flood = 300
 	for i := 1; i <= flood; i++ {
 		src := synthSource(i)
 		switch i % 3 {
 		case 0:
-			m.demuxInbound(m.paths[0], mustEncodeData(t, codecB, uint64(i), secondView.id, "flood-data"), src)
+			adversary.join(secondView, src)
+			m.demuxInbound(m.paths[0], adversary.wire(adversary.bulk(secondView, []byte("flood-data"))), src)
 		case 1:
-			group, index, dataCount, parityPayload := singleFrameParity(t, fecCfg, uint64(1000+i), []byte("flood-parity"))
-			parity, perr := codecB.Encode(nil, frame.Parity{FECGroup: group, ParityIndex: index, DataCount: dataCount, PathID: secondView.id, Payload: parityPayload})
-			if perr != nil {
-				t.Fatalf("encode flood parity: %v", perr)
-			}
-			m.demuxInbound(m.paths[0], parity, src)
+			adversary.join(secondView, src)
+			m.demuxInbound(m.paths[0], adversary.wire(adversary.small(secondView, []byte("flood-small"))), src)
 		default:
 			garbage := make([]byte, 96)
 			if _, rerr := rand.Read(garbage); rerr != nil {
@@ -271,18 +254,17 @@ func TestUnauthenticatedFloodBindsNothingAndInjectsNothing(t *testing.T) {
 	if after := m.peerBySourceLenForTest(); after != before {
 		t.Fatalf("the unauthenticated flood grew the demux map from %d to %d (a non-PROBE bound a source)", before, after)
 	}
-	// Peer B — whose psk half the flood used — was never bound or instantiated: its lazy heavy
-	// state is still absent (a DATA/PARITY that decoded under B's view must never bind B).
+	// Peer B — whose psk two thirds of the flood used — was never bound or instantiated: its lazy
+	// heavy state is still absent (a data frame that decoded under B's view must never bind B),
+	// and nothing reached its small-datagram queue.
 	if peerB.resequencer.Load() != nil {
-		t.Fatal("peer B's heavy state was instantiated by a non-PROBE flood (a DATA/PARITY bound it)")
+		t.Fatal("peer B's heavy state was instantiated by a non-PROBE flood (a data frame bound it)")
+	}
+	if it, ok := peerB.adaptive.Load().popInteractive(); ok {
+		t.Fatalf("the flood delivered a small datagram up peer B (%q)", it.Payload)
 	}
 	if _, ok := secondView.getRemote(); ok {
 		t.Fatal("peer B learned a remote from a non-PROBE flood")
-	}
-	// The victim's armed FEC decoder never advanced: no flood PARITY reached it (a leaked PARITY
-	// with DataCount=1 would have reconstructed a frame and moved Recovered).
-	if got := victim.fecRecv.Load().stats().Recovered; got != victimDecoderRecoveredBefore {
-		t.Fatalf("the flood's FEC garbage reached the victim's decoder: Recovered %d -> %d", victimDecoderRecoveredBefore, got)
 	}
 	// The live victim binding, liveness, and buffered frame all survived untouched.
 	if bound, ok := m.lookupPeerBySource(victimSrc); !ok || bound != victim {
@@ -293,5 +275,8 @@ func TestUnauthenticatedFloodBindsNothingAndInjectsNothing(t *testing.T) {
 	}
 	if it, ok := victim.resequencer.Load().Pop(); !ok || !bytes.Equal(it.Payload, []byte("victim-buffered")) {
 		t.Fatalf("the flood corrupted the victim's buffered frame: ok=%v payload=%q", ok, it.Payload)
+	}
+	if it, ok := victim.resequencer.Load().Pop(); ok {
+		t.Fatalf("the flood injected a frame into the victim's stream (%q)", it.Payload)
 	}
 }

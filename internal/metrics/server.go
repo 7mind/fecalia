@@ -35,18 +35,13 @@ type Server struct {
 	ln  net.Listener
 	srv *http.Server
 	log log.Logger
-	// weightedCapacityGauge is the retained wanbond_weighted_capacity_sane gauge (T144),
-	// or nil under the active-backup policy (a nil verdict at construction — the series is
-	// absent entirely). It is retained so a reload can re-set it after a path add/remove
-	// changes the config-derived verdict (D74), instead of leaving it frozen at boot.
-	weightedCapacityGauge prometheus.Gauge
 	// livenessBudgetGauge is the retained wanbond_liveness_budget_sane gauge (T211), or
-	// nil when no verdict was supplied at construction. Retained for the same reason as
-	// weightedCapacityGauge: a reload whose applied path add/remove changes the worst-case
-	// ride_through re-sets it (SetLivenessBudgetSane) rather than leaving it frozen at boot.
+	// nil when no verdict was supplied at construction. Retained so a reload whose applied
+	// path add/remove changes the worst-case ride_through re-sets it
+	// (SetLivenessBudgetSane) rather than leaving it frozen at boot.
 	livenessBudgetGauge prometheus.Gauge
-	// tunMTUGauge is the retained wanbond_tun_mtu gauge (T209, D85). Unlike the two verdict
-	// gauges above it is registered for EVERY config (the TUN always has an MTU); it is
+	// tunMTUGauge is the retained wanbond_tun_mtu gauge (T209, D85). Unlike the verdict
+	// gauge above it is registered for EVERY config (the TUN always has an MTU); it is
 	// seeded to 0 at construction and the device seeds the boot value + re-sets it via
 	// SetTunMTU as the runtime resizer adjusts the live link.
 	tunMTUGauge prometheus.Gauge
@@ -56,12 +51,12 @@ type Server struct {
 // /metrics handler over a private registry fed by src. It returns
 // ErrNonLoopbackBind WITHOUT binding if addr is not loopback. addr is a
 // host:port string; a ":0" or "127.0.0.1:0" port yields an OS-assigned port
-// readable via Addr after construction. weightedCapacitySane is the T144
-// config-derived verdict (config.Config.WeightedCapacitySane, verbatim): nil
-// registers no wanbond_weighted_capacity_sane series at all (the non-weighted-policy
-// case — the family is absent entirely); a non-nil bool registers it as a STATIC
-// gauge fixed at that value, alongside (not through) the Source-driven collector.
-func NewServer(addr string, src Source, weightedCapacitySane, livenessBudgetSane *bool, logger log.Logger) (*Server, error) {
+// readable via Addr after construction. livenessBudgetSane is the T211
+// config-derived verdict (config.Config.LivenessBudgetSane, verbatim): nil
+// registers no wanbond_liveness_budget_sane series at all; a non-nil bool registers
+// it as a retained gauge seeded at that value, alongside (not through) the
+// Source-driven collector.
+func NewServer(addr string, src Source, livenessBudgetSane *bool, logger log.Logger) (*Server, error) {
 	if err := requireLoopback(addr); err != nil {
 		return nil, err
 	}
@@ -73,13 +68,6 @@ func NewServer(addr string, src Source, weightedCapacitySane, livenessBudgetSane
 	if adaptive, ok := src.(AdaptiveSource); ok {
 		if err := reg.Register(newAdaptiveCollector(adaptive)); err != nil {
 			return nil, err
-		}
-	}
-	var weightedCapacityGauge prometheus.Gauge
-	if weightedCapacitySane != nil {
-		weightedCapacityGauge = newWeightedCapacityGauge(*weightedCapacitySane)
-		if err := reg.Register(weightedCapacityGauge); err != nil {
-			return nil, fmt.Errorf("metrics: register weighted-capacity gauge: %w", err)
 		}
 	}
 	var livenessBudgetGauge prometheus.Gauge
@@ -124,35 +112,22 @@ func NewServer(addr string, src Source, weightedCapacitySane, livenessBudgetSane
 			Handler:           mux,
 			ReadHeaderTimeout: readHeaderTimeout,
 		},
-		log:                   logger.Component("metrics"),
-		weightedCapacityGauge: weightedCapacityGauge,
-		livenessBudgetGauge:   livenessBudgetGauge,
-		tunMTUGauge:           tunMTUGauge,
+		log:                 logger.Component("metrics"),
+		livenessBudgetGauge: livenessBudgetGauge,
+		tunMTUGauge:         tunMTUGauge,
 	}, nil
-}
-
-// SetWeightedCapacitySane re-sets the retained wanbond_weighted_capacity_sane gauge
-// (T144) to a recomputed verdict after a reload changed the path set (D74). It is a
-// no-op when no gauge was registered (the active-backup policy — a nil verdict at
-// construction; the series is absent for the collector's whole life and a reload never
-// introduces it, since the scheduler policy is fixed for the process). Safe to call
-// while the endpoint serves: prometheus.Gauge.Set is concurrency-safe.
-func (s *Server) SetWeightedCapacitySane(sane bool) {
-	if s.weightedCapacityGauge == nil {
-		return
-	}
-	s.weightedCapacityGauge.Set(weightedCapacitySaneValue(sane))
 }
 
 // SetLivenessBudgetSane re-sets the retained wanbond_liveness_budget_sane gauge (T211)
 // to a recomputed verdict after a reload changed the applied path set (the worst-case
-// ride_through can shift), the liveness-budget twin of SetWeightedCapacitySane. No-op
-// when no gauge was registered. Safe to call while the endpoint serves.
+// ride_through can shift). No-op
+// when no gauge was registered. Safe to call while the endpoint serves:
+// prometheus.Gauge.Set is concurrency-safe.
 func (s *Server) SetLivenessBudgetSane(sane bool) {
 	if s.livenessBudgetGauge == nil {
 		return
 	}
-	s.livenessBudgetGauge.Set(weightedCapacitySaneValue(sane))
+	s.livenessBudgetGauge.Set(boolValue(sane))
 }
 
 // SetTunMTU re-sets the retained wanbond_tun_mtu gauge (T209, D85) to the current

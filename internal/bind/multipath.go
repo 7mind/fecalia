@@ -1,7 +1,6 @@
 package bind
 
 import (
-	"context"
 	"crypto/rand"
 	"errors"
 	"fmt"
@@ -14,16 +13,11 @@ import (
 
 	"github.com/amnezia-vpn/amneziawg-go/v3/conn"
 
-	"github.com/7mind/wanbond/internal/adaptivefec"
 	"github.com/7mind/wanbond/internal/bond"
 	"github.com/7mind/wanbond/internal/config"
-	"github.com/7mind/wanbond/internal/congestion"
-	"github.com/7mind/wanbond/internal/fec"
 	"github.com/7mind/wanbond/internal/frame"
 	"github.com/7mind/wanbond/internal/log"
 	"github.com/7mind/wanbond/internal/reseq"
-	"github.com/7mind/wanbond/internal/sched"
-	"github.com/7mind/wanbond/internal/shaper"
 	"github.com/7mind/wanbond/internal/telemetry"
 )
 
@@ -65,48 +59,6 @@ const (
 	resequencerWindow  = 32768
 	resequencerTimeout = 250 * time.Millisecond
 )
-
-// holdBoundRTTMultiple scales the delivering paths' smoothed RTT into the
-// resequencer's dynamic per-gap hold (T241, D93): hold = multiple x max SRTT,
-// clamped by the resequencer to [its floor, resequencerTimeout]. Four matches the
-// intent documented on resequencerTimeout — the fixed 250 ms cap was chosen as "a
-// few multiples of a Starlink RTT (~45 ms)" — so a genuinely low-RTT bond pays a
-// proportionally small reorder hold per multi-path gap while the 250 ms worst-case
-// bound is preserved for slow paths.
-const holdBoundRTTMultiple = 4
-
-// reseqPathKey composes the OPAQUE delivering-path discriminator the resequencer's
-// single-path immediate release keys on (T240/T241, D93; reviews R249/R250): the
-// LOCAL receiving-path id in the high byte discriminates the edge's downlink paths
-// (which share the single-homed concentrator's src address), and the SENDER-stamped
-// frame PathID in the low byte discriminates the concentrator's uplink view (one
-// local socket, but the edge stamps a distinct ps.id per WAN). Both operands are
-// uint8, so the packing is injective; a spoofed/garbled sender PathID can only add
-// distinct keys, which only ever forces the conservative full hold (DoS-neutral).
-func reseqPathKey(localID, framePathID uint8) uint32 {
-	return uint32(localID)<<8 | uint32(framePathID)
-}
-
-// markMultiPathExpected suppresses the resequencer's single-path immediate release when
-// the peer runs an AGGREGATING (weighted) scheduler (D93 follow-up; the o3
-// TestP2Aggregation regression — see reseq.SetMultiPathExpected). Immediate release is a
-// single-path optimization aimed at active-backup (the D93 field case); on a weighted
-// bond it is RETAINED PENDING a link-bound-venue A/B — unmeasured, default-under-
-// uncertainty (defect D95, decisions:K35, tasks:T293 branch 4). Whether the
-// resequencer's reordering buffer is load-bearing for genuine two-path striping (as
-// opposed to the earlier burstiness-coupling theory, superseded by the frame-accurate
-// offered-load fix) was NOT settled: the only available venue could not be caught
-// link-bound in both arms of the A/B, so the comparison was not like-for-like. What
-// would revisit this: a link-bound-venue A/B where BOTH arms are link-bound (a
-// beefier host, or the real two-host setup).
-func markMultiPathExpected(rq *reseq.Resequencer, scheduler sched.Scheduler) {
-	if rq == nil {
-		return
-	}
-	if _, weighted := scheduler.(*sched.WeightedScheduler); weighted {
-		rq.SetMultiPathExpected(true)
-	}
-}
 
 // defaultMaxDemuxSources caps the source->peer demux map (peerBySource), the
 // PROVISIONAL/unbound-source tracking state whose growth an attacker probes at
@@ -175,12 +127,7 @@ var (
 	// errors.Is-match it against the engine's wrapped Errorf args to gate the startup
 	// no-healthy-path warmup coalescing without string-matching the log message.
 	ErrNoHealthyPath = errors.New("bind: no healthy path with a known remote endpoint")
-	// errPacerShedding retains the legacy direct-composition contract when a scheduler
-	// returns PickPaced. Production exact-byte composition uses PickUnpaced and does not
-	// reach this loss-policer result.
-	errPacerShedding   = errors.New("bind: datagram shed by send pacer (paths healthy, rate limited)")
-	errFECPlaneChanged = errors.New("bind: FEC send plane changed during shaped Send")
-	errClosed          = net.ErrClosed
+	errClosed        = net.ErrClosed
 )
 
 // sharedPathState is the per-SOCKET state of one configured uplink, SHARED across
@@ -197,32 +144,17 @@ type sharedPathState struct {
 	id   uint8
 	src  netip.Addr
 	conn *net.UDPConn
-	// openGeneration identifies the exact Bind Open that owns this socket.
-	// Runtime-added/promoted sockets inherit the currently active generation.
-	openGeneration uint64
 
-	// writeMu makes direct and shaped UDP admission generation-scoped. Retirement
-	// closes admission before waiting writes, so WaitGroup Add cannot race Wait.
+	// writeMu makes UDP writes generation-scoped. Retirement closes admission
+	// before waiting writes, so WaitGroup Add cannot race Wait.
 	writeMu      sync.Mutex
 	writes       sync.WaitGroup
 	writesClosed bool
-	// socketWriteMu lets an unshaped single-owner FEC tranche take an exclusive
-	// socket-wide deadline cut. Ordinary writes hold the read side, so none can
-	// inherit or interleave with that cut's absolute write deadline.
-	socketWriteMu sync.RWMutex
 	// writeUDP is a test seam installed before a generation becomes active. Nil
 	// uses conn.WriteToUDPAddrPort.
-	writeUDP func([]byte, netip.AddrPort) (int, error)
-	// setWriteDeadline is the test seam for the socket-wide deadline used by a
-	// finite recovery cut. Nil delegates to conn.SetWriteDeadline.
-	setWriteDeadline func(time.Time) error
-	// recoveryFailed disables the exact socket generation before asynchronous
-	// structural retirement acquires transitionMu. recoveryRetireOnce prevents a
-	// stale repeated failure from launching another retirement.
-	recoveryFailed     atomic.Bool
-	recoveryRetireOnce sync.Once
-	closeOnce          sync.Once
-	closeErr           error
+	writeUDP  func([]byte, netip.AddrPort) (int, error)
+	closeOnce sync.Once
+	closeErr  error
 	// bindMode is the path's configured/effective bind mode; boundDevice is the
 	// resolved SO_BINDTODEVICE interface it actually device-bound to ("" when
 	// source-IP-pinned). Both are set once at socket creation and IMMUTABLE for the
@@ -245,13 +177,6 @@ type sharedPathState struct {
 }
 
 func (sp *sharedPathState) writeToUDPAddrPort(payload []byte, remote netip.AddrPort) (int, error) {
-	sp.socketWriteMu.RLock()
-	defer sp.socketWriteMu.RUnlock()
-	return sp.writeToUDPAddrPortInCut(payload, remote)
-}
-
-// writeToUDPAddrPortInCut writes while the caller owns socketWriteMu exclusively.
-func (sp *sharedPathState) writeToUDPAddrPortInCut(payload []byte, remote netip.AddrPort) (int, error) {
 	sp.writeMu.Lock()
 	if sp.writesClosed {
 		sp.writeMu.Unlock()
@@ -274,22 +199,6 @@ func (sp *sharedPathState) stopWrites() {
 
 func (sp *sharedPathState) waitWrites() {
 	sp.writes.Wait()
-}
-
-func (sp *sharedPathState) installWriteDeadline(deadline time.Time) error {
-	if sp.setWriteDeadline != nil {
-		return sp.setWriteDeadline(deadline)
-	}
-	if sp.conn == nil {
-		return errors.New("bind: path socket has no deadline-capable writer")
-	}
-	return sp.conn.SetWriteDeadline(deadline)
-}
-
-func (sp *sharedPathState) abortWriteGeneration() {
-	sp.recoveryFailed.Store(true)
-	sp.stopWrites()
-	_ = sp.closeSocket()
 }
 
 func (sp *sharedPathState) closeSocket() error {
@@ -327,14 +236,11 @@ func (sp *sharedPathState) addViewLocked(pp *peerPathState) {
 //
 // It EMBEDS its *sharedPathState so the socket identity (name/id/src/conn) is reached
 // transparently, and back-references the owning peerState so a receive handler resolves
-// exactly that peer's resequencer/reflector/FEC decoder.
+// exactly that peer's resequencer, reflector and transport.
 type peerPathState struct {
 	*sharedPathState
-	peer           *peerState
-	codec          *frame.Codec
-	shaper         pathShaper
-	directRecovery bool
-	recoveryBound  time.Duration
+	peer  *peerState
+	codec *frame.Codec
 	// prober is this (peer,path)'s own probe initiator (nil when the bind runs without the
 	// probe transport). It is set at path creation and immutable for the path's life,
 	// so the Bind-owned receive goroutine reaches it via the peerPathState it already
@@ -364,71 +270,27 @@ type peerPathState struct {
 	// txBytes/rxBytes are cumulative OUTER-wire byte counters for this (peer,path), the
 	// per-path traffic accounting the /metrics exposition reports (T23). Both are
 	// TRUE-WIRE-VOLUME counters: txBytes counts every outer datagram this path actually
-	// writes to its socket — DATA/PARITY on the Send hot path (T23/T24), PROBE frames
-	// emitted by emitProbes, and PROBE echoes reflected back by dispatchInbound — each
-	// counted only once the write returns a nil error; rxBytes counts every outer
-	// datagram this path's readLoop receives (DATA, PROBE, and echo alike). Neither
-	// counter is DATA-only or Send-only (D48): a healthy idle standby path still emits
-	// and echoes probes, so its txBytes keeps advancing even while active-backup
-	// collapses all DATA onto the primary. They are atomics so the send/receive/probe
-	// hot paths increment them WITHOUT taking m.mu (lock-free) from whichever goroutine
-	// performs the write (Send's caller, the probe-loop goroutine, or this path's
-	// readLoop), and the scrape/snapshot path reads them with a plain atomic Load.
+	// writes to its socket — the transport's frames, PROBE frames emitted by emitProbes,
+	// and PROBE echoes reflected back by dispatchInbound — each counted only once the
+	// write returns a nil error; rxBytes counts every outer datagram this path's
+	// readLoop receives. A healthy idle path still emits and echoes probes, so its
+	// txBytes keeps advancing (D48). They are atomics so the send/receive/probe hot
+	// paths increment them WITHOUT taking m.mu (lock-free) from whichever goroutine
+	// performs the write, and the scrape/snapshot path reads them with a plain atomic
+	// Load.
 	txBytes atomic.Uint64
 	rxBytes atomic.Uint64
-	// outerWireBytes includes the IP and UDP headers for every successful
-	// datagram write. innerDataBytes counts only the corresponding native inner
-	// DATA payload. Their delta is the controller's measured encapsulation/FEC
-	// expansion; neither counter depends on a metrics scrape cadence.
-	outerWireBytes atomic.Uint64
-	innerDataBytes atomic.Uint64
-	congestion     *congestion.Controller
-
-	// emsgsizeDrops counts DATA/PARITY datagrams this (peer,path) failed to send with
-	// EMSGSIZE — the explicit "exceeds path MTU, DF set" the T201 DF policy surfaces in
-	// place of silent fragmentation (accountSendError). It is the per-path metric the
-	// fail-fast invariant requires: the datagram is dropped and the error still
-	// propagates to the caller, but the loss is COUNTED rather than swallowed, so a
-	// misconfigured over-MTU tunnel is observable at /metrics instead of appearing as an
-	// inexplicable throughput hole. lastEMSGSIZEWarnNanos rate-limits the accompanying
-	// WARN (warnEMSGSIZE) to one line per path per emsgsizeWarnInterval — under a
-	// persistent over-MTU flow the drop is per-datagram (potentially thousands/s), so the
-	// log is coalesced while the counter still advances on every occurrence. Both are
-	// atomics written lock-free from the Send hot path (no m.mu), like txBytes.
-	emsgsizeDrops         atomic.Uint64
-	lastEMSGSIZEWarnNanos atomic.Int64
 
 	// probeSendErrors counts unexpected socket write failures for locally-originated
 	// ordinary and PMTU PROBE attempts. Expected PMTU EMSGSIZE is excluded: discovery
 	// consumes it as a too-large verdict. An unexpected PMTU failure is counted and
 	// returned to discovery; an ordinary failure is counted then discarded so the
 	// cadence continues across other paths. Incremented lock-free (no m.mu).
-	probeSendErrors        atomic.Uint64
-	probePriorityCoalesced atomic.Uint64
-	pmtuAdmissionCanceled  atomic.Uint64
-	echoPriorityOverflow   atomic.Uint64
+	probeSendErrors atomic.Uint64
 
-	// shapedAccepted/shapedEmitted distinguish the prefix the exact-byte shaper
-	// accepted from the prefix its writer handed to the kernel. shapedWriteErrors
-	// counts terminal shaper-call errors; socketWriteErrors is the subset returned
-	// by the UDP writer. All four are per-(peer,path) and lock-free.
-	shapedAccepted    atomic.Uint64
-	shapedEmitted     atomic.Uint64
-	shapedWriteErrors atomic.Uint64
+	// socketWriteErrors counts the transport's datagram writes the UDP socket
+	// refused. Per-(peer,path) and lock-free.
 	socketWriteErrors atomic.Uint64
-
-	// schedIdx is this path's index in its peer's scheduler (== its position in
-	// peer.paths, the invariant attachPeerPathLocked enforces). It is the pathIdx the
-	// bind passes to the legacy sched.ProbeBudget seam for directly-written PROBE/echo
-	// accounting when exact-byte shaping is absent. Production exact-byte composition
-	// charges the encoded byte count through pathShaper.AccountPriority instead and does
-	// not read this index. The index is maintained under m.mu at every peer.paths
-	// (re)build and splice (Open, attachPeerPathLocked, detachPeerPathBoundLocked) and
-	// read lock-free (via atomic) from the receive goroutine's dispatchInbound, which
-	// must not take m.mu. A momentarily-stale value during a concurrent runtime
-	// membership change is benign: AccountProbe bounds-checks and legacy probe
-	// accounting remains best-effort headroom, never correctness-critical.
-	schedIdx atomic.Int32
 
 	mu sync.Mutex
 	// remotes is the per-SENDER-PATH return-address table (T246, defect D94): one entry
@@ -437,22 +299,19 @@ type peerPathState struct {
 	// downlink destination across the edge's WANs at probe cadence. FRESHNESS is owned by
 	// the authenticated probe plane exclusively — a probe request (concentrator side,
 	// stamped with the edge's path id) or an echo (edge side, stamped with this path's own
-	// id) establishes/refreshes an entry — while forgeable-by-design DATA may only SELECT
-	// among established entries (confirmDataRemote's exact address+PathID match gate) and
-	// can never introduce or move an address.
+	// id) establishes/refreshes an entry. Nothing else introduces or moves an address.
 	remotes map[uint8]*remoteEntry
-	// selKey/selValid name the SELECTED entry — the downlink destination getRemote()
-	// returns (feeding Send, emitProbes, and the PMTU probes alike). Selection is STICKY:
-	// established by the FIRST probe-learned entry (the R253 cold-start rule, so the
-	// destination is valid and stable before any DATA arrives), moved only by an
-	// address-match-gated DATA sample naming a DIFFERENT established entry (the edge's
-	// active WAN changed), by a one-time DEAD fallback when the selected entry's probes go
-	// silent (checkRemoteDead), or by an explicit SetPeerRemote override.
+	// selKey/selValid name the SELECTED entry — the destination getRemote() returns
+	// (feeding emitProbes and the PMTU probes; the transport sends to the routes its own
+	// hellos established). Selection is STICKY: established by the FIRST probe-learned
+	// entry (the R253 cold-start rule), moved only by a one-time DEAD fallback when the
+	// selected entry's probes go silent (checkRemoteDead), or by an explicit SetPeerRemote
+	// override.
 	selKey   uint8
 	selValid bool
 	// onRoam, when set (device.Up registers it on the PRIMARY peer's path via
-	// Multipath.OnPathRoam), fires whenever the SELECTED downlink destination's ADDRESS
-	// changes — initial establishment, a DATA-driven selection move, a DEAD fallback, an
+	// Multipath.OnPathRoam), fires whenever the SELECTED destination's ADDRESS
+	// changes — initial establishment, a DEAD fallback, an
 	// in-place rebind of the selected entry, or a SetPeerRemote override — so the per-path
 	// PMTUDiscovery re-probes (NotifyRoam) the possibly-different underlay PMTU (T227,
 	// defect D88). It never fires on a per-path freshness refresh of a non-selected entry
@@ -464,25 +323,18 @@ type peerPathState struct {
 // lastProbe is stamped by every authenticated probe that establishes/refreshes the entry
 // (and at seeding/override time, so a stale seed can go DEAD and fall back rather than
 // wedging); checkRemoteDead compares it against remoteDeadAfter for the SELECTED entry.
-// lastData is stamped by every address-match-gated DATA confirmation and gates the
-// DATA-driven selection MOVE (remoteDataFreshHorizon): under weighted STRIPING both
-// entries carry DATA continuously, so the selection must not chase every foreign frame.
 type remoteEntry struct {
 	addr      netip.AddrPort
 	lastProbe time.Time
-	lastData  time.Time
 }
 
-// peerState holds the per-PEER datapath state that was a process-global singleton before
-// the multi-peer concentrator split: the SINGLE virtual endpoint the engine holds for this
-// peer, the peer's send scheduler, its own outer-seq space, its shared send Codec, its
-// probe reflector, its receive resequencer and FEC send/receive planes, its per-path probe
-// initiators, and its per-(peer,path) views over the shared sockets. The single-peer
-// edge/hub constructs EXACTLY ONE peerState (so behaviour is byte-identical to the pre-split
-// singleton — Multipath embeds it as the primary and the datapath reaches its fields through
-// that embed); the concentrator constructs one peerState per bound peer. resequencer and
-// fecRecv stay atomic.Pointer, and outerSeq atomic, so the lock-free receive/send fast paths
-// read them WITHOUT m.mu.
+// peerState holds the per-PEER datapath state: the SINGLE virtual endpoint the engine
+// holds for this peer, its adaptive transport, its probe reflector, its receive
+// resequencer, its per-path probe initiators, and its per-(peer,path) views over the
+// shared sockets. The single-peer edge/hub constructs EXACTLY ONE peerState (Multipath
+// embeds it as the primary and the datapath reaches its fields through that embed); the
+// concentrator constructs one peerState per bound peer. adaptive and resequencer are
+// atomic pointers so the lock-free receive/send fast paths read them WITHOUT m.mu.
 type peerState struct {
 	adaptive atomic.Pointer[adaptivePeer]
 	// name is the peer id/name, the key under which Multipath.peersByName holds this peer.
@@ -493,145 +345,73 @@ type peerState struct {
 	name string
 
 	// psk is THIS peer's effective pre-shared key: the sole seam from which every frame
-	// Codec this peer derives (its sendCodec and each per-(peer,path) receive codec, via
-	// newCodec) and its probe Reflector authenticate. The single-peer edge/hub sets it to
-	// the one configured psk (so behaviour is byte-identical to the pre-split singleton);
-	// the concentrator sets a DIFFERENT psk per bound peer, so one peer's codec/reflector
-	// rejects another peer's frames (T84). NewCodec/NewReflector PSK-derivation itself is
-	// unchanged — only WHICH psk each peer feeds them differs.
+	// Codec this peer derives (its transport's send codec and each per-(peer,path) receive
+	// codec, via newCodec) and its probe Reflector authenticate. The single-peer edge/hub
+	// sets it to the one configured psk; the concentrator sets a DIFFERENT psk per bound
+	// peer, so one peer's codec/reflector rejects another peer's frames (T84).
 	psk config.Key
 
 	// Immutable per-peer collaborators, built at construction and persisting across the
 	// Open→Close socket lifecycle (the concentrator pins virt's destination once for the
 	// process life, so virt in particular must NOT be recreated per Open).
 	virt      *udpEndpoint
-	scheduler sched.Scheduler
 	reflector *telemetry.Reflector
-	// newProber mints a prober for a path admitted to THIS peer at runtime (T30); nil
-	// disables runtime path addition for the peer (a bind without the probe transport).
+	// newProber mints a prober for a path admitted to THIS peer at runtime (T30).
 	newProber ProberFactory
 	// probers is this peer's BOOT-TIME per-path probe initiator set, in durable-membership
-	// (m.defs) order — bound AND deferred — shared with this peer's scheduler. At Open each
-	// bound entry is bound onto its peerPathState (pp.prober), and thereafter the hot paths
-	// reach a path's prober through the peerPathState — never by indexing this slice — so a
-	// runtime path add/remove cannot race echo handling. Nil when the peer runs without the
-	// probe transport; a nil here also gates the whole probe loop off.
+	// (m.defs) order — bound AND deferred. At Open each bound entry is bound onto its
+	// peerPathState (pp.prober), and thereafter the hot paths reach a path's prober
+	// through the peerPathState — never by indexing this slice — so a runtime path
+	// add/remove cannot race echo handling.
 	probers []*telemetry.Prober
 
 	// configuredRemote is THIS peer's CONFIGURED wire remote — the concentrator endpoint an EDGE
 	// peer statically targets (T251/Q68b). It seeds every one of this peer's paths at Open (and any
-	// path added at runtime) so a MULTI-EXIT edge sends each peer's DATA/PROBE frames to ITS OWN
+	// path added at runtime) so a MULTI-EXIT edge sends each peer's frames to ITS OWN
 	// concentrator, never a single bind-global default that would conflate two peers onto one hub.
 	// Unset on a concentrator peer (which learns its edge remote dynamically from authenticated
-	// inbound) and on a single-peer edge/hub (which keeps the bind-global defaultRemote, byte-
-	// identical to pre-T251). Seeded by SeedEdgePeerRemotes; durable across the Open/Close cycle.
+	// inbound) and on a single-peer edge/hub (which keeps the bind-global defaultRemote).
+	// Seeded by SeedEdgePeerRemotes; durable across the Open/Close cycle.
 	configuredRemote    netip.AddrPort
 	hasConfiguredRemote bool
 
 	// Per-Open state, (re)built by Open and cleared by Close.
-	sendCodec *frame.Codec
-	paths     []*peerPathState
-	outerSeq  atomic.Uint64
-	// resequencer is this peer's shared T18 receive resequencing buffer. Published
-	// atomically so the per-path readLoop goroutines read it WITHOUT m.mu.
+	paths []*peerPathState
+	// resequencer is this peer's receive resequencing buffer for bulk datagrams.
+	// Published atomically so the per-path readLoop goroutines read it WITHOUT m.mu.
 	resequencer atomic.Pointer[reseq.Resequencer]
-	// FEC datapath (T24), per peer. Both published atomically like resequencer so the
-	// lock-free receive fast path Loads fecRecv, and the lazy re-instantiation on re-bind
-	// (ensurePeerReceiveInstantiated, on a readLoop that must not take m.mu) can Store
-	// fecSend without racing Send's under-m.mu Load. The owner inside fecSend is the
-	// encoder/controller's sole writer; the atomic pointer governs generation publication.
-	// Both nil when FEC is off.
-	fecSend atomic.Pointer[fecSender]
-	fecRecv atomic.Pointer[fecReceiver]
-	// fecNextGroup persists the next process-local FEC group identifier across
-	// transport Close/Open. A process restart constructs a new peerState and
-	// intentionally restarts the sequence at zero.
-	fecNextGroup atomic.Uint32
 
-	// parityCarry is the count of FEC PARITY frames this peer has written to a path
-	// socket but not yet reported to its scheduler as offered load (defect D95,
-	// decisions:K35 §3c). Parity shards consume the SAME per-path wire capacity that
-	// PerPathCapacity denominates, so they must be metered as offered frames — but a
-	// batch's parity count is not known until the encoder's Admit runs inside Send's
-	// per-buffer loop, which is AFTER Pick has already stamped the chosen path into
-	// every frame. The count is therefore carried to the NEXT Send for this peer, which
-	// consumes it with Swap(0) and adds it to len(bufs). It is incremented only where a
-	// parity frame actually reached the socket, so it counts each parity frame exactly
-	// once and never counts one that was dropped in framing.
-	//
-	// It is ATOMIC because both writers run WITHOUT m.mu: Send's egress loop runs after
-	// m.mu.Unlock(), and fecFlushDeadline's write loop likewise. A plain field would be
-	// a data race (the same reason ps.txBytes and peer.outerSeq are atomics). With FEC
-	// off it is never incremented, so the datapath reads a constant 0 and Send's offered
-	// count is exactly len(bufs).
-	parityCarry atomic.Uint64
-
-	// serviceGate gives service changes writer preference over DATA/FEC batches.
-	// A rotation holds the write side only after every old-contract Send has
-	// finished its staged group and writer completion.
-	serviceGate sync.RWMutex
-	contracts   *recoveryContractCoordinator
-	dataLoss    *dataLossFeedbackCoordinator
-	lastWrite   atomic.Int64
-	// serviceTransitionPending coalesces asynchronous recovery-service
-	// transitions requested from inside a DATA Send's serviceGate read side.
-	// The single owner publishes Handled before releasing Pending, then rechecks
-	// Requested so a producer that observed Pending cannot lose its request.
-	serviceTransitionPending    atomic.Bool
-	serviceTransitionRequested  atomic.Uint64
-	serviceTransitionHandled    atomic.Uint64
-	serviceTransitionGeneration atomic.Uint64
-
-	congestionHaveCarrier bool
-	congestionCarrierID   uint8
-	congestionGeneration  uint64
-
-	// sendMu preserves one scheduler selection/offered event per engine Send while
-	// allowing that Send to block on the exact-byte shaper without holding m.mu.
-	// It also preserves this peer's send-codec/FEC ordering across the streaming
-	// encode-and-submit loop.
-	sendMu sync.Mutex
-
-	// lifecycleMu serializes lazy (re)instantiation of the heavy trio (resequencer, fecRecv,
-	// fecSend) on a readLoop goroutine (ensurePeerReceiveInstantiated) against teardown's
-	// clearing of that trio (teardownPeerLocked), so a teardown interleaving mid-instantiation
-	// can never leave a half-published plane (a fecRecv/fecSend without its resequencer) nor
-	// resurrect a plane on a torn-down peer that the next re-bind then reuses stale. It is a
-	// LEAF lock taken alone by instantiation and Close finalization. TearDownPeer acquires it
-	// before briefly taking m.mu, so no lifecycle wait occurs while the bind lock is held;
-	// instantiation never reaches for m.mu.
+	// lifecycleMu serializes lazy (re)instantiation of the resequencer on a readLoop
+	// goroutine (ensurePeerReceiveInstantiated) against teardown's clearing of it
+	// (teardownPeerLocked), so a teardown interleaving mid-instantiation can never
+	// resurrect it on a torn-down peer that the next re-bind then reuses stale. It is a
+	// LEAF lock taken alone by instantiation and Close finalization. TearDownPeer acquires
+	// it before briefly taking m.mu, so no lifecycle wait occurs while the bind lock is
+	// held; instantiation never reaches for m.mu.
 	lifecycleMu sync.Mutex
 }
 
 // newPeerState builds the durable per-peer datapath state whose probe Reflector — and,
-// through ps.psk, every frame Codec this peer later derives in Open/AddPath (its sendCodec
-// and each per-(peer,path) receive codec, via newCodec) — authenticate under THIS peer's
-// psk. It is the seam that replaces the pre-split single-psk assumption (T84): the
-// single-peer edge/hub mints exactly one (the primary) from the sole configured psk, while
-// the concentrator mints one per bound peer from that peer's DIFFERENT effective psk, so a
-// peerState built from a different psk gets its own codec/reflector and cross-psk frames are
-// rejected. virt is created here (not per Open) because the concentrator pins its destination
-// once for the process life. The Reflector draws its per-path challenges from crypto/rand,
-// exactly as before. The per-Open fields (sendCodec, paths, resequencer, FEC planes) are
-// left zero for Open to (re)build.
-func newPeerState(name string, psk config.Key, scheduler sched.Scheduler, newProber ProberFactory, probers []*telemetry.Prober) *peerState {
-	peer := &peerState{
+// through ps.psk, every frame Codec this peer later derives in Open/AddPath (via
+// newCodec) — authenticate under THIS peer's psk (T84): the single-peer edge/hub mints
+// exactly one (the primary) from the sole configured psk, while the concentrator mints
+// one per bound peer from that peer's DIFFERENT effective psk, so cross-psk frames are
+// rejected. virt is created here (not per Open) because the concentrator pins its
+// destination once for the process life. The Reflector draws its per-path challenges
+// from crypto/rand. The per-Open fields (paths, resequencer, adaptive) are left zero
+// for Open to (re)build.
+func newPeerState(name string, psk config.Key, newProber ProberFactory, probers []*telemetry.Prober) *peerState {
+	return &peerState{
 		name:      name,
 		psk:       psk,
 		virt:      &udpEndpoint{},
-		scheduler: scheduler,
 		reflector: telemetry.NewReflector(psk, rand.Reader),
 		newProber: newProber,
 		probers:   probers,
 	}
-	if len(probers) > 0 {
-		peer.contracts = newRecoveryContractCoordinator(probers[0].SessionID(), systemFECClock{})
-		peer.dataLoss = &dataLossFeedbackCoordinator{}
-	}
-	return peer
 }
 
-// newCodec derives a fresh frame Codec bound to THIS peer's psk — the send Codec at Open and
+// newCodec derives a fresh frame Codec bound to THIS peer's psk — the transport's send Codec and
 // each per-(peer,path) receive Codec share the derivation but not the instance, since a Codec
 // is not safe for concurrent use (each receive path decodes on its own goroutine). Deriving
 // from ps.psk (not a Multipath-wide key) is what makes a path's receive Codec the codec of the
@@ -645,8 +425,8 @@ func (ps *peerState) newCodec() (*frame.Codec, error) {
 // address, e.g. a 5G modem with no DHCP lease at boot). Rather than tear the whole
 // bond down, Open records the path here instead of binding it: the tunnel comes up
 // on the paths that DID bind, and this path stays DOWN — its prober, never fed an
-// echo, reports StateDown, which the scheduler excludes from Pick, exactly as the
-// runtime path-down model treats a live-but-silent path. It carries the boot-time
+// echo, reports StateDown, and with no socket the transport learns no lane on it. It
+// carries the boot-time
 // prober so the T55 background reconcile that retries the bind reuses the SAME
 // path-id stamp instead of minting a new one. prober is nil only on a bind without
 // the probe transport, which never defers (see Open).
@@ -665,8 +445,8 @@ type deferredPath struct {
 	// guards never fires for one).
 	warnedUnresolvable bool
 	// warnedPromoteFail is the D71 per-path dedup latch for the promote-failure WARN in
-	// reconcileDeferred: true once this path has BOUND but FAILED promotion (a scheduler/path
-	// index skew or codec build error), so a persistently un-promotable deferred path WARNs
+	// reconcileDeferred: true once this path has BOUND but FAILED promotion (a prober fan-out
+	// desync or codec build error), so a persistently un-promotable deferred path WARNs
 	// once for the whole failure window rather than once per 1 Hz reconcile tick. It is NOT
 	// cleared on a later listen success (that would re-spam every tick, since the listen
 	// re-succeeds each tick while promotion keeps failing); a path that finally promotes
@@ -677,24 +457,11 @@ type deferredPath struct {
 // remoteDeadAfter is the probe-silence bound on the SELECTED remote entry after which
 // checkRemoteDead performs the one-time sticky fallback to the freshest probe-learned
 // entry (T246, defect D94). It is deliberately ABOVE the liveness DownAfter (1200 ms):
-// path liveness declares the path down first (and the scheduler moves egress where it
-// can); this table-level fallback is the concentrator's belt-and-suspenders — its single
-// path gives the scheduler nothing to switch, so the DESTINATION itself must follow the
-// edge's surviving WAN. 2x DownAfter keeps ordinary probe jitter from ever tripping it
-// while still bounding downlink-failover latency to a couple of liveness windows.
+// path liveness declares the path down first; this table-level fallback is the
+// concentrator's belt-and-suspenders — it has a single path, so the DESTINATION itself
+// must follow the edge's surviving WAN. 2x DownAfter keeps ordinary probe jitter from
+// ever tripping it while still bounding downlink-failover latency to a couple of liveness windows.
 const remoteDeadAfter = 2 * telemetry.DefaultDownAfter
-
-// remoteDataFreshHorizon is the DATA-activity horizon gating a DATA-driven selection
-// MOVE (T246, defect D94; the o3 P2Aggregation regression): a foreign address-match-gated
-// DATA sample moves the selection ONLY when the currently-SELECTED entry's own DATA has
-// been silent for at least this long. Under weighted STRIPING both entries carry DATA
-// continuously (alternating per frame), so without this horizon the selection would chase
-// every foreign frame — flapping the downlink destination at FRAME rate (worse than the
-// probe-cadence flap D94 fixed) and shredding the return path. Under active-backup the
-// edge's genuine WAN switch silences the old entry's DATA, so the downlink follows within
-// this horizon. One DefaultDownAfter matches the liveness DOWN detection scale, keeping
-// the downlink-follow latency inside the existing failover budget.
-const remoteDataFreshHorizon = telemetry.DefaultDownAfter
 
 // setRemote SEEDS or OVERRIDES this view's downlink destination with an operator/
 // control-plane address (edge config dest_addr at Open; SetPeerRemote at hub failover):
@@ -725,8 +492,8 @@ func (ps *peerPathState) setRemote(ap netip.AddrPort) {
 // It establishes or refreshes-in-place the entry — the D9/D11 NAT-rebinding property:
 // probes keep EVERY sender path's return address current — and NEVER moves the
 // selection, with two deliberate exceptions: the FIRST entry ever established selects
-// itself (the R253 cold-start rule — the destination must be valid before any DATA so
-// the concentrator's own probe/liveness plane works), and an in-place ADDRESS change of
+// itself (the R253 cold-start rule — the destination must be valid for the
+// concentrator's own probe/liveness plane to work), and an in-place ADDRESS change of
 // the already-selected entry follows it (same sender path, new NAT binding) with one
 // roam callback.
 func (ps *peerPathState) learnRemoteFromProbe(senderPathID uint8, ap netip.AddrPort) {
@@ -750,53 +517,6 @@ func (ps *peerPathState) learnRemoteFromProbe(senderPathID uint8, ap netip.AddrP
 	cb := ps.onRoam
 	ps.mu.Unlock()
 	if hadNext && (!hadPrev || prev != next) && cb != nil {
-		cb()
-	}
-}
-
-// confirmDataRemote lets a DATA frame SELECT — never establish — the downlink
-// destination (T246, defect D94): a frame whose (sender path id, source address) EXACTLY
-// matches an entry the authenticated probe plane already established stamps that entry's
-// DATA freshness, and may mark it the active one. A mismatched or unknown (srcAP, PathID)
-// changes NOTHING — DATA is forgeable by design, so it can only ever pick among
-// probe-vouched addresses — and a same-entry confirmation just refreshes lastData (no
-// roam callback). Selection MOVES (one roam callback) only when the match names a
-// DIFFERENT established entry AND the currently-selected entry's own DATA has been silent
-// past remoteDataFreshHorizon: under active-backup a genuine edge WAN switch silences the
-// old entry so the move follows promptly, while under weighted STRIPING both entries stay
-// DATA-fresh and the selection never chases the per-frame alternation (the o3
-// P2Aggregation regression — a frame-rate destination flap on the return path).
-func (ps *peerPathState) confirmDataRemote(senderPathID uint8, src netip.AddrPort) {
-	ps.confirmDataRemoteAt(senderPathID, src, time.Now())
-}
-
-// confirmDataRemoteAt is confirmDataRemote with an injectable clock for tests.
-func (ps *peerPathState) confirmDataRemoteAt(senderPathID uint8, src netip.AddrPort, now time.Time) {
-	ps.mu.Lock()
-	e, ok := ps.remotes[senderPathID]
-	if !ok || e.addr != src {
-		ps.mu.Unlock()
-		return
-	}
-	e.lastData = now
-	if ps.selValid && ps.selKey == senderPathID {
-		ps.mu.Unlock()
-		return
-	}
-	if ps.selValid {
-		if sel := ps.remotes[ps.selKey]; sel != nil && !sel.lastData.IsZero() && now.Sub(sel.lastData) < remoteDataFreshHorizon {
-			// The selected entry itself carries fresh DATA (weighted striping, or a
-			// transient duplicate source): stay sticky, never chase per-frame alternation.
-			ps.mu.Unlock()
-			return
-		}
-	}
-	prev, hadPrev := ps.selectedAddrLocked()
-	ps.selKey, ps.selValid = senderPathID, true
-	next, _ := ps.selectedAddrLocked()
-	cb := ps.onRoam
-	ps.mu.Unlock()
-	if (!hadPrev || prev != next) && cb != nil {
 		cb()
 	}
 }
@@ -854,21 +574,12 @@ func (ps *peerPathState) selectedAddrLocked() (netip.AddrPort, bool) {
 	return e.addr, true
 }
 
-// getRemote returns the SELECTED downlink destination — the sticky, DATA-confirmed
-// active-path address (T246, defect D94) — feeding Send, emitProbes, and the PMTU
-// probes alike.
+// getRemote returns the SELECTED downlink destination — the sticky selected
+// entry's address (T246, defect D94) — feeding emitProbes and the PMTU probes.
 func (ps *peerPathState) getRemote() (netip.AddrPort, bool) {
 	ps.mu.Lock()
 	defer ps.mu.Unlock()
 	return ps.selectedAddrLocked()
-}
-
-func (ps *peerPathState) clearRemote() {
-	ps.mu.Lock()
-	ps.remotes = nil
-	ps.selKey = 0
-	ps.selValid = false
-	ps.mu.Unlock()
 }
 
 // errNoPathRemote is returned by the PMTU send seam when a probe is attempted before
@@ -954,60 +665,11 @@ func (m *Multipath) buildPMTUProbe(ps *peerPathState) *telemetry.EchoAwaitProbe 
 			return mapped
 		}
 		ps.recordOuterWrite(len(raw))
-		m.accountGeneratedPriorityAfterWrite(ps, len(raw))
 		return nil
 	}
 	outerIPUDPOverhead := IPv4UDPOverhead
 	if pathIsV6(ps.src) {
 		outerIPUDPOverhead = IPv6UDPOverhead
-	}
-	if shaped, ok := ps.shaper.(recoveryPathShaper); ok {
-		admit := func(size int, generate func() ([]byte, error)) error {
-			remote, remoteOK := ps.getRemote()
-			if !remoteOK {
-				return errNoPathRemote
-			}
-			generated := false
-			err := shaped.WritePriorityGenerated(
-				context.Background(),
-				size,
-				func() ([]byte, shaper.WriteFunc, error) {
-					generated = true
-					raw, generateErr := generate()
-					if generateErr != nil {
-						return nil, nil, generateErr
-					}
-					return raw, func(payload []byte) error {
-						if _, writeErr := ps.writeToUDPAddrPort(payload, remote); writeErr != nil {
-							ps.socketWriteErrors.Add(1)
-							return m.accountSendError(ps, writeErr)
-						}
-						return nil
-					}, nil
-				},
-			)
-			if err != nil {
-				mapped := mapPMTUProbeWriteError(err)
-				if !generated &&
-					(errors.Is(mapped, context.Canceled) || errors.Is(mapped, shaper.ErrClosed)) {
-					ps.pmtuAdmissionCanceled.Add(1)
-				}
-				if !errors.Is(mapped, telemetry.ErrProbeTooLarge) {
-					ps.probeSendErrors.Add(1)
-				}
-				return mapped
-			}
-			ps.recordOuterWrite(size)
-			return nil
-		}
-		return telemetry.NewCadencedAdmittedEchoAwaitProbe(
-			ps.prober,
-			admit,
-			ps.enqueuePMTUProbe,
-			outerIPUDPOverhead,
-			0,
-			nil,
-		)
 	}
 	return telemetry.NewCadencedEchoAwaitProbe(
 		ps.prober,
@@ -1066,32 +728,6 @@ func (m *Multipath) primaryPathByNameLocked(name string) *peerPathState {
 	return nil
 }
 
-// Multipath is the P1 bonding conn.Bind: one UDP socket per configured path
-// (bound to the path's source address), all fronted by a SINGLE stable virtual
-// endpoint the engine holds per peer. Send wraps each opaque WireGuard datagram
-// in an outer DATA frame (own outer-seq + path-id) and picks a path; one
-// Bind-owned reader per path unwraps DATA frames into the shared resequencer, and
-// a SINGLE engine-facing ReceiveFunc drains it and hands the inner WG datagram up
-// under the shared virtual endpoint (the fan-in that lets paths be added/removed at
-// runtime without the engine spawning receive goroutines — T30). It replaces
-// bind.Passthrough behind the same conn.Bind seam (device wiring is unchanged).
-//
-// Lifecycle: the sockets live for the duration of an Open→Close span, NOT the
-// Multipath's whole life. The amneziawg engine calls Close() before every Open()
-// (device.upLocked → BindUpdate → closeBindLocked, and on IpcSet listen_port /
-// route-change events) and cycles Close↔Open on Down/Up, so — exactly like
-// conn.StdNetBind — Open creates the per-path sockets and Close tears them down
-// AND clears the path state so the next Open rebuilds from scratch. The "closed"
-// state is simply "no bound sockets" (len(paths)==0); there is no separate sticky
-// flag that a later Open would have to reset.
-//
-// Path policy: an injected sched.Scheduler (T15) chooses the egress path per
-// datagram. The P1 MVP wires an active-backup scheduler (all traffic on the
-// preferred primary, transparent failover to a backup on a T13 path-DOWN signal
-// with failback hysteresis); the weighted/FEC-aware policy (T21) is a different
-// Scheduler swapped in here with no Bind change. No FEC/resequencing yet
-// (P2/P3), but every DATA frame carries its outer-seq and path-id so T18/T24 can
-// consume them.
 // ProberFactory mints a *telemetry.Prober for a path admitted at runtime (T30),
 // stamped with the given stable path-id and the path's OWN ride_through dwell (D86/T207)
 // so a runtime-added path measures liveness with the same configured hysteresis as a
@@ -1099,84 +735,8 @@ func (m *Multipath) primaryPathByNameLocked(name string) *peerPathState {
 // down_after threshold, clock, PSK, and logger the boot-time probers were built with, so a
 // runtime path's liveness is measured identically to a boot-time path with the same
 // ride_through (its probes join the same session so the peer's reflector adopts them without
-// a challenge reset). It is nil on a bind built without the probe transport (the T12 unit
-// tests), which therefore cannot add paths at runtime.
+// a challenge reset). A bind built without one cannot add paths at runtime.
 type ProberFactory func(name string, id uint8, rideThrough time.Duration) *telemetry.Prober
-
-type pathShaper interface {
-	WriteDatagrams(context.Context, []shaper.Datagram) (shaper.BatchResult, error)
-	AccountPriority(int) error
-	Close() error
-}
-
-type recoveryPathShaper interface {
-	pathShaper
-	WritePriority(context.Context, []byte, shaper.WriteFunc) error
-	TryWritePriority([]byte, shaper.WriteFunc) (bool, <-chan error, error)
-	WritePriorityGenerated(context.Context, int, shaper.PriorityGenerator) error
-	TryWritePriorityGenerated(int, shaper.PriorityGenerator) (bool, <-chan error, error)
-	WriteRecovery(context.Context, []shaper.Datagram, shaper.RecoveryControl) (shaper.BatchResult, error)
-	RecoveryContract() shaper.RecoveryContract
-}
-
-type stagedPathShaper interface {
-	Stop()
-	Wait() error
-}
-
-type causedStagedPathShaper interface {
-	stagedPathShaper
-	StopWithError(error)
-}
-
-func (pp *peerPathState) recoveryContract() shaper.RecoveryContract {
-	contract := pp.localRecoveryContract()
-	if !contract.Enabled {
-		return shaper.RecoveryContract{}
-	}
-	if pp.peer == nil || pp.peer.contracts == nil {
-		if pp.directRecovery {
-			return shaper.RecoveryContract{}
-		}
-		return contract
-	}
-	if !pp.peer.contracts.fastEligible() {
-		return shaper.RecoveryContract{}
-	}
-	return contract
-}
-
-func (pp *peerPathState) localRecoveryContract() shaper.RecoveryContract {
-	if pp.recoveryFailed.Load() {
-		return shaper.RecoveryContract{}
-	}
-	var contract shaper.RecoveryContract
-	if shaped, ok := pp.shaper.(recoveryPathShaper); ok {
-		contract = shaped.RecoveryContract()
-	} else if pp.directRecovery {
-		contract = shaper.RecoveryContract{
-			Enabled:    true,
-			WriteSlack: config.RecoveryWriteSlack,
-		}
-	} else {
-		return shaper.RecoveryContract{}
-	}
-	views := pp.views.Load()
-	if views == nil || len(*views) != 1 || (*views)[0] != pp {
-		return shaper.RecoveryContract{}
-	}
-	return contract
-}
-
-type pathShaperReporter interface {
-	Snapshot() shaper.Snapshot
-}
-
-type pathShaperRetargeter interface {
-	TryRetarget(float64, int) (bool, error)
-}
-
-type pathShaperFactory func(shaper.Config, shaper.WriteFunc) (pathShaper, error)
 
 // sourceBinding is one entry of the source->peer demux map (peerBySource): the peer a learned
 // source AddrPort was bound to by an authenticated PROBE, plus a monotonic insertion sequence
@@ -1188,24 +748,26 @@ type sourceBinding struct {
 	seq  uint64
 }
 
+// Multipath is the bonding conn.Bind: one UDP socket per configured path (bound to
+// the path's source address), all fronted by a SINGLE stable virtual endpoint the
+// engine holds per peer. Send hands each opaque WireGuard datagram to the peer's
+// adaptive transport (internal/bond), which paces it over the lanes its
+// authenticated hellos established; one Bind-owned reader per path feeds the
+// transport's deliveries into the peer's resequencer, and a SINGLE engine-facing
+// ReceiveFunc drains it and hands the inner WG datagram up under the shared virtual
+// endpoint (the fan-in that lets paths be added/removed at runtime without the engine
+// spawning receive goroutines — T30).
+//
+// Lifecycle: the sockets live for the duration of an Open→Close span, NOT the
+// Multipath's whole life. The amneziawg engine calls Close() before every Open()
+// (device.upLocked → BindUpdate → closeBindLocked, and on IpcSet listen_port /
+// route-change events) and cycles Close↔Open on Down/Up, so — exactly like
+// conn.StdNetBind — Open creates the per-path sockets and Close tears them down
+// AND clears the path state so the next Open rebuilds from scratch. The "closed"
+// state is simply "no bound sockets" (len(paths)==0); there is no separate sticky
+// flag that a later Open would have to reset.
 type Multipath struct {
-	defs            []config.Path
-	adaptiveEnabled bool
-
-	// shaperConfigs is nil for legacy/unit callers and otherwise index-aligned with
-	// defs. A configured entry produces one independently queued exact-byte shaper
-	// per (peer,path); no scheduler token admission remains live on that path.
-	shaperConfigs []config.PathShaperConfig
-	newPathShaper pathShaperFactory
-
-	// classify maps each outbound datagram to its pacer traffic class from the inner
-	// WireGuard message type, parameterized by the tunnel's Amnezia obfuscation profile
-	// so a WireGuard control frame (handshake/keepalive) is recognised under advanced
-	// security too, not only in vanilla mode (defect D22). Inner control uses the C
-	// reserve but keeps selected-path FIFO, outer sequencing, and FEC; it does not join
-	// the direct generated-outer-priority path. The classifier is immutable after
-	// construction and holds no lock, so Send reads it off m.mu.
-	classify wgClassifier
+	defs []config.Path
 
 	// log is this bind's component-scoped logger (log.Component("bind"), D53), set once
 	// at construction and never nil (NewMultipath fails fast on a nil logger, consistent
@@ -1263,34 +825,16 @@ type Multipath struct {
 	// construction, never nil.
 	addPathListen func(src netip.Addr, port uint16, dev string) (*net.UDPConn, error, error)
 
-	// clock is the bind-level injectable time source for the per-peer exact deadline
-	// timers and the adaptive drive's self-throttle. It is an injection seam mirroring
-	// deferredListen / resolveDeviceBind / addPathListen: the default is the real
-	// systemFECClock (set in NewMultipath), and a test overrides it PRE-OPEN with
-	// the same hand-advanced fake clock its probers/scheduler read, so the throttle's
-	// interval arithmetic advances in lockstep with liveness transitions rather than on the
-	// wall clock (D97). Multipath held no injected clock before — the fake clock reached
-	// only probers/scheduler because tests constructed THOSE with it — so the throttle read
-	// bare time.Now() and could not be driven deterministically. Immutable after Open,
-	// never nil.
-	clock fecOwnerClock
+	// clock is the bind-level injectable time source for the resequencers and the
+	// receive drainer's park timer. It is an injection seam mirroring deferredListen /
+	// resolveDeviceBind / addPathListen: the default is the wall clock (set in
+	// NewMultipath), and a test overrides it PRE-OPEN with a hand-advanced one.
+	// Immutable after Open, never nil.
+	clock bindClock
 
-	// fecDeadlineInvalidator is the pre-T313 missed-deadline seam. The FEC owner
-	// invokes it at most once for a group whose exact deadline decision exceeds
-	// fecDeadlineDispatchGrace, after the decision is immutable and after it has
-	// invalidated the peer's negotiated recovery contract. Nil is the production
-	// default because the contract invalidation itself no longer depends on the seam.
-	fecDeadlineInvalidator fecDeadlineInvalidator
-
-	// Test-only lifecycle seams. Tests install them before starting lazy peer
-	// instantiation or Close.
-	beforeLazyFECPublish               func(*peerState, *fecSender)
-	afterCloseFECDetach                func()
-	afterRecoveryRetire                func(*sharedPathState)
-	afterRecoveryTransitionCaptureMiss func(*peerState, uint64, uint64)
-	beforeReceivePark                  func(time.Time)
-	beforeRecoveryPublish              func(*peerState, *reseq.Resequencer, uint64)
-	afterRecoveryPublicationReserve    func(*peerState, *reseq.Resequencer, uint64, uint64)
+	// beforeReceivePark is a test-only seam: the receive drainer calls it with the
+	// instant it is about to park until.
+	beforeReceivePark func(time.Time)
 
 	// transitionMu serializes transport-generation changes while their blocking
 	// retirement barriers run outside m.mu. The fixed order is transitionMu then
@@ -1303,12 +847,9 @@ type Multipath struct {
 	openGeneration atomic.Uint64
 
 	// The PRIMARY peer, embedded so the single-peer datapath (Send, the receive drainer,
-	// the probe loop) and the existing single-peer tests reach its fields — virt,
-	// scheduler, reflector, newProber, probers, sendCodec, paths, outerSeq, resequencer,
-	// fecSend/fecRecv — transparently through promotion, keeping behaviour byte-identical
-	// to the pre-split singleton. It is peers[0]; the concentrator's additional peers live
-	// in peers/peersByName. The former process-global resequencer/outerSeq/scheduler now
-	// live on this peerState, NOT on Multipath.
+	// the probe loop) and the single-peer tests reach its fields — virt, reflector,
+	// newProber, probers, paths, resequencer, adaptive — transparently through promotion.
+	// It is peers[0]; the concentrator's additional peers live in peers/peersByName.
 	*peerState
 
 	// peers is every bound peer (len 1 on the single-peer edge/hub). The runtime shared-
@@ -1321,7 +862,7 @@ type Multipath struct {
 	// receive drainer iterates (newReceiveFunc). m.peers is mutated only under m.mu (peer
 	// wiring / fan-out); every mutation republishes this pointer (republishPeersLocked) so
 	// the drainer enumerates EVERY bound peer's resequencer WITHOUT taking m.mu on the
-	// receive hot path — the same lock-free-publish discipline resequencer/fecRecv use. It
+	// receive hot path — the same lock-free-publish discipline the resequencer uses. It
 	// is never nil after construction (the constructor publishes the primary-only view).
 	peersView atomic.Pointer[[]*peerState]
 	// peerByEndpoint is the inbound endpoint-keyed demux placeholder (still unused today: the
@@ -1355,7 +896,7 @@ type Multipath struct {
 	bindSeq atomic.Uint64
 	// peerByVirt routes an OUTBOUND Send to its owning peer: the engine hands Send the
 	// single virtual endpoint (*udpEndpoint) it holds for a peer, and this map resolves
-	// that pointer to the peer's datapath state (outerSeq, scheduler, sendCodec, fecSend,
+	// that pointer to the peer's datapath state (its adaptive transport and
 	// per-(peer,path) set). It is the SEND-side dual of peerByEndpoint/peerBySource (which
 	// demux INBOUND datagrams). Each peer's virt is DISTINCT, so the lookup is exact; an
 	// endpoint not in this map is an unknown peer, which Send refuses rather than
@@ -1382,8 +923,8 @@ type Multipath struct {
 	shared []*sharedPathState
 
 	// deferred holds the configured paths whose well-formed source_addr was not yet
-	// assignable at the last Open (EADDRNOTAVAIL). They are NOT in shared or the
-	// scheduler — the tunnel runs on the paths that bound — but are recorded here,
+	// assignable at the last Open (EADDRNOTAVAIL). They are NOT in shared — the
+	// tunnel runs on the paths that bound — but are recorded here,
 	// index-independent of shared, for the T55 background reconcile to retry as their
 	// addresses appear. Rebuilt from scratch on every Open; guarded by m.mu. The deferred-
 	// path machinery is SHARED (per-socket): a promoted deferred path fans its per-(peer,
@@ -1404,13 +945,6 @@ type Multipath struct {
 	defaultRemote    netip.AddrPort
 	hasDefaultRemote bool
 
-	// fecCfg / adaptiveCfg are the FEC configuration (T24/T29), shared by every peer; the
-	// per-peer fecSend/fecRecv runtime state Open builds from them lives on peerState. nil
-	// when FEC (respectively adaptive FEC) is disabled — the datapath is then byte-for-byte
-	// the pre-T24 behaviour. See fec.go.
-	fecCfg      *fec.Config
-	adaptiveCfg *adaptivefec.Config
-
 	// Receive fan-in (T30). To let a path be added at runtime WITHOUT the engine
 	// spawning a new receive goroutine (it only builds its receive goroutines once,
 	// from the ReceiveFuncs Open returns), the per-path socket reads are decoupled
@@ -1425,12 +959,11 @@ type Multipath struct {
 	// surviving path is never renumbered and a freed id is never reused for the
 	// process lifetime, and thus can never collide with the peer's per-path reflector
 	// state.
-	deliverSignal           chan struct{}
-	recoveryAuthoritySignal chan struct{}
-	recvClosed              chan struct{}
-	readersWG               sync.WaitGroup
-	openPort                uint16
-	nextPathID              uint16
+	deliverSignal chan struct{}
+	recvClosed    chan struct{}
+	readersWG     sync.WaitGroup
+	openPort      uint16
+	nextPathID    uint16
 
 	// Receive-path liveness sweep (T39, defect D15). Liveness DOWN-detection normally
 	// rides StartProbeLoop's single wall-clock ticker goroutine (emitProbes → Tick).
@@ -1479,64 +1012,23 @@ var _ Bind = (*Multipath)(nil)
 
 // NewMultipath returns a closed multipath Bind over the configured paths; call
 // Open to bind the per-path sockets. The PSK keys the outer framing and must be
-// set (config validation guarantees it). The scheduler is the injected send-side
-// path-selection policy (T15) whose priority order MUST match the paths slice
-// order (index 0 = the preferred primary); it is a required collaborator so the
-// send path is never without a policy.
+// set (config validation guarantees it).
 //
-// probers is the per-path probe initiator that drives on-wire liveness (T13/T37).
-// When non-nil it MUST hold exactly one *telemetry.Prober per path, in path order,
-// and those SAME values MUST be the scheduler's PathHealth sources so the liveness
-// the probe loop measures is the liveness the scheduler selects on. Pass nil to
-// run the bind without the probe transport (the T12 unit tests drive selection via
-// sched.AlwaysUp instead). A Reflector is built from the PSK to answer peer probes.
+// probers is the per-path probe initiator set that drives on-wire liveness (T13/T37)
+// and carries the transport's hellos: exactly one *telemetry.Prober per path, in path
+// order. The transport learns its peer only from authenticated probes, so the set is
+// required. A Reflector is built from the PSK to answer peer probes.
 //
 // newProber is the factory the runtime path-add path (AddPath, T30) uses to mint a
-// prober for a newly-admitted path; it must be non-nil to allow AddPath and MUST be
-// paired with a non-nil probers (the boot-time set) — a factory without a boot-time
-// slice would let AddPath append to a nil m.probers, breaking the m.paths/m.probers
-// alignment invariant and panicking on the next Open at m.probers[i]. Pass nil to
-// forbid runtime path addition.
-//
-// fecCfg is the fixed-ratio Reed-Solomon FEC configuration (T24). Pass nil to run the
-// datapath with FEC disabled (the pre-T24 behaviour, byte-for-byte); a non-nil,
-// pre-validated config turns the send-side parity encoder and receive-side recovery
-// decoder on. It is validated here (fail fast) so an invalid ratio is rejected at
-// construction rather than at the first Open.
-// adaptiveCfg is the adaptive-FEC controller configuration (T29). Pass nil for the
-// fixed-ratio behaviour (T24); a non-nil config REQUIRES a non-nil fecCfg (the
-// controller resizes the FEC encoder's parity — it is meaningless with the plane off)
-// and reinterprets fecCfg.ParityShards as the controller's parity ceiling. It is
-// validated here (fail fast) so a mis-tuned control law is rejected at construction.
-//
-// amnezia is the tunnel's AmneziaWG obfuscation profile (config.Amnezia). It
-// parameterizes the send-path frame-type classifier so a WireGuard control frame is
-// recognised for the bounded C reserve under advanced security — custom magic headers
-// and handshake junk prefixes — as well as in vanilla mode (defect D22). It still
-// traverses selected-path FIFO/outer sequence/FEC and never overtakes earlier DATA.
-// Pass the zero value for a vanilla (unobfuscated) tunnel; the classifier then uses the
-// default type words and no junk prefix. It does NOT need to match the config's validated
-// state — an all-zero profile is exactly the vanilla classifier.
+// prober for a newly-admitted path. Pass nil to forbid runtime path addition.
 //
 // lg is the structured logger (internal/log); it is component-scoped to "bind"
 // (log.Logger.Component) and stored so the SO_BINDTODEVICE→source-IP fallback a
 // forced bind="device" path can silently take is surfaced at WARN instead of the
 // pre-D53 silence (see warnForcedDeviceUnresolvable / warnDeviceBindFallback). It is
-// a required collaborator, like scheduler — fail fast on nil rather than let the bind
-// run logging-blind.
-func NewMultipath(paths []config.Path, psk config.Key, scheduler sched.Scheduler, probers []*telemetry.Prober, newProber ProberFactory, fecCfg *fec.Config, adaptiveCfg *adaptivefec.Config, amnezia config.Amnezia, lg log.Logger) (*Multipath, error) {
-	return buildMultipath(paths, psk, scheduler, probers, newProber, fecCfg, adaptiveCfg, amnezia, nil, lg)
-}
-
-// NewMultipathWithShapers composes the production pacing datapath. shaperConfigs
-// must contain one exact-byte configuration per durable path. The scheduler still
-// owns liveness, aggregation and path choice, but its PickUnpaced seam records one
-// offered event and selects one path without consuming legacy frame tokens.
-func NewMultipathWithShapers(paths []config.Path, psk config.Key, scheduler sched.Scheduler, probers []*telemetry.Prober, newProber ProberFactory, fecCfg *fec.Config, adaptiveCfg *adaptivefec.Config, amnezia config.Amnezia, shaperConfigs []config.PathShaperConfig, lg log.Logger) (*Multipath, error) {
-	return buildMultipath(paths, psk, scheduler, probers, newProber, fecCfg, adaptiveCfg, amnezia, shaperConfigs, lg)
-}
-
-func buildMultipath(paths []config.Path, psk config.Key, scheduler sched.Scheduler, probers []*telemetry.Prober, newProber ProberFactory, fecCfg *fec.Config, adaptiveCfg *adaptivefec.Config, amnezia config.Amnezia, shaperConfigs []config.PathShaperConfig, lg log.Logger) (*Multipath, error) {
+// a required collaborator — fail fast on nil rather than let the bind run
+// logging-blind.
+func NewMultipath(paths []config.Path, psk config.Key, probers []*telemetry.Prober, newProber ProberFactory, lg log.Logger) (*Multipath, error) {
 	if len(paths) == 0 {
 		return nil, errors.New("bind: at least one path is required")
 	}
@@ -1544,30 +1036,13 @@ func buildMultipath(paths []config.Path, psk config.Key, scheduler sched.Schedul
 		return nil, errors.New("bind: PSK is required for outer framing")
 	}
 	if len(paths) > 256 {
-		// path-id is a uint8 in the DATA frame header.
+		// path-id is a single wire byte (frame.Probe.PathID).
 		return nil, fmt.Errorf("bind: at most 256 paths supported, got %d", len(paths))
-	}
-	if scheduler == nil {
-		return nil, errors.New("bind: a send scheduler is required")
-	}
-	if shaperConfigs != nil {
-		if len(shaperConfigs) != len(paths) {
-			return nil, fmt.Errorf("bind: shapers must have one entry per path (got %d, want %d)", len(shaperConfigs), len(paths))
-		}
-		if _, ok := scheduler.(sched.UnpacedPicker); !ok {
-			return nil, errors.New("bind: exact-byte shaping requires a scheduler with unpaced selection")
-		}
 	}
 	if lg == nil {
 		return nil, errors.New("bind: a logger is required")
 	}
-	if newProber != nil && probers == nil {
-		// A runtime-path factory without a boot-time prober slice would let AddPath append
-		// to a nil m.probers, desyncing m.paths from m.probers and panicking on the next
-		// Open at m.probers[i]. The two are paired by construction; enforce it here.
-		return nil, errors.New("bind: newProber requires a non-nil probers (boot-time set)")
-	}
-	if probers != nil && len(probers) != len(paths) {
+	if len(probers) != len(paths) {
 		return nil, fmt.Errorf("bind: probers must have one entry per path (got %d, want %d)", len(probers), len(paths))
 	}
 	for i, pr := range probers {
@@ -1575,50 +1050,10 @@ func buildMultipath(paths []config.Path, psk config.Key, scheduler sched.Schedul
 			return nil, fmt.Errorf("bind: prober %d is nil", i)
 		}
 	}
-	if fecCfg != nil {
-		if err := fecCfg.Validate(); err != nil {
-			return nil, fmt.Errorf("bind: invalid FEC configuration: %w", err)
-		}
-		if fecCfg.Deadline > maxFECDeadline {
-			// A deadline this large makes every deadline-flushed group's recovery
-			// structurally late: the resequencer skips the gap (resequencerTimeout) before
-			// the parity-derived frames land, so recovery never delivers. Reject it rather
-			// than ship a bond whose FEC silently cannot help (defect #4).
-			return nil, fmt.Errorf("bind: fec deadline %s exceeds the max %s (must stay safely below the resequencer's %s per-gap timeout so deadline-flushed recovery lands before the gap is skipped)", fecCfg.Deadline, maxFECDeadline, resequencerTimeout)
-		}
-	}
-	if adaptiveCfg != nil {
-		if fecCfg == nil {
-			return nil, errors.New("bind: adaptive FEC requires a FEC configuration (the controller resizes the FEC encoder's parity)")
-		}
-		if err := adaptiveCfg.Validate(); err != nil {
-			return nil, fmt.Errorf("bind: invalid adaptive FEC configuration: %w", err)
-		}
-		// The controller's parity ceiling (MaxParity) is the fixed FEC ParityShards both
-		// ends agree on: the receiver's decoder is built at fecCfg.ParityShards, and the
-		// encoder must never emit more parity than that ceiling (SetParity clamps to it).
-		// A mismatch would let the controller target a parity index the decoder rejects,
-		// so bind the two together at construction rather than trusting the caller.
-		if adaptiveCfg.MaxParity != fecCfg.ParityShards {
-			return nil, fmt.Errorf("bind: adaptive FEC parity ceiling (MaxParity=%d) must equal the FEC parity_shards (%d), which the receiver's decoder is built at", adaptiveCfg.MaxParity, fecCfg.ParityShards)
-		}
-		if adaptiveCfg.DataShards != fecCfg.DataShards {
-			return nil, fmt.Errorf("bind: adaptive FEC DataShards (%d) must equal the FEC data_shards (%d)", adaptiveCfg.DataShards, fecCfg.DataShards)
-		}
-	}
-	// The single-peer edge/hub constructs EXACTLY ONE peerState (the primary). virt is
-	// created here — NOT per Open — because the concentrator pins its destination once for
-	// the process life and every existing test relies on the virtual-endpoint pointer being
-	// stable across Open/Close/add/remove.
-	primary := newPeerState("", psk, scheduler, newProber, probers)
+	primary := newPeerState("", psk, newProber, probers)
 	m := &Multipath{
-		defs:          append([]config.Path(nil), paths...),
-		shaperConfigs: append([]config.PathShaperConfig(nil), shaperConfigs...),
-		newPathShaper: func(cfg shaper.Config, write shaper.WriteFunc) (pathShaper, error) {
-			return shaper.New(cfg, shaper.SystemClock{}, write)
-		},
+		defs:              append([]config.Path(nil), paths...),
 		log:               lg.Component("bind"),
-		classify:          newWGClassifier(amnezia),
 		deferredListen:    defaultDeferredListen,
 		resolveDeviceBind: resolveForcedDeviceBind,
 		resolveIface: func(s netip.Addr) ifaceInfo {
@@ -1629,7 +1064,7 @@ func buildMultipath(paths []config.Path, psk config.Key, scheduler sched.Schedul
 			return interfaceInfo(s, ifaces)
 		},
 		addPathListen:    listenPath,
-		clock:            systemFECClock{},
+		clock:            systemClock{},
 		peerState:        primary,
 		peers:            []*peerState{primary},
 		peersByName:      map[string]*peerState{primary.name: primary},
@@ -1637,81 +1072,9 @@ func buildMultipath(paths []config.Path, psk config.Key, scheduler sched.Schedul
 		peerByVirt:       map[*udpEndpoint]*peerState{primary.virt: primary},
 		edgePeerByRemote: map[netip.AddrPort]*peerState{},
 		maxDemuxSources:  defaultMaxDemuxSources,
-		fecCfg:           fecCfg,
-		adaptiveCfg:      adaptiveCfg,
 	}
-	// Publish the initial (primary-only) peer view the receive drainer iterates. No
-	// concurrency yet — the bind is not open — so this runs without m.mu.
 	m.republishPeersLocked()
 	return m, nil
-}
-
-func exactByteShaperConfig(cfg config.PathShaperConfig) shaper.Config {
-	return shaper.Config{
-		RateBytesPerSecond:         cfg.RateBytesPerSecond,
-		PriorityRateBytesPerSecond: cfg.ProbeRateBytesPerSecond,
-		DataBudgetBytes:            cfg.DataBurstBytes,
-		ControlReserveBytes:        cfg.ControlReserveBytes,
-		MaxDatagramBytes:           cfg.MaxEncodedDatagramBytes,
-		PriorityBurstBytes:         cfg.ProbeBurstBytes,
-		PriorityReserveBytes:       cfg.PriorityReserveBytes,
-		FECGroupReserveBytes:       cfg.FECGroupReserveBytes,
-		RecoveryWriteSlack:         cfg.RecoveryWriteSlack,
-	}
-}
-
-func (m *Multipath) installPathShaperLocked(pp *peerPathState, cfg *config.PathShaperConfig) error {
-	if m.shaperConfigs == nil {
-		if m.fecCfg != nil {
-			pp.directRecovery = true
-			pp.recoveryBound = config.RecoveryWriteSlack
-		}
-		return nil
-	}
-	if cfg == nil {
-		return fmt.Errorf("bind: path %q has no exact-byte shaper configuration", pp.name)
-	}
-	s, err := m.newPathShaper(exactByteShaperConfig(*cfg), func(payload []byte) error {
-		remote, ok := pp.getRemote()
-		if !ok {
-			return ErrNoHealthyPath
-		}
-		if _, err := pp.writeToUDPAddrPort(payload, remote); err != nil {
-			pp.socketWriteErrors.Add(1)
-			return m.accountSendError(pp, err)
-		}
-		return nil
-	})
-	if err != nil {
-		return fmt.Errorf("bind: create exact-byte shaper for path %q: %w", pp.name, err)
-	}
-	pp.shaper = s
-	pp.recoveryBound = cfg.RecoveryBound
-	if !cfg.CongestionControlled {
-		return nil
-	}
-	controller, err := congestion.New(
-		cfg.RateBytesPerSecond,
-		cfg.RateLimitBytesPerSecond,
-	)
-	if err != nil {
-		_ = s.Close()
-		return fmt.Errorf("bind: create congestion controller for path %q: %w", pp.name, err)
-	}
-	pp.congestion = controller
-	return nil
-}
-
-func (m *Multipath) shaperConfigLocked(name string) *config.PathShaperConfig {
-	for i := range m.defs {
-		if m.defs[i].Name == name {
-			if i < len(m.shaperConfigs) {
-				return &m.shaperConfigs[i]
-			}
-			return nil
-		}
-	}
-	return nil
 }
 
 // warnForcedDeviceUnresolvable logs the D53 layer-(a) fallback that ACTUALLY
@@ -1796,42 +1159,31 @@ func (m *Multipath) republishPeersLocked() {
 // AddConcentratorPeer registers one ADDITIONAL bound peer with the Bind — the concentrator's
 // per-peer wiring (G4/T93). Peer 0 (the embedded primary) is built by NewMultipath; the
 // concentrator calls this once per additional configured peer, each with its OWN effective psk,
-// send scheduler, boot-time per-path prober set, and runtime prober factory (all keyed on that
+// boot-time per-path prober set, and runtime prober factory (all keyed on that
 // peer's psk, so one peer's codec/reflector reject another's frames — T84/R72). The peer's
 // STABLE virtual endpoint is minted here (newPeerState) and registered in peerByVirt so an
 // outbound Send routes replies back to THIS peer; Open then builds this peer's per-(peer,path)
-// view of every bound socket, reconciles its scheduler, and (via newReceiveFunc) reports its
+// view of every bound socket and (via newReceiveFunc) reports its
 // virt to the engine on the first inbound frame (invariant A1: one virtual endpoint per peer).
 //
 // It MUST be called BEFORE Open (while the bind is closed): the per-(peer,path) views are
 // rebuilt by Open from the registered peer set on every Open span (including each Close→Open
 // cycle the engine drives on Down/Up and route changes), so a peer registered after the sockets
-// are bound would be view-less and its DATA/PROBE never routed. probers, when supplied, must be
+// are bound would be view-less and its frames never routed. probers must be
 // index-aligned with the configured path membership (m.defs), exactly as the primary's are.
-func (m *Multipath) AddConcentratorPeer(name string, psk config.Key, scheduler sched.Scheduler, probers []*telemetry.Prober, newProber ProberFactory) error {
+func (m *Multipath) AddConcentratorPeer(name string, psk config.Key, probers []*telemetry.Prober, newProber ProberFactory) error {
 	if name == "" {
 		return errors.New("bind: concentrator peer name is required")
 	}
 	if !psk.IsSet() {
 		return errors.New("bind: concentrator peer psk is required")
 	}
-	if scheduler == nil {
-		return errors.New("bind: concentrator peer requires a send scheduler")
-	}
-	if m.shaperConfigs != nil {
-		if _, ok := scheduler.(sched.UnpacedPicker); !ok {
-			return fmt.Errorf("bind: concentrator peer %q: exact-byte shaping requires a scheduler with unpaced selection", name)
-		}
-	}
-	if newProber != nil && probers == nil {
-		return errors.New("bind: newProber requires a non-nil probers (boot-time set)")
-	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if len(m.paths) != 0 {
 		return errors.New("bind: concentrator peers must be registered before Open")
 	}
-	if probers != nil && len(probers) != len(m.defs) {
+	if len(probers) != len(m.defs) {
 		return fmt.Errorf("bind: concentrator peer %q: probers must have one entry per configured path (got %d, want %d)", name, len(probers), len(m.defs))
 	}
 	for i, pr := range probers {
@@ -1845,12 +1197,12 @@ func (m *Multipath) AddConcentratorPeer(name string, psk config.Key, scheduler s
 	if _, dup := m.peersByName[name]; dup {
 		return fmt.Errorf("bind: duplicate concentrator peer name %q", name)
 	}
-	p := newPeerState(name, psk, scheduler, newProber, probers)
+	p := newPeerState(name, psk, newProber, probers)
 	m.peers = append(m.peers, p)
 	m.peersByName[name] = p
 	m.peerByVirt[p.virt] = p
-	// Publish the grown peer set so the engine-facing receive drainer (newReceiveFunc) will
-	// enumerate this peer's resequencer once Open builds it.
+	// Publish the grown peer set to the lock-free receive drainer (newReceiveFunc) so the
+	// new peer's resequencer is drained once Open builds it.
 	m.republishPeersLocked()
 	return nil
 }
@@ -1911,39 +1263,28 @@ func (m *Multipath) Open(port uint16) (receiveFuncs []ReceiveFunc, boundPort uin
 		return nil, 0, conn.ErrBindAlreadyOpen
 	}
 	m.openGeneration.Add(1)
-	m.recoveryAuthoritySignal = make(chan struct{}, 1)
 	cleanupOnError := true
 	defer func() {
 		if !cleanupOnError {
 			m.mu.Unlock()
 			return
 		}
-		fecSenders := m.detachFECSendersLocked(m.fecGenerationCloseError())
 		retirement := m.detachSocketGenerationsLocked()
 		m.mu.Unlock()
 		if err := retirement.retire(); retErr == nil {
 			retErr = err
 		}
-		waitFECSenders(fecSenders)
 		m.readersWG.Wait()
 		m.clearPerOpenStateAfterReaders()
 	}()
 
-	// (Re)build the per-Open datapath planes — send Codec, receive resequencer, and FEC
-	// send/receive state — fresh for this bring-up, for EVERY bound peer (not just the
-	// primary via promotion). This keeps Open symmetric with generation retirement, which
-	// clears every peer's per-Open state: a concentrator peer bound before Open must get
-	// its OWN fresh planes on each Close→Open cycle, and one peer's (re)creation must never
-	// touch another peer's release point or FEC group state. On the single-peer edge/hub
-	// m.peers holds only the primary, so this is byte-identical to the pre-split rebuild.
-	// See openPeerDatapathLocked.
+	// (Re)build every bound peer's receive resequencer fresh for this bring-up. This
+	// keeps Open symmetric with generation retirement, which clears every peer's
+	// per-Open state: a concentrator peer bound before Open must get its OWN fresh
+	// resequencer on each Close→Open cycle, and one peer's (re)creation must never
+	// touch another peer's release point.
 	for _, p := range m.peers {
-		if m.adaptiveEnabled && len(p.probers) == 0 {
-			return nil, 0, fmt.Errorf("bind: adaptive peer %q requires authenticated probes", p.name)
-		}
-		if err := m.openPeerDatapathLocked(p); err != nil {
-			return nil, 0, err
-		}
+		p.resequencer.Store(reseq.New(resequencerWindow, resequencerTimeout, m.clock))
 	}
 
 	// Resolve every path's interface up front and decide, per path, whether its
@@ -1963,16 +1304,10 @@ func (m *Multipath) Open(port uint16) (receiveFuncs []ReceiveFunc, boundPort uin
 	// A path whose WELL-FORMED source_addr is merely NOT-YET-ASSIGNABLE at boot
 	// (EADDRNOTAVAIL: no interface holds the address — a 5G modem without a DHCP
 	// lease, Starlink mid-obstruction) is DEFERRED rather than treated as fatal, so
-	// the bond comes up on the paths that DO bind (G2/W1, approach A). Tolerating it
-	// requires the runtime path-down machinery: the deferred path's prober stays
-	// StateDown so the scheduler excludes it, and a DynamicScheduler whose membership
-	// can be reconciled to only the bound paths. Absent the probe transport (the T12
-	// no-prober unit binds) or a dynamic scheduler there is no such Down model, so —
-	// exactly as AddPath refuses a runtime add without probers — every bind error
-	// stays fatal there. A MALFORMED source_addr never reaches here (config.validate
+	// the bond comes up on the paths that DO bind (G2/W1, approach A): the deferred
+	// path's prober stays StateDown and it has no socket, so the transport never
+	// learns a lane on it. A MALFORMED source_addr never reaches here (config.validate
 	// rejects it at load), and any OTHER bind error (EADDRINUSE, permission) is fatal.
-	_, dynOK := m.scheduler.(sched.DynamicScheduler)
-	tolerateDefer := m.probers != nil && dynOK
 	m.deferred = nil
 
 	actualPort := port
@@ -1984,7 +1319,7 @@ func (m *Multipath) Open(port uint16) (receiveFuncs []ReceiveFunc, boundPort uin
 		// otherwise pin the specific source IP. See selectDeviceBinds / listenPath.
 		c, deviceErr, err := listenPath(def.SourceAddr, port, bindDevs[i])
 		if err != nil {
-			if tolerateDefer && errors.Is(err, syscall.EADDRNOTAVAIL) {
+			if errors.Is(err, syscall.EADDRNOTAVAIL) {
 				// Defer this path: record its def + boot prober (kept Down) for the T55
 				// background reconcile to retry, and leave the bond to come up on the rest.
 				// Mirrors AddPath's rollback discipline — a failed path never disturbs the
@@ -2004,7 +1339,7 @@ func (m *Multipath) Open(port uint16) (receiveFuncs []ReceiveFunc, boundPort uin
 		// are deferred past the peer fan-out below (round 3 / CRITICISM 1): a peer's
 		// codec build or prober-fan-out desync in that loop aborts this ENTIRE Open call
 		// (generation retirement + a returned error), so warning here — before the path is
-		// actually installed into every peer's paths/scheduler — would log an
+		// actually installed into every peer's paths — would log an
 		// outcome-false "falling back to source-IP pinning" claim for a bond that never
 		// came up at all.
 		//
@@ -2014,13 +1349,12 @@ func (m *Multipath) Open(port uint16) (receiveFuncs []ReceiveFunc, boundPort uin
 		_ = c.SetReadBuffer(socketRecvBuffer)
 
 		shared := &sharedPathState{
-			name:           def.Name,
-			id:             uint8(i),
-			src:            def.SourceAddr,
-			conn:           c,
-			openGeneration: m.openGeneration.Load(),
-			bindMode:       def.Bind,
-			boundDevice:    bindDevs[i],
+			name:        def.Name,
+			id:          uint8(i),
+			src:         def.SourceAddr,
+			conn:        c,
+			bindMode:    def.Bind,
+			boundDevice: bindDevs[i],
 		}
 		// Own the socket before constructing any peer view so every later error
 		// unwinds it through the same generation-retirement barrier.
@@ -2040,26 +1374,23 @@ func (m *Multipath) Open(port uint16) (receiveFuncs []ReceiveFunc, boundPort uin
 				return nil, 0, err
 			}
 			pp := &peerPathState{sharedPathState: shared, peer: p, codec: codec}
-			if p.probers != nil {
-				// Fail fast rather than panic if a peer's prober slice ever falls short of the
-				// shared m.defs membership: every runtime admission (bound OR deferred) fans a
-				// per-peer prober out to EVERY peer (AddPath), so p.probers stays index-aligned
-				// with m.defs. A divergence is a wiring defect — surface it as a bind error
-				// instead of an index-out-of-range panic that would crash the daemon.
-				if i >= len(p.probers) {
-					return nil, 0, fmt.Errorf("bind: peer %q prober set (len %d) is shorter than the path membership at index %d — per-peer prober fan-out desync", p.name, len(p.probers), i)
-				}
-				pp.prober = p.probers[i]
-				if pi == 0 {
-					// Reconcile the SHARED DATA-frame path-id to the PRIMARY prober's IMMUTABLE
-					// stamp rather than the slice index i: after a runtime RemovePath the survivor
-					// keeps its original (higher) stamp, so index-based numbering would renumber a
-					// live path AND diverge its DATA id from its PROBE stamp. Every peer's
-					// probers[i] carries the SAME stamp (the device stamps each peer's boot prober
-					// for path i identically), so taking it from the primary is authoritative and
-					// keeps DATA and every peer's PROBE agreeing on the wire.
-					shared.id = pp.prober.PathID()
-				}
+			// Fail fast rather than panic if a peer's prober slice ever falls short of the
+			// shared m.defs membership: every runtime admission (bound OR deferred) fans a
+			// per-peer prober out to EVERY peer (AddPath), so p.probers stays index-aligned
+			// with m.defs. A divergence is a wiring defect — surface it as a bind error
+			// instead of an index-out-of-range panic that would crash the daemon.
+			if i >= len(p.probers) {
+				return nil, 0, fmt.Errorf("bind: peer %q prober set (len %d) is shorter than the path membership at index %d — per-peer prober fan-out desync", p.name, len(p.probers), i)
+			}
+			pp.prober = p.probers[i]
+			if pi == 0 {
+				// Reconcile the SHARED path-id to the PRIMARY prober's IMMUTABLE stamp
+				// rather than the slice index i: after a runtime RemovePath the survivor
+				// keeps its original (higher) stamp, so index-based numbering would renumber a
+				// live path AND diverge its lane id from its PROBE stamp. Every peer's
+				// probers[i] carries the SAME stamp (the device stamps each peer's boot prober
+				// for path i identically), so taking it from the primary is authoritative.
+				shared.id = pp.prober.PathID()
 			}
 			switch {
 			case def.DestAddr.IsValid():
@@ -2078,17 +1409,7 @@ func (m *Multipath) Open(port uint16) (receiveFuncs []ReceiveFunc, boundPort uin
 				// must stay remoteless until its endpoint is installed, not inherit another's hub.
 				pp.setRemote(m.defaultRemote)
 			}
-			var shaperCfg *config.PathShaperConfig
-			if m.shaperConfigs != nil {
-				shaperCfg = &m.shaperConfigs[i]
-			}
-			if err := m.installPathShaperLocked(pp, shaperCfg); err != nil {
-				return nil, 0, err
-			}
 			pp.pmtuProbe = m.buildPMTUProbe(pp)
-			// Stamp the scheduler index (== this path's position in p.paths) BEFORE
-			// the append for the legacy ProbeBudget accounting seam.
-			pp.schedIdx.Store(int32(len(p.paths)))
 			p.paths = append(p.paths, pp)
 			// Publish this peer's view for the receive demux (T88). A single-view socket is the
 			// edge/hub byte-identical fast path in demuxInbound; a socket with >1 view is
@@ -2121,9 +1442,7 @@ func (m *Multipath) Open(port uint16) (receiveFuncs []ReceiveFunc, boundPort uin
 	// that survivor's stamp: the next runtime AddPath then collided with the live path at
 	// an identical (PathID, SessionID), and because the peer's Reflector keys anti-replay
 	// AND the session challenge PER PathID, the strict-monotonic replay filter dropped one
-	// of the two independent ProbeSeq streams -> probe loss / false-DOWN. Deriving the
-	// high-water from the (prober-stamped) ps.id covers both the probe-transport case and
-	// the T12 no-prober case (where ps.id == i, so the high-water is len(m.paths)).
+	// of the two independent ProbeSeq streams -> probe loss / false-DOWN.
 	m.openPort = port
 	for _, ps := range m.paths {
 		if uint16(ps.id)+1 > m.nextPathID {
@@ -2141,58 +1460,14 @@ func (m *Multipath) Open(port uint16) (receiveFuncs []ReceiveFunc, boundPort uin
 		}
 	}
 
-	// Reconcile the scheduler's membership with the path slice just rebuilt from
-	// m.defs. A runtime AddPath/RemovePath (T30) keeps m.defs, m.probers, AND the
-	// live scheduler in lockstep during an Open span; re-pinning the scheduler's
-	// health list to the BOUND probers HERE — index-aligned with m.paths, since each
-	// bound path appended its ps.prober to boundProbers in order above — is the single
-	// reconciliation point that makes that runtime membership survive this
-	// Close→Open cycle without a scheduler/path desync (no frozen zombie health
-	// entry, no resurrected removed path). A DEFERRED path (not-yet-assignable
-	// source_addr) is deliberately EXCLUDED here: its prober is absent from the
-	// scheduler, so Pick can never select it, and Send's Pick->m.paths[idx] mapping
-	// stays index-aligned with the bound-only path slice. Only meaningful with the
-	// probe transport: a bind without probers cannot change membership at runtime
-	// (AddPath is refused) and never defers, so its scheduler is left exactly as built.
-	// Reconcile EACH bound peer's scheduler membership with the path slice just rebuilt from
-	// m.defs (T93): every peer's per-(peer,path) views were appended in m.defs order above, so a
-	// peer's scheduler health list is that peer's BOUND probers in order (a DEFERRED path
-	// contributed no view and is deliberately excluded, exactly as for the primary). On the
-	// single-peer edge/hub m.peers holds only the primary, so this reconciles exactly the one
-	// scheduler — byte-identical to the pre-split single reconcile. A peer without the probe
-	// transport or with a non-dynamic scheduler is left as built (the T12 no-prober unit binds
-	// never change membership at runtime and never defer).
-	for _, p := range m.peers {
-		pdyn, pdynOK := p.scheduler.(sched.DynamicScheduler)
-		if p.probers == nil || !pdynOK {
-			continue
-		}
-		admissions := make([]sched.PathAdmission, 0, len(p.paths))
-		for _, pp := range p.paths {
-			if pp.prober != nil {
-				admissions = append(admissions, admissionFor(p.scheduler, pp.prober))
-			}
-		}
-		if err := pdyn.SetPaths(admissions); err != nil {
-			return nil, 0, fmt.Errorf("bind: reconcile scheduler on open: %w", err)
-		}
-	}
-	for _, p := range m.peers {
-		if err := m.beginPeerRecoveryContractLocked(p); err != nil {
-			return nil, 0, fmt.Errorf("bind: initialize peer recovery contract: %w", err)
-		}
-	}
-
 	// Stand up the receive fan-in: one Bind-owned reader per path feeding the shared
 	// resequencer, and a single engine-facing drainer. Both channels are recreated
 	// per Open so a Close→Open cycle starts clean.
 	m.deliverSignal = make(chan struct{}, 1)
 	m.recvClosed = make(chan struct{})
 	for _, peer := range m.peers {
-		if m.adaptiveEnabled {
-			if err := m.openAdaptivePeer(peer); err != nil {
-				return nil, 0, err
-			}
+		if err := m.openAdaptivePeer(peer); err != nil {
+			return nil, 0, err
 		}
 		if rq := peer.resequencer.Load(); rq != nil {
 			rq.SetNotifier(resequencerNotifier(m.deliverSignal))
@@ -2206,204 +1481,28 @@ func (m *Multipath) Open(port uint16) (receiveFuncs []ReceiveFunc, boundPort uin
 	return []ReceiveFunc{m.newReceiveFunc(m.deliverSignal, m.recvClosed)}, actualPort, nil
 }
 
-// openPeerDatapathLocked (re)builds ONE peer's per-Open datapath planes: its send Codec
-// (derived from THIS peer's psk), its receive resequencer, and — when FEC is configured —
-// its FEC send/receive planes. Each object is fresh per Open so a Close→Open cycle
-// re-pins the receive release point and discards stale decoder groups; the new
-// encoder resumes the peer's process-lifetime GroupID sequence. It writes ONLY
-// the given peer's fields (from the peer's own psk
-// and the bind-wide fecCfg/adaptiveCfg), so one peer's (re)creation never touches another
-// peer's resequencer or FEC group state — the per-peer lifecycle boundary that keeps a
-// reconnect on one peer from disturbing another's. Caller holds m.mu; on error the caller
-// unwinds the whole Open through generation retirement (which clears every peer's per-Open state),
-// so a partial build here is cleaned up.
-func (m *Multipath) openPeerDatapathLocked(ps *peerState) error {
-	sendCodec, err := ps.newCodec()
-	if err != nil {
-		return err
-	}
-
-	// A fresh resequencer per Open: its release point re-pins to the first frame THIS peer
-	// receives after this bring-up, so a Close→Open cycle (or reconnect) never wedges on a
-	// stale high-water outer-seq. Published atomically so the peer's per-path readLoop
-	// goroutines read it WITHOUT m.mu.
-	rq := reseq.New(resequencerWindow, resequencerTimeout, m.clock)
-	if ps.dataLoss != nil {
-		rq.SetLossObserver(ps.dataLoss.recordLost)
-	}
-	if ps.contracts != nil {
-		authority := ps.contracts.recoveryAuthority()
-		authority.SetChangeSignal(m.recoveryAuthoritySignal)
-		rq.SetRecoveryAuthority(authority)
-		generation := ps.contracts.invalidateReceivedEvidence()
-		rq.SetRecoveryPublication(generation, 0, nil)
-	}
-	ps.resequencer.Store(rq)
-	markMultiPathExpected(ps.resequencer.Load(), ps.scheduler)
-
-	// Fresh FEC send/receive state per Open, when FEC is enabled (T24). The encoder
-	// group state and the decoder's per-group buffers re-pin with the sockets, so a
-	// Close→Open cycle never reconstructs against a stale group. Both are torn down (per
-	// peer) during generation retirement. The encoder object is fresh, but it starts
-	// at the peer's process-lifetime next GroupID so Close/Open cannot reuse a wire
-	// identity. A build error here is a programmer error (the ratio was
-	// validated in NewMultipath), so it fails the Open.
-	if m.fecCfg != nil {
-		fs, err := m.newFECSender(ps)
-		if err != nil {
-			return err
-		}
-		ps.fecSend.Store(fs)
-		fr, err := m.newFECReceiver()
-		if err != nil {
-			return err
-		}
-		ps.fecRecv.Store(fr)
-		// D93/T241: an active FEC decoder can still repair a head-of-line gap, so the
-		// resequencer (stored above) must keep its full hold — no single-path
-		// immediate release and no RTT-shortened bound — while FEC is on.
-		ps.resequencer.Load().SetFECActive(true)
-	}
-	ps.sendCodec = sendCodec
-	return nil
-}
-
-// newFECSender builds a fresh FEC send plane (group encoder + optional adaptive controller)
-// from the bind-wide fecCfg/adaptiveCfg, or returns (nil, nil) when FEC is disabled. Like
-// newFECReceiver it reads only immutable post-construction config, so it is safe to call
-// WITHOUT m.mu — which the lock-free re-instantiation on re-bind (ensurePeerReceiveInstantiated)
-// relies on to rebuild a torn-down concentrator peer's send plane symmetric to the receive
-// plane. Open calls it too, so a lazily-rebuilt fecSend is byte-identical to an eagerly-opened
-// one: a fresh encoder restored to the peer's next process-local GroupID, and in
-// adaptive mode a fresh controller starting the control law from M=0 (no standing
-// redundancy until loss is observed). A build error is a programmer error (the
-// ratio/controller cfg were validated in NewMultipath).
-func (m *Multipath) newFECSender(peer *peerState) (*fecSender, error) {
-	if m.fecCfg == nil {
-		return nil, nil
-	}
-	enc, err := fec.NewEncoder(*m.fecCfg, m.clock)
-	if err != nil {
-		return nil, fmt.Errorf("bind: build FEC encoder: %w", err)
-	}
-	if err := enc.SetNextGroup(fec.GroupID(peer.fecNextGroup.Load())); err != nil {
-		return nil, fmt.Errorf("bind: restore FEC group sequence: %w", err)
-	}
-	fs := &fecSender{
-		enc:            enc,
-		openGeneration: m.openGeneration.Load(),
-		nextGroup:      &peer.fecNextGroup,
-	}
-	if m.adaptiveCfg != nil {
-		// m.clock satisfies adaptivefec.Clock through their identical
-		// Now() time.Time shape — so the controller's own slew/dwell timing rides the SAME
-		// injectable clock seam T276 threaded through the drive throttle (m.clock), rather
-		// than a separately hardcoded adaptivefec.SystemClock{}. Immutable-post-construction
-		// (like fecCfg/adaptiveCfg), so reading it here without m.mu is safe; NewMultipath
-		// defaults it to systemFECClock{} (identical Now() = time.Now() as
-		// adaptivefec.SystemClock{}), so production behavior is byte-for-byte unchanged.
-		ctrl, err := adaptivefec.NewController(*m.adaptiveCfg, m.clock)
-		if err != nil {
-			return nil, fmt.Errorf("bind: build adaptive FEC controller: %w", err)
-		}
-		fs.ctrl = ctrl
-		// Adopt the controller's starting parity so encoder and controller agree from t=0; the
-		// owner sizes it to measured loss after group decisions. Fixed mode
-		// leaves the encoder at its cfg.ParityShards default instead.
-		enc.SetParity(ctrl.Parity())
-	}
-	fs.owner = newFECSendOwner(m, peer, fs)
-	return fs, nil
-}
-
-// newFECReceiver builds a fresh FEC receive plane (decoder + residual-loss estimator) from
-// the bind-wide fecCfg, or returns (nil, nil) when FEC is disabled. It reads only immutable
-// post-construction config (m.fecCfg), so it is safe to call WITHOUT m.mu — which the
-// lock-free lazy receive-side instantiation on first authenticated binding
-// (ensurePeerReceiveInstantiated) relies on. The decoder tuning matches what Open pins for
-// the primary: a retain window, and a recovery deadline past which a doomed group is folded
-// into the unrecoverable counter (D24), so a lazily-instantiated concentrator peer recovers
-// identically to an eagerly-opened one.
-func (m *Multipath) newFECReceiver() (*fecReceiver, error) {
-	if m.fecCfg == nil {
-		return nil, nil
-	}
-	dec, err := fec.NewDecoder(*m.fecCfg)
-	if err != nil {
-		return nil, fmt.Errorf("bind: build FEC decoder: %w", err)
-	}
-	dec.SetRetainWindow(fecRetainGroups)
-	dec.SetClock(fec.SystemClock{})
-	dec.SetRecoveryDeadline(m.fecCfg.Deadline + resequencerTimeout)
-	return &fecReceiver{dec: dec, connLoss: telemetry.NewConnLoss(fecResidualLossWindow)}, nil
-}
-
-// ensurePeerReceiveInstantiated lazily builds a peer's HEAVY receive-side datapath — the
-// ~2048-frame resequencer ring and (when FEC is configured) the decoder's per-group buffers —
-// on the FIRST authenticated source->peer binding, rather than eagerly at Open (Q26). A
-// configured concentrator peer that has never been reached therefore carries none of that
-// per-peer memory; it materialises only once an authenticated PROBE has bound a source to it,
-// and is reclaimed on teardown (teardownPeerLocked), re-materialising cleanly on the next
-// re-bind. It publishes through the same atomic.Pointer the receive fast path Loads and runs
-// on the Bind-owned readLoop goroutine, which stays independent of transport mutation — so it
-// takes ONLY the per-peer lifecycleMu, never m.mu. That lifecycleMu
-// makes the whole build-and-publish of the heavy trio (resequencer + FEC receive AND send
-// planes) mutually exclusive with teardownPeerLocked's clearing of the same trio: a teardown
-// can no longer interleave between the resequencer publish and the FEC publish and leave a
-// half-published plane, nor resurrect a plane on a torn-down peer. It is idempotent (the
-// lifecycleMu-guarded resequencer==nil double-check elects a single instantiator when two
-// sockets bind the same peer concurrently; the loser returns without building). It re-instates
-// the SEND plane symmetric to the receive plane, so a torn-down-then-rebound FEC peer sends
-// parity again rather than silently sending unprotected. A build error on either FEC plane is a
-// programmer error (the ratios were validated in NewMultipath) — the resequencer is still
-// installed so DATA flows, only FEC is absent, which is the safe degradation.
+// ensurePeerReceiveInstantiated rebuilds a peer's receive resequencer on the first
+// authenticated source->peer binding after a teardown reclaimed it (teardownPeerLocked),
+// so a configured concentrator peer that is not reached carries none of that per-peer
+// memory (Q26). It publishes through the same atomic.Pointer the receive fast path Loads
+// and runs on the Bind-owned readLoop goroutine, which stays independent of transport
+// mutation — so it takes ONLY the per-peer lifecycleMu, never m.mu. That lifecycleMu
+// makes the build-and-publish mutually exclusive with teardownPeerLocked's clearing. It
+// is idempotent (the lifecycleMu-guarded resequencer==nil double-check elects a single
+// instantiator when two sockets bind the same peer concurrently; the loser returns
+// without building).
 func (m *Multipath) ensurePeerReceiveInstantiated(ps *peerState) {
 	if ps.resequencer.Load() != nil {
-		return // fast path: already instantiated (the eager primary, or a prior binding)
+		return // fast path: already instantiated (at Open, or by a prior binding)
 	}
 	ps.lifecycleMu.Lock()
 	defer ps.lifecycleMu.Unlock()
 	if ps.resequencer.Load() != nil {
 		return // a concurrent bind instantiated it while we waited on lifecycleMu
 	}
-	// Build both FEC planes BEFORE publishing anything; on a build error degrade to no-FEC (the
-	// resequencer alone still carries DATA). Store the resequencer LAST: it is the election
-	// sentinel the fast-path check above and the receive fast path key on, so a concurrent
-	// reader never observes a live resequencer whose FEC planes are not yet published.
-	fr, ferr := m.newFECReceiver()
-	if ferr != nil {
-		fr = nil
-	}
-	fs, serr := m.newFECSender(ps)
-	if serr != nil {
-		fs = nil
-	}
-	if fr != nil {
-		ps.fecRecv.Store(fr)
-	}
-	if fs != nil {
-		if m.beforeLazyFECPublish != nil {
-			m.beforeLazyFECPublish(ps, fs)
-		}
-		ps.fecSend.Store(fs)
-	}
 	rq := reseq.New(resequencerWindow, resequencerTimeout, m.clock)
-	if ps.contracts != nil {
-		authority := ps.contracts.recoveryAuthority()
-		authority.SetChangeSignal(m.recoveryAuthoritySignal)
-		rq.SetRecoveryAuthority(authority)
-		generation := ps.contracts.invalidateReceivedEvidence()
-		rq.SetRecoveryPublication(generation, 0, nil)
-	}
 	rq.SetNotifier(resequencerNotifier(m.deliverSignal))
 	ps.resequencer.Store(rq)
-	markMultiPathExpected(ps.resequencer.Load(), ps.scheduler)
-	if fr != nil {
-		// D93/T241: FEC is repairing this stream (fecRecv stored above), so the fresh
-		// resequencer must keep its full hold — no single-path immediate release and
-		// no RTT-shortened bound — while FEC is on.
-		ps.resequencer.Load().SetFECActive(true)
-	}
 }
 
 func resequencerNotifier(deliver chan<- struct{}) func() {
@@ -2416,8 +1515,8 @@ func resequencerNotifier(deliver chan<- struct{}) func() {
 }
 
 // readLoop is one Bind-OWNED per-path receive goroutine (T30). It reads the path
-// socket and dispatches every datagram through handleInbound — which pushes DATA
-// into the shared resequencer and answers/consumes PROBEs — then pokes the delivery
+// socket and dispatches every datagram through demuxInbound — which hands CONTROL
+// frames to the peer's transport and answers/consumes PROBEs — then pokes the delivery
 // signal so the single engine-facing drainer wakes to release any newly in-order
 // frame. The read buffer is private to this goroutine, so the per-path Codec's
 // scratch is never shared.
@@ -2460,8 +1559,8 @@ func (m *Multipath) readLoop(ps *peerPathState, deliver chan<- struct{}) {
 // regardless. Ticking is monotone-safe: Tick only marks an UP path DOWN once its
 // silence STRICTLY exceeds DownAfter and never brings a path UP (that needs
 // RecordEcho), so a more frequent Tick can only make a genuine DOWN transition land
-// sooner — never a premature/false one — and the failback hysteresis (owned by the
-// scheduler) is untouched. No-op when the probe transport is absent (interval unset).
+// sooner — never a premature/false one. No-op when the probe transport is absent
+// (interval unset).
 func (m *Multipath) tickLivenessFromReceive(now time.Time) {
 	interval := m.sweepIntervalNanos.Load()
 	if interval == 0 {
@@ -2492,9 +1591,7 @@ func (m *Multipath) tickLivenessFromReceive(now time.Time) {
 	// the probe-loop ticker is starved. On the single-peer edge/hub m.peers holds only the
 	// primary, so this is byte-identical to the pre-split single-peer sweep.
 	probers := make([]*telemetry.Prober, 0, len(m.paths))
-	peers := make([]*peerState, 0, len(m.peers))
 	for _, p := range m.peers {
-		peers = append(peers, p)
 		for _, ps := range p.paths {
 			if ps.prober != nil {
 				probers = append(probers, ps.prober)
@@ -2505,75 +1602,14 @@ func (m *Multipath) tickLivenessFromReceive(now time.Time) {
 	for _, pr := range probers {
 		pr.Tick()
 	}
-	if m.fecCfg != nil {
-		for _, peer := range peers {
-			m.refreshPeerRecoveryWindow(peer)
-		}
-	}
-	// Eager failover nudge (defect D18, the repeated-flap wedge). The active-backup
-	// selection is otherwise recomputed ONLY inside the scheduler's Pick, which the
-	// Bind calls ONLY from Send — so failover is pull-based: it happens only when the
-	// engine hands down an egress datagram. When the ACTIVE path dies during an egress
-	// LULL that is fatal: a repeated-flap kill landing on the just-restored primary
-	// before the saturating flow re-fills it (the failback and the next kill overlap)
-	// leaves both TCP directions stalled on the now-dead path, so NO Send occurs, so
-	// Pick is never called, so egress is never switched to the healthy backup — the
-	// bond wedges on the dead path until the 25s WG keepalive finally drives a Send.
-	// The receive tick is the starvation-robust signal that ALREADY detected the DOWN
-	// (it just Ticked the path down above); recomputing the scheduler from it makes the
-	// switch EAGER — bounded by the detection window (~DownAfter + one interval) rather
-	// than by the next application Send. Pick recomputes purely against current liveness
-	// and the clock and the failback dwell is time-based, so a more frequent recompute
-	// can only make a genuine transition land sooner — never a premature/false failover,
-	// and never a shortened anti-thrash hysteresis. It takes ONLY the scheduler's own
-	// lock (never m.mu), so it adds no receive-path m.mu contention and cannot invert
-	// the Send-path m.mu→scheduler lock order.
-	m.nudgeSchedulerActive()
-}
-
-// nudgeSchedulerActive forces the scheduler to recompute its active egress path
-// against current liveness, independent of any application Send. It is the eager-
-// failover companion to the Send-driven Pick: driven from the liveness-detection
-// paths (the receive tick and the probe loop) it switches egress to a healthy backup
-// the moment the active path is detected DOWN, so a dead active path with stalled
-// egress does not wedge the bond until the next Send (defect D18). The returned index
-// is intentionally discarded — only the recompute (and its logged transition) is
-// wanted here; Send remains the sole reader of the selection for actual routing. Pick
-// is internally synchronized and never calls back into the Bind, so this is safe to
-// call from a receive goroutine or the probe loop without m.mu.
-//
-// It calls Recompute, NOT Pick: the nudge wants only the liveness-driven active-set
-// recompute (and its logged transition), and a weighted/aggregating scheduler's Pick
-// is STATEFUL — a spurious Pick here would consume a distribution slot and skew the
-// per-path weight split. Recompute is the non-consuming half that refreshes the
-// eligible/active set without touching distribution/pacing/load state, so the T40
-// eager-failover guarantee holds for BOTH the active-backup and the weighted policy
-// (defect D18).
-func (m *Multipath) nudgeSchedulerActive() {
-	if m.adaptiveEnabled {
-		return
-	}
-	// Recompute EVERY bound peer's active egress set (T93): each peer schedules over its OWN
-	// paths, so a liveness DOWN on one peer's path must nudge THAT peer's scheduler. The peer
-	// set is read lock-free through peersView (published under m.mu at construction / peer
-	// registration and immutable during an Open span), so this stays off m.mu exactly as the
-	// pre-split single Recompute did. On the single-peer edge/hub peersView holds only the
-	// primary (p.scheduler == m.scheduler), so this is byte-identical to the pre-split nudge.
-	if peers := m.peersView.Load(); peers != nil {
-		for _, p := range *peers {
-			p.scheduler.Recompute()
-		}
-		return
-	}
-	m.scheduler.Recompute()
 }
 
 // newReceiveFunc returns the SINGLE engine-facing ReceiveFunc: it drains EACH bound peer's
-// resequencer in that peer's own outer-seq order and hands each inner datagram up stamped
+// resequencer in that peer's own delivery order and hands each inner datagram up stamped
 // with THAT peer's stable virtual endpoint (per-packet endpoint fill), so the engine
 // attributes return traffic to the right peer and Send routes replies back via that peer's
 // virt (invariant A1: one virtual endpoint per peer). A path's reader (handleInbound) has
-// already routed each DATA frame to its OWNING peer's resequencer via the peerPathState's
+// already routed each frame to its OWNING peer's transport via the peerPathState's
 // ps.peer back-reference, so a shared socket serving many peers keeps each peer's stream
 // isolated; this drainer just fans the in-order releases back in. Because every path's
 // reader feeds one of these resequencers and a single drainer releases them, a path (or
@@ -2585,8 +1621,8 @@ func (m *Multipath) nudgeSchedulerActive() {
 // until Close closes closed, or until a short poll elapses — the poll guarantees a
 // head-of-line-blocked run still makes timeout progress even if the last live path fell
 // silent right after buffering it. A single drainer delivers with ZERO added reorder
-// (only it calls Pop), which is stricter than T12's per-path receivers.
-// Adaptive bulk coalesces for at most adaptiveReceiveBatchDelay for TUN GRO;
+// (only it calls Pop).
+// Bulk coalesces for at most adaptiveReceiveBatchDelay for TUN GRO;
 // interactive arrivals flush immediately.
 func (m *Multipath) newReceiveFunc(deliver <-chan struct{}, closed <-chan struct{}) ReceiveFunc {
 	// One reusable injected-clock timer per drainer. Every empty scan resets it to
@@ -2594,7 +1630,6 @@ func (m *Multipath) newReceiveFunc(deliver <-chan struct{}, closed <-chan struct
 	// fallback when no gap is armed.
 	timer := m.clock.NewTimerAt(m.clock.Now())
 	timer.Stop()
-	authorityChanged := m.recoveryAuthoritySignal
 	// rr is the round-robin cursor, advanced past a peer each time it yields a frame so
 	// the next receive starts at the following peer. It is touched only by this single
 	// engine goroutine, so it needs no synchronisation.
@@ -2609,7 +1644,7 @@ func (m *Multipath) newReceiveFunc(deliver <-chan struct{}, closed <-chan struct
 				return 0, errClosed
 			default:
 			}
-			// Scan every bound peer round-robin for an in-order resequenced DATA frame.
+			// Scan every bound peer round-robin for an in-order resequenced datagram.
 			// The item carries the outer source of the frame that produced it, so the
 			// peer's virtual endpoint pins correctly even when the frame was buffered and
 			// released out of arrival order. The peer view is read lock-free (peersView),
@@ -2675,11 +1710,6 @@ func (m *Multipath) newReceiveFunc(deliver <-chan struct{}, closed <-chan struct
 			select {
 			case <-deliver:
 				timer.Stop()
-			case <-authorityChanged:
-				// Coalesced topology transitions carry no state in the signal:
-				// the next scan reads each authority's latest coherent generation
-				// and transition time under its resequencer lock.
-				timer.Stop()
 			case <-timer.C():
 				// Poll fired; its channel is already drained by this receive.
 			case <-closed:
@@ -2710,34 +1740,26 @@ func earliestResequencerDeadline(peers []*peerState, fallback time.Time) time.Ti
 // concentrator socket (on the single-peer edge/hub the reader's own view is the owner, so
 // demuxInbound's fast path calls this directly — byte-identical to the pre-concentrator
 // behaviour). Delivery up the WG
-// path is deferred to the resequencer (Pop, in the engine-facing drainer): a DATA
-// frame is not handed up here but pushed into the shared resequencer to be released in
-// outer-seq order.
+// path is deferred to the resequencer (Pop, in the engine-facing drainer): a bulk
+// datagram is not handed up here but pushed into the peer's resequencer to be released
+// in sequence order.
 //
-//   - DATA: the decoded inner datagram is pushed into the resequencer keyed by
-//     the frame's outer-seq (delivered later, in order, via Pop). The path's
-//     remote is NOT learned here — remote-learning is authenticated-only (see
-//     below), so a forged DATA frame cannot steer a path's return endpoint.
+//   - CONTROL: handed to the peer's transport, whose bulk deliveries are pushed
+//     into the resequencer keyed by their sequence (delivered later, in order,
+//     via Pop). The path's remote is NOT learned here — remote-learning is
+//     PROBE-only (see below).
 //   - PROBE, IsEcho=false: an authenticated peer probe. Its source is learned as
-//     the path's remote (D11: a probe-only backup path gets a usable return remote
-//     before any DATA flows) and it is reflected straight back to that source via
-//     this path's socket (T13 Reflector). Reflection writes independently of the
-//     scheduler/getRemote so an echo returns even on a not-yet-active path.
+//     the path's remote (D11) and it is reflected straight back to that source via
+//     this path's socket (T13 Reflector). Reflection writes independently of
+//     getRemote so an echo returns even on a not-yet-selected path.
 //   - PROBE, IsEcho=true: an authenticated echo of one of our own probes. Its
 //     source is learned as the remote too, and the raw echo is fed into this
-//     path's Prober (HandleEcho) to update RTT/loss and drive liveness.
-//   - anything else (PARITY/CONTROL/malformed): dropped.
+//     path's Prober (HandleEchoProbe) to update RTT/loss and drive liveness.
+//   - anything else (malformed, or failing its MAC): dropped.
 //
 // Remote-learning and reflection touch only authenticated (MAC-verified) PROBE
-// frames — Decode has already verified the tag for the PROBE kind — which is what
-// resolves D9: an attacker who forges an unauthenticated DATA frame can no longer
-// repoint a path's return endpoint.
-//
-// FEC seam (T24): DATA ingestion via resequencer.Observe is keyed purely on
-// outer-seq, so an FEC decoder can slot in BEFORE the resequencer with no change
-// here — PARITY (dropped today) will feed the decoder, which reconstructs missing
-// DATA frames and calls Observe with their ORIGINAL outer-seq, identical to a
-// natively-received frame.
+// frames — Decode has already verified the tag — which is what resolves D9: an
+// attacker without the psk cannot repoint a path's return endpoint.
 func (m *Multipath) handleInbound(ps *peerPathState, raw []byte, srcAP netip.AddrPort) {
 	fr, err := ps.codec.Decode(raw)
 	if err != nil {
@@ -2765,15 +1787,12 @@ func (m *Multipath) handleInbound(ps *peerPathState, raw []byte, srcAP netip.Add
 //     bounded by the static peer count). Only an authenticated PROBE establishes a binding
 //     (D9/D11: bindings, like remotes, are learned only from authenticated PROBEs), and a
 //     PROBE's MAC verifies under EXACTLY ONE psk — so the FIRST psk whose codec yields a PROBE
-//     identifies the peer, binds the source, dispatches, and the loop STOPS there. A non-PROBE
-//     decode does NOT stop the trial: DATA/PARITY carry no MAC and are forgeable by design, so
-//     a genuine PROBE from a later peer can cross-psk-garble into a DATA/PARITY kind under an
-//     earlier peer's codec (~0.4%); the loop must therefore `continue` past a non-PROBE decode
-//     to give every remaining psk its chance to authenticate a PROBE. A non-PROBE decode
-//     carries no binding authority and is dropped either way — a genuine DATA/PARITY from a
-//     not-yet-bound source never dispatches or binds until that peer's PROBE binds it, so
-//     continuing past it changes nothing for genuine frames. A forged/garbage frame verifies
-//     as a PROBE under NO psk, binds nothing, and is dropped cheaply.
+//     identifies the peer, binds the source, dispatches, and the loop STOPS there. Every
+//     kind carries a MAC, so a decode under another peer's psk fails and a non-PROBE decode
+//     is a genuine CONTROL frame of that peer. It carries no binding authority and is
+//     dropped — a CONTROL from a not-yet-bound source never dispatches or binds until that
+//     peer's PROBE binds it. A forged/garbage frame verifies as a PROBE under NO psk, binds
+//     nothing, and is dropped cheaply.
 func (m *Multipath) demuxInbound(ps *peerPathState, raw []byte, srcAP netip.AddrPort) {
 	views := ps.views.Load()
 	if views == nil || len(*views) <= 1 {
@@ -2801,10 +1820,8 @@ func (m *Multipath) demuxInbound(ps *peerPathState, raw []byte, srcAP netip.Addr
 			continue // not this peer's psk — try the next
 		}
 		if _, isProbe := fr.(frame.Probe); !isProbe {
-			// Decoded under this psk but not a PROBE (DATA/PARITY carry no MAC, so
-			// this may be a genuine PROBE from a later peer that cross-garbled into an
-			// unauthenticated kind here). No binding authority: try the remaining psks
-			// rather than aborting — a genuine unbound DATA/PARITY still never binds.
+			// Authenticated under this psk but not a PROBE: a CONTROL frame from a
+			// source no PROBE has bound yet. No binding authority, so it never binds.
 			continue
 		}
 		if !m.bindSourceToPeer(srcAP, v.peer) {
@@ -2816,7 +1833,7 @@ func (m *Multipath) demuxInbound(ps *peerPathState, raw []byte, srcAP netip.Addr
 			return
 		}
 		// The binding just resolved this peer: lazily materialise its heavy receive datapath
-		// (resequencer ring + FEC decoder buffers) BEFORE dispatch, so a configured peer that
+		// (resequencer ring) BEFORE dispatch, so a configured peer that
 		// had never been reached — and a peer whose state was torn down on session loss — pays
 		// that memory only from its first authenticated binding onward (Q26).
 		m.ensurePeerReceiveInstantiated(v.peer)
@@ -2991,7 +2008,7 @@ func (m *Multipath) unbindPeerSources(p *peerState) {
 // peerIsLiveLocked reports whether ANY of peer p's paths is currently StateUp — the liveness
 // gate that makes teardown safe: a peer with a live path is actively carrying (or about to
 // carry) traffic and must NEVER be torn down (Q26). It reads each path's own immutable prober
-// State() (atomic internally, per the PathHealth contract), so it is safe under m.mu. A peer
+// State() (internally synchronized), so it is safe under m.mu. A peer
 // with no prober-bearing path (a bind without the probe transport) reports not-live, matching
 // the fact that such a bind has no liveness signal to protect.
 func (m *Multipath) peerIsLiveLocked(p *peerState) bool {
@@ -3003,43 +2020,34 @@ func (m *Multipath) peerIsLiveLocked(p *peerState) bool {
 	return false
 }
 
-// teardownPeerLocked frees a dead peer's HEAVY per-peer state — the ~2048-frame resequencer
-// ring and the FEC send/receive buffers — and releases its source->peer demux bindings,
-// reclaiming both the memory and the demux-map cap slots (Q26). It is the lifecycle dual of
-// ensurePeerReceiveInstantiated: after teardown the peer is dormant (its light state — psk,
-// codec, reflector, per-(peer,path) views — survives so a trial-decode still authenticates it),
-// and the next authenticated PROBE re-binds a source and re-instantiates the ring cleanly. It
-// REFUSES to tear down a LIVE peer (any path StateUp) and the embedded primary (the edge/hub,
-// whose lifecycle is Open/Close, not session teardown), returning false in both cases so a
-// caller can distinguish "torn down" from "kept". The heavy fields are atomic.Pointer, so
-// Store(nil) is safe against a concurrent readLoop (which nil-guards its Load); the drainer
-// likewise skips a peer whose resequencer Loads nil. Caller holds m.mu and the
+// teardownPeerLocked frees a dead peer's receive resequencer ring and releases its
+// source->peer demux bindings, reclaiming both the memory and the demux-map cap slots
+// (Q26). It is the lifecycle dual of ensurePeerReceiveInstantiated: after teardown the
+// peer is dormant (its light state — psk, codec, reflector, per-(peer,path) views —
+// survives so a trial-decode still authenticates it), and the next authenticated PROBE
+// re-binds a source and re-instantiates the ring cleanly. It REFUSES to tear down a LIVE
+// peer (any path StateUp) and the embedded primary (the edge/hub, whose lifecycle is
+// Open/Close, not session teardown), returning false in both cases so a caller can
+// distinguish "torn down" from "kept". The resequencer is an atomic.Pointer, so
+// clearing it is safe against a concurrent readLoop (which nil-guards its Load); the
+// drainer likewise skips a peer whose resequencer Loads nil. Caller holds m.mu and the
 // peer's lifecycleMu; acquiring lifecycleMu happens before m.mu so no wait on
 // the peer lifecycle barrier occurs while the bind lock is held.
-func (m *Multipath) teardownPeerLocked(p *peerState) (*fecSender, *reseq.Resequencer, bool) {
+func (m *Multipath) teardownPeerLocked(p *peerState) (*reseq.Resequencer, bool) {
 	if p == m.peerState {
-		return nil, nil, false // the primary (edge/hub) is torn down only by Close, never by session loss
+		return nil, false // the primary (edge/hub) is torn down only by Close, never by session loss
 	}
 	if m.peerIsLiveLocked(p) {
-		return nil, nil, false // a live (Up) peer is never torn down, whatever other peers' churn
+		return nil, false // a live (Up) peer is never torn down, whatever other peers' churn
 	}
-	if p.contracts != nil {
-		m.invalidatePeerRecoveryEvidence(p)
-	}
-	rq := p.resequencer.Swap(nil)
-	p.fecRecv.Store(nil)
-	fs := p.fecSend.Swap(nil)
-	if fs != nil && fs.owner != nil {
-		fs.owner.Stop(errFECPlaneChanged)
-	}
-	return fs, rq, true
+	return p.resequencer.Swap(nil), true
 }
 
 // TearDownPeer frees the heavy per-peer state of the named configured peer once its WireGuard
 // session / liveness is gone — the device wires this from its per-peer session events (Q26). It
 // is a no-op returning false when the peer is unknown, is the embedded primary, or is still
-// LIVE (a live peer is never torn down); it returns true when the peer's resequencer ring and
-// FEC buffers were freed and its source bindings released. A torn-down configured peer
+// LIVE (a live peer is never torn down); it returns true when the peer's resequencer ring
+// was freed and its source bindings released. A torn-down configured peer
 // re-instantiates cleanly on its next authenticated PROBE (ensurePeerReceiveInstantiated).
 func (m *Multipath) TearDownPeer(name string) bool {
 	m.mu.Lock()
@@ -3049,23 +2057,19 @@ func (m *Multipath) TearDownPeer(name string) bool {
 		return false
 	}
 
-	// lifecycleMu may wait for a receive-side rebind construction, so acquire it
-	// before m.mu. The receive path never takes m.mu while holding lifecycleMu.
+	// lifecycleMu before m.mu: instantiation holds lifecycleMu without m.mu, so the
+	// reverse order here would wait on it with the bind lock held.
 	p.lifecycleMu.Lock()
 	m.mu.Lock()
 	current, stillBound := m.peersByName[name]
-	var fs *fecSender
 	var rq *reseq.Resequencer
 	tornDown := false
 	if stillBound && current == p {
-		fs, rq, tornDown = m.teardownPeerLocked(p)
+		rq, tornDown = m.teardownPeerLocked(p)
 	}
 	m.mu.Unlock()
 	if rq != nil {
 		rq.Close()
-	}
-	if fs != nil && fs.owner != nil {
-		fs.owner.Wait()
 	}
 	p.lifecycleMu.Unlock()
 	if tornDown {
@@ -3105,10 +2109,10 @@ func (m *Multipath) SetOnPeerRestart(fn func(peer string)) {
 }
 
 // dispatchInbound handles one already-decoded inbound frame on the resolved peer's view (ps):
-// it routes to that peer's resequencer / FEC decoder / reflector. The source demux in
-// demuxInbound has already selected ps so a shared socket serving many peers resequences each
-// peer's stream against that peer's own buffer; on the single-peer edge/hub ps.peer is the
-// embedded primary, so this is byte-identical to the pre-split singleton. raw is retained for
+// it routes to that peer's transport / reflector. The source demux in
+// demuxInbound has already selected ps so a shared socket serving many peers keeps each
+// peer's stream on that peer's own state; on the single-peer edge/hub ps.peer is the
+// embedded primary. raw is retained for
 // the probe transport (HandleEcho / Reflect re-decode it under the peer's psk).
 func (m *Multipath) dispatchInbound(ps *peerPathState, fr frame.Frame, raw []byte, srcAP netip.AddrPort) {
 	ps.rxBytes.Add(uint64(len(raw)))
@@ -3118,105 +2122,13 @@ func (m *Multipath) dispatchInbound(ps *peerPathState, fr frame.Frame, raw []byt
 		if adaptive := pr.adaptive.Load(); adaptive != nil {
 			adaptive.receive(ps, srcAP, f)
 		}
-	case frame.Data:
-		if m.adaptiveEnabled {
-			return
-		}
-		// The edge's uplink DATA rides only its ACTIVE WAN, so an address-match-gated
-		// DATA sample selects (never establishes) the downlink destination among the
-		// probe-established entries (T246, defect D94).
-		ps.confirmDataRemote(f.PathID, srcAP)
-		// Decode already returned a fresh copy of the payload (it aliases nothing
-		// else), so the resequencer may take ownership of it directly.
-		rq := pr.resequencer.Load()
-		if rq == nil {
-			// The peer's heavy receive state is absent — not yet instantiated, or torn down on
-			// session/liveness loss while a DATA frame was in flight on this readLoop. Drop it;
-			// a fresh authenticated PROBE re-instantiates the ring before the next DATA lands.
-			return
-		}
-		pathKey := reseqPathKey(ps.id, f.PathID)
-		carrier := dataLossCarrier{
-			pathID:  f.PathID,
-			pathKey: pathKey,
-			source:  srcAP,
-		}
-		if pr.contracts != nil {
-			carrier.topologyGeneration = pr.contracts.receivedSnapshot().generation
-		}
-		if fr := pr.fecRecv.Load(); fr != nil {
-			// FEC on (T24): offer the data shard to the decoder BEFORE resequencing so a
-			// later parity frame can reconstruct any group-mate lost in transit, then
-			// deliver THIS received frame in its own right (the decoder never echoes a
-			// directly-received data shard back). The shard's coded bytes are
-			// OuterSeq || Payload — the same bytes the sender coded parity over.
-			shard := fec.DataShard{Group: fec.GroupID(f.FECGroup), Index: int(f.FECIndex), Payload: fecShardPayload(f.OuterSeq, f.Payload)}
-			recovered, _ := fr.offer(shard)
-			// Residual-loss accounting (T29): this outer-seq was natively delivered, so mark
-			// it present in the post-recovery loss estimator. A seq never marked here nor via
-			// a reconstruction below is loss that FEC did not mask.
-			if fr.connLoss != nil {
-				fr.connLoss.Observe(f.OuterSeq)
-			}
-			if pr.dataLoss != nil {
-				rq.ObserveFromPathWithAdmissionObserver(
-					f.OuterSeq,
-					f.Payload,
-					srcAP,
-					pathKey,
-					func() { pr.dataLoss.recordNative(f.OuterSeq, carrier) },
-				)
-			} else {
-				rq.ObserveFromPath(f.OuterSeq, f.Payload, srcAP, pathKey)
-			}
-			m.observeRecovered(fr, rq, recovered, srcAP, pr.dataLoss, carrier)
-		} else {
-			if pr.dataLoss != nil {
-				rq.ObserveFromPathWithAdmissionObserver(
-					f.OuterSeq,
-					f.Payload,
-					srcAP,
-					pathKey,
-					func() { pr.dataLoss.recordNative(f.OuterSeq, carrier) },
-				)
-			} else {
-				rq.ObserveFromPath(f.OuterSeq, f.Payload, srcAP, pathKey)
-			}
-		}
-	case frame.Parity:
-		if m.adaptiveEnabled {
-			return
-		}
-		// PARITY feeds the FEC decoder (T24); a group that has now accumulated enough
-		// shards reconstructs its missing data frames, each resequenced at its ORIGINAL
-		// outer-seq (carried in the recovered shard's coded bytes) so recovery composes
-		// with T18 exactly like a natively-received frame. With FEC off, PARITY is
-		// dropped (the pre-T24 behaviour).
-		if fr := pr.fecRecv.Load(); fr != nil {
-			rq := pr.resequencer.Load()
-			if rq == nil {
-				return // heavy receive state torn down mid-flight (see the DATA case)
-			}
-			shard := fec.ParityShard{Group: fec.GroupID(f.FECGroup), Index: int(f.ParityIndex), DataCount: int(f.DataCount), Payload: f.Payload}
-			recovered, _ := fr.offer(shard)
-			carrier := dataLossCarrier{
-				pathID:  f.PathID,
-				pathKey: reseqPathKey(ps.id, f.PathID),
-				source:  srcAP,
-			}
-			if pr.contracts != nil {
-				carrier.topologyGeneration = pr.contracts.receivedSnapshot().generation
-			}
-			m.observeRecovered(fr, rq, recovered, srcAP, pr.dataLoss, carrier)
-		}
 	case frame.Probe:
 		// Authenticated (the PROBE MAC verified in Decode): fold the frame into the
 		// per-sender-path freshness table under its stamped path id (T246, defect D94) —
 		// establishing/refreshing the return address for THAT sender path, below the
-		// engine's virtual endpoint. Unlike the pre-D94 unconditional overwrite, this
-		// never moves the SELECTED downlink destination (except the R253 cold-start
-		// first-establishment and an in-place rebind of the selected entry), so the
-		// standby WAN's probes no longer flap the concentrator's downlink at cadence.
+		// engine's virtual endpoint. It never moves the SELECTED destination (except
+		// the R253 cold-start first-establishment and an in-place rebind of the
+		// selected entry).
 		ps.learnRemoteFromProbe(f.PathID, srcAP)
 		if f.IsEcho {
 			if ps.prober != nil {
@@ -3228,22 +2140,6 @@ func (m *Multipath) dispatchInbound(ps *peerPathState, fr frame.Frame, raw []byt
 				if echoErr == nil {
 					if adaptive := pr.adaptive.Load(); adaptive != nil {
 						adaptive.learn(ps, srcAP, fresh.Payload, false)
-					}
-				}
-				if echoErr == nil && pr.contracts != nil {
-					recoveryPayload := fresh.Payload
-					feedbackOnly := false
-					if recovery, feedback, recognized, payloadErr := telemetry.DecodeProbePayload(fresh.Payload); recognized {
-						if payloadErr != nil {
-							recoveryPayload = nil
-						} else {
-							recoveryPayload = recovery
-							feedbackOnly = feedback != nil && len(recovery) == 0
-						}
-					}
-					if !feedbackOnly {
-						pr.contracts.acceptACK(fresh.PathID, fresh.SessionID, fresh.ProbeSeq, recoveryPayload)
-						m.refreshPeerRecoveryWindow(pr)
 					}
 				}
 				// Release any PMTU search probe awaiting THIS echo (T227, defect D88),
@@ -3280,253 +2176,34 @@ func (m *Multipath) dispatchInbound(ps *peerPathState, fr frame.Frame, raw []byt
 			}
 			return
 		}
-		if pr.reflector != nil {
-			if accepted, rerr := pr.reflector.AcceptProbe(raw); rerr == nil {
-				echoPayload := accepted.Probe.Payload
-				if adaptive := pr.adaptive.Load(); adaptive != nil {
-					if accepted.Acceptance != telemetry.ProbeBootstrap {
-						adaptive.learn(ps, srcAP, accepted.Probe.Payload, accepted.Acceptance == telemetry.ProbeAdopted)
-					}
-					if !accepted.Probe.Padded {
-						echoPayload = adaptive.hello(ps.id)
-					}
-				}
-				recoveryPayload := accepted.Probe.Payload
-				var dataLossFeedback *telemetry.DataLossFeedback
-				feedbackOnly := false
-				if recovery, feedback, recognized, payloadErr := telemetry.DecodeProbePayload(accepted.Probe.Payload); recognized {
-					if payloadErr != nil {
-						recoveryPayload = nil
-					} else {
-						recoveryPayload = recovery
-						dataLossFeedback = feedback
-						feedbackOnly = feedback != nil && len(recovery) == 0
-					}
-				}
-				rebaselined := false
-				transitionCleared := false
-				haveRecoveryACK := false
-				var recoveryAdmission receivedACKAdmission
-				haveRecoveryAdmission := false
-				recoveryPathKey := reseqPathKey(ps.id, accepted.Probe.PathID)
-				sessionChanged := false
-				var transitionGeneration uint64
-				if pr.contracts != nil && accepted.Acceptance == telemetry.ProbeAdopted {
-					generation, changed := pr.contracts.adoptReceivedSession(accepted.Probe.SessionID)
-					if changed {
-						m.publishPeerRecoveryGeneration(pr, generation)
-						sessionChanged = true
-						transitionGeneration = generation
-					}
-				}
-				if accepted.EpochChanged && pr.adaptive.Load() == nil {
-					if pr.contracts != nil && !sessionChanged {
-						transitionGeneration = m.invalidatePeerRecoveryEvidence(pr)
-					}
-					if fr := pr.fecRecv.Load(); fr != nil {
-						fr.discardIncompletePreserveHighWater()
-					}
-					if rq := pr.resequencer.Load(); rq != nil {
-						if transitionGeneration != 0 {
-							rq.RebaselineToLowGeneration(transitionGeneration)
-						} else {
-							rq.RebaselineToLow()
-						}
-						rebaselined = true
-					}
-					transitionCleared = true
-				}
-				if pr.contracts != nil {
-					if generation, roamed := pr.contracts.observeReceivedSource(recoveryPathKey, srcAP); roamed {
-						m.publishPeerRecoveryGeneration(pr, generation)
-					}
-				}
-				if dataLossFeedback != nil && pr.dataLoss != nil && pr.contracts != nil &&
-					accepted.Acceptance != telemetry.ProbeBootstrap {
-					identity, ok := pr.contracts.localDataLossIdentity()
-					if ok && identity.matches(
-						dataLossFeedback.ObservedSessionID,
-						dataLossFeedback.ContractID,
-					) {
-						pr.dataLoss.accept(
-							*dataLossFeedback,
-							accepted.Probe.SessionID,
-							accepted.Acceptance == telemetry.ProbeAdopted,
-							m.clock.Now(),
-						)
-					}
-				}
-				if !accepted.Probe.Padded && accepted.Acceptance != telemetry.ProbeBootstrap && pr.contracts != nil {
-					message, recognized, contractErr := telemetry.DecodeRecoveryContract(recoveryPayload)
-					if contractErr == nil && recognized && message.Type == telemetry.RecoveryContractOffer {
-						beforeGeneration := pr.contracts.receivedSnapshot().generation
-						ack, ok := pr.contracts.acceptOffer(accepted.Probe.SessionID, message, func() {
-							if !transitionCleared {
-								if fr := pr.fecRecv.Load(); fr != nil {
-									fr.discardIncompletePreserveHighWater()
-								}
-							}
-						})
-						currentGeneration := pr.contracts.receivedSnapshot().generation
-						if currentGeneration != beforeGeneration {
-							m.publishPeerRecoveryGeneration(pr, currentGeneration)
-						}
-						if ok {
-							if currentGeneration != beforeGeneration {
-								pr.contracts.observeReceivedSource(recoveryPathKey, srcAP)
-							}
-							if payload, encodeErr := telemetry.EncodeRecoveryContract(ack); encodeErr == nil {
-								echoPayload = payload
-								haveRecoveryACK = true
-								recoveryAdmission, haveRecoveryAdmission = pr.contracts.admitReceivedACK(
-									accepted.Probe.SessionID,
-									message,
-									recoveryPathKey,
-									srcAP,
-								)
-							}
-						}
-					}
-				}
-				if pr.contracts != nil {
-					if accepted.Acceptance == telemetry.ProbeBootstrap ||
-						(!accepted.Probe.Padded && !haveRecoveryACK && !feedbackOnly) {
-						m.invalidatePeerRecoveryFastEvidence(pr)
-					}
-					m.refreshPeerRecoveryWindow(pr)
-				}
-				// Preserve the existing restart recovery for legacy/unknown payloads,
-				// but complete it before the echo can become socket-visible.
-				if accepted.EpochChanged && !rebaselined && pr.adaptive.Load() == nil {
-					if rq := pr.resequencer.Load(); rq != nil {
-						if transitionGeneration != 0 {
-							rq.RebaselineToLowGeneration(transitionGeneration)
-						} else {
-							rq.RebaselineToLow()
-						}
-					}
-					if pr.contracts != nil {
-						m.refreshPeerRecoveryWindow(pr)
-					}
-				}
-				echo, encodeErr := pr.reflector.EncodeAcceptedProbe(accepted, echoPayload)
-				if encodeErr != nil {
-					if haveRecoveryAdmission {
-						pr.contracts.cancelReceivedACK(recoveryAdmission)
-					}
-					return
-				}
-				if shaped, ok := ps.shaper.(recoveryPathShaper); ok {
-					admitted, done, writeErr := shaped.TryWritePriority(echo, func(payload []byte) error {
-						if _, err := ps.writeToUDPAddrPort(payload, srcAP); err != nil {
-							ps.socketWriteErrors.Add(1)
-							return m.accountSendError(ps, err)
-						}
-						return nil
-					})
-					switch {
-					case writeErr != nil:
-						if haveRecoveryAdmission {
-							pr.contracts.cancelReceivedACK(recoveryAdmission)
-						}
-						ps.probeSendErrors.Add(1)
-					case !admitted:
-						if haveRecoveryAdmission {
-							pr.contracts.cancelReceivedACK(recoveryAdmission)
-						}
-						ps.echoPriorityOverflow.Add(1)
-					default:
-						go func(
-							size int,
-							completion <-chan error,
-							contract *recoveryContractCoordinator,
-							admission receivedACKAdmission,
-							recordACK bool,
-						) {
-							if err := <-completion; err == nil {
-								ps.recordOuterWrite(size)
-								if recordACK && contract.completeReceivedACK(admission) {
-									m.refreshPeerRecoveryWindow(pr)
-								}
-							} else if recordACK {
-								contract.cancelReceivedACK(admission)
-							}
-						}(
-							len(echo),
-							done,
-							pr.contracts,
-							recoveryAdmission,
-							haveRecoveryAdmission,
-						)
-					}
-				} else {
-					// UDP writes are goroutine-safe, so this receive-goroutine reflection
-					// races no in-flight Send on the same socket.
-					if _, werr := ps.writeToUDPAddrPort(echo, srcAP); werr == nil {
-						// True-wire-volume accounting (D48): the echo we just sent back is
-						// real egress traffic on this path, so it counts toward txBytes
-						// exactly like a DATA/PARITY write — only on a nil write error.
-						ps.recordOuterWrite(len(echo))
-						m.accountGeneratedPriorityAfterWrite(ps, len(echo))
-						if haveRecoveryAdmission && pr.contracts.completeReceivedACK(recoveryAdmission) {
-							m.refreshPeerRecoveryWindow(pr)
-						}
-					} else if haveRecoveryAdmission {
-						pr.contracts.cancelReceivedACK(recoveryAdmission)
-					}
-				}
+		accepted, rerr := pr.reflector.AcceptProbe(raw)
+		if rerr != nil {
+			return
+		}
+		// The echo of an ordinary probe carries this end's hello; a padded PMTU probe is
+		// echoed as it came, so its size is the size that crossed the path.
+		echoPayload := accepted.Probe.Payload
+		if adaptive := pr.adaptive.Load(); adaptive != nil {
+			if accepted.Acceptance != telemetry.ProbeBootstrap {
+				adaptive.learn(ps, srcAP, accepted.Probe.Payload, accepted.Acceptance == telemetry.ProbeAdopted)
+			}
+			if !accepted.Probe.Padded {
+				echoPayload = adaptive.hello(ps.id)
 			}
 		}
+		echo, encodeErr := pr.reflector.EncodeAcceptedProbe(accepted, echoPayload)
+		if encodeErr != nil {
+			return
+		}
+		// UDP writes are goroutine-safe, so this receive-goroutine reflection
+		// races no in-flight Send on the same socket.
+		if _, werr := ps.writeToUDPAddrPort(echo, srcAP); werr == nil {
+			// True-wire-volume accounting (D48): the echo we just sent back is
+			// real egress traffic on this path — only on a nil write error.
+			ps.recordOuterWrite(len(echo))
+		}
 	default:
-		// CONTROL (and any unhandled kind) is not delivered up this path.
-	}
-}
-
-// observeRecovered feeds every FEC-reconstructed data frame into the resequencer at
-// its ORIGINAL outer-seq (recovered from the shard's coded bytes) via the NON-resyncing
-// ObserveRecovered path, so a frame rebuilt from parity resequences identically to a
-// natively-received frame — filling the exact gap the resequencer would otherwise time
-// out on — WITHOUT a late batch of recovered seqs being able to move the release point
-// or dump the live buffer (recovery must never cause loss). Only frames actually placed
-// AHEAD of the release point advance the honest delivered-recovery counter; a frame
-// rebuilt after the resequencer already skipped its gap is dropped as late and not
-// counted, so /metrics reflects delivered recovery, not mere reconstruction. A
-// malformed recovered shard (too short to hold the outer-seq prefix) is dropped: it
-// signals an encoder/decoder mismatch, not a deliverable frame.
-func (m *Multipath) observeRecovered(
-	fr *fecReceiver,
-	rq *reseq.Resequencer,
-	recovered []fec.Recovered,
-	srcAP netip.AddrPort,
-	dataLoss *dataLossFeedbackCoordinator,
-	carrier dataLossCarrier,
-) {
-	for _, rec := range recovered {
-		seq, inner, err := splitFECShardPayload(rec.Payload)
-		if err != nil {
-			continue
-		}
-		// Residual-loss accounting (T29): FEC reconstructed this outer-seq, so it is NOT
-		// residual loss — mark it present in the post-recovery estimator even if the
-		// resequencer later drops it as late (that is a latency outcome, not a masking
-		// failure; the P4 residual bound measures loss FEC failed to mask).
-		if fr.connLoss != nil {
-			fr.connLoss.Observe(seq)
-		}
-		admitted := false
-		if dataLoss != nil {
-			admitted = rq.ObserveRecoveredWithAdmissionObserver(
-				seq,
-				inner,
-				srcAP,
-				func() { dataLoss.recordRecovered(seq, carrier) },
-			)
-		} else {
-			admitted = rq.ObserveRecovered(seq, inner, srcAP)
-		}
-		if admitted {
-			fr.deliveredRecovered.Add(1)
-		}
+		// Unreachable: Decode yields only Probe and Control.
 	}
 }
 
@@ -3555,754 +2232,53 @@ func (m *Multipath) virtualEndpoint(ps *peerState, learned netip.AddrPort) Endpo
 	return ps.virt
 }
 
-// Send wraps each buffer in an outer DATA frame (fresh outer-seq + the chosen
-// path's id) and writes it to that path's remote. The egress path is chosen by
-// the injected scheduler (T15): the active-backup policy returns the preferred
-// primary while it is up and the failover backup otherwise. The scheduler
-// selects by path priority/liveness only; the Bind additionally requires THAT
-// ONE chosen path to have a known remote, failing the send otherwise rather
-// than silently dropping.
-//
-// Behavioural change from pre-T15: this is a deliberate NARROWING. The removed
-// pickPathLocked iterated the paths and skipped any healthy-but-remoteless one,
-// falling through to the next healthy path WITH a known remote, so a send failed
-// only when NO path had a remote. Now the scheduler owns selection and returns a
-// single index; the Bind does NOT fall through, because a Bind-level fall-through
-// would bypass the scheduler's hysteresis (failover/failback). The residual
-// window this opens: if the scheduler's chosen path is reported Up but its remote
-// is not yet learned — e.g. a concentrator/hub restart, or a T16 NAT-rebind
-// before the first inbound packet re-teaches the remote — the send fails until
-// that path's remote is learned, even if another path has a known remote.
-//
-// Critical-section discipline: FEC-off pacing preserves the legacy direct/shaped
-// paths. With FEC on, Send selects once and publishes one batch to the peer owner;
-// the owner assigns outer sequences while streaming that batch across one staged
-// group at a time and takes m.mu only to frame an immutable decision. peer.sendMu
-// preserves publication order. An exact-byte-shaped Send, or an unshaped Send protected
-// by an active exclusive direct-recovery contract, returns after the owner has copied
-// and admitted its complete caller-buffer batch; eventual group decision and emission
-// stay owner-confined. Uncontracted direct/pacing-off Send retains synchronous completion.
-// The send Codec remains mutex-guarded, and no transmit syscall or shaper wait holds
-// m.mu.
+// Send hands the batch to the owning peer's adaptive transport, which paces each
+// datagram over the lanes it has learned. Datagrams sent before the peer's first
+// authenticated hello wait in the transport's queue.
 func (m *Multipath) Send(bufs [][]byte, ep Endpoint) error {
-	return m.send(bufs, nil, ep, nil)
+	return m.send(bufs, nil, ep)
 }
 
-func (m *Multipath) PacketMetadataEnabled() bool { return m.adaptiveEnabled }
+// PacketMetadataEnabled reports that the engine must supply each datagram's flow
+// identity: the transport classifies and schedules by it.
+func (m *Multipath) PacketMetadataEnabled() bool { return true }
 
-func (m *Multipath) SendWithMetadata(bufs [][]byte, metadata []PacketMetadata, ep Endpoint, complete func()) error {
-	if complete == nil {
-		return errors.New("bind: terminal send completion callback is required")
-	}
+// compile-time proof Multipath satisfies the engine's metadata-carrying send contract.
+var _ BindPacketSender = (*Multipath)(nil)
+
+// SendWithMetadata is Send with the engine's per-datagram flow metadata. The transport
+// copies each datagram into its own queue and retains none of bufs.
+func (m *Multipath) SendWithMetadata(bufs [][]byte, metadata []PacketMetadata, ep Endpoint) error {
 	if len(metadata) != len(bufs) {
-		complete()
 		return errors.New("bind: flow metadata does not match send batch")
 	}
-	return m.send(bufs, metadata, ep, complete)
+	return m.send(bufs, metadata, ep)
 }
 
-func (m *Multipath) SendWithCompletion(
-	bufs [][]byte,
-	ep Endpoint,
-	complete func(),
-) error {
-	if complete == nil {
-		return errors.New("bind: terminal send completion callback is required")
-	}
-	return m.send(bufs, nil, ep, complete)
-}
-
-func (m *Multipath) send(bufs [][]byte, metadata []PacketMetadata, ep Endpoint, complete func()) error {
-	completionTransferred := false
-	if complete != nil {
-		defer func() {
-			if !completionTransferred {
-				complete()
-			}
-		}()
-	}
+func (m *Multipath) send(bufs [][]byte, metadata []PacketMetadata, ep Endpoint) error {
 	ue, ok := ep.(*udpEndpoint)
 	if !ok {
 		return conn.ErrWrongEndpointType
 	}
-
-	// Classification precedes every sequence/FEC mutation. The scheduler sees one
-	// conservative aggregate class for its one offered event; the exact-byte shaper
-	// retains each inner datagram's own class.
-	classes := make([]shaper.Class, len(bufs))
-	class := m.classify.classifyBatch(bufs)
-	for i, b := range bufs {
-		switch m.classify.classify(b) {
-		case sched.ClassControl:
-			classes[i] = shaper.ClassControl
-		default:
-			classes[i] = shaper.ClassData
-		}
-	}
-
+	// Resolve the OWNING peer from the virtual endpoint the engine handed us (each
+	// peer holds a DISTINCT virt, registered in peerByVirt). An endpoint not
+	// registered here is an unknown peer: refuse it rather than misroute its traffic
+	// onto another peer's paths.
 	m.mu.Lock()
-	// Resolve the OWNING peer from the engine-facing virtual endpoint: each peer holds a
-	// DISTINCT virt, so this datagram egresses on THAT peer's outerSeq, scheduler,
-	// sendCodec, fecSend, and per-(peer,path) set — never the embedded primary's by
-	// promotion. An endpoint of the right type but unknown to the demux (no bound peer)
-	// cannot be routed, so it returns the no-path error rather than misrouting onto some
-	// other peer's paths. On the single-peer edge/hub the primary's virt resolves to the
-	// primary peerState, so behaviour is byte-identical to the pre-split singleton.
 	peer, ok := m.peerByVirt[ue]
-	if !ok {
-		m.mu.Unlock()
-		return ErrNoHealthyPath
-	}
-	if adaptive := peer.adaptive.Load(); adaptive != nil {
-		m.mu.Unlock()
-		return adaptive.enqueue(bufs, metadata)
-	}
-	shaped := m.shaperConfigs != nil
-	sendFEC := peer.fecSend.Load()
-	if sendFEC != nil {
-		m.mu.Unlock()
-		if peer.contracts != nil {
-			if err := m.enterPeerRecoveryService(peer); err != nil {
-				return err
-			}
-			defer peer.serviceGate.RUnlock()
-		}
-		completionTransferred = true
-		return m.sendFECBatch(
-			peer, sendFEC, bufs, classes, class, shaped, complete,
-		)
-	}
-	if !shaped {
-		return m.sendDirectBatchLocked(peer, bufs, class)
-	}
 	m.mu.Unlock()
-
-	// One engine Send owns one selection/offered event and one ordered codec/FEC
-	// stream. It may block on shaper capacity without holding the bind-wide lock.
-	peer.sendMu.Lock()
-	defer peer.sendMu.Unlock()
-
-	m.mu.Lock()
-	if len(peer.paths) == 0 {
-		m.mu.Unlock()
-		return errClosed
-	}
-	// OFFERED WIRE FRAMES FOR THIS ONE SELECTION DECISION (defect D95, decisions:K35
-	// §3a/§3c). Pick runs ONCE per batch — it must, because the path it selects is
-	// stamped into every frame this batch produces (PathID at the Encode below, and into
-	// each parity shard) — so it is told how many wire frames that decision covers:
-	//
-	//   len(bufs)                  the batch's own DATA frames, one per buffer; before
-	//                              D95 the scheduler was told "1" here regardless, which
-	//                              made its offered-load meter count Send BATCHES/s while
-	//                              PerPathCapacity denominates WIRE FRAMES/s;
-	//   peer.parityCarry.Swap(0)   the FEC parity frames THIS peer actually wrote to a
-	//                              socket since its last Pick. Parity egresses on the
-	//                              same chosen path and consumes the same wire capacity,
-	//                              so excluding it would put a demand numerator over a
-	//                              wire denominator (at 4+2 a ~3400 fps path would meter
-	//                              only ~2267 fps, below engage 2700 — D95's failure mode
-	//                              restored for every FEC-enabled deployment).
-	//
-	// WHY THE CARRY RATHER THAN AN EXACT AT-PICK COUNT: the batch's parity count is not
-	// known until the encoder's Admit calls run INSIDE the loop below, and under adaptive
-	// FEC the per-group parity M itself varies at runtime, so an exact at-selection count
-	// would require inverting select-then-encode. The carry is exact IN AGGREGATE at O(1)
-	// per batch and lags by at most ONE batch — sub-millisecond at any rate where the gate
-	// can matter, against LoadTau = 200 ms (K35 §9.4).
-	//
-	// EMPTY BATCH: with no buffers AND no pending carry there is nothing to offer, so
-	// Send returns without calling Pick. That also removes a pre-existing spurious
-	// offered event (an empty Send used to meter one frame). A batch that is empty but
-	// has parity pending DOES pick, so no parity is silently lost.
-	frames := len(bufs) + int(peer.parityCarry.Swap(0))
-	if frames == 0 {
-		m.mu.Unlock()
-		return nil
-	}
-	picker, ok := peer.scheduler.(sched.UnpacedPicker)
 	if !ok {
-		m.mu.Unlock()
-		return errors.New("bind: exact-byte shaping requires a scheduler with unpaced selection")
-	}
-	idx := picker.PickUnpaced(class, frames)
-	if idx == sched.PickPaced {
-		// Defensive compatibility for an invalid UnpacedPicker implementation.
-		m.mu.Unlock()
-		return errPacerShedding
-	}
-	if idx < 0 || idx >= len(peer.paths) {
-		m.mu.Unlock()
 		return ErrNoHealthyPath
 	}
-	ps := peer.paths[idx]
-	if ps.recoveryFailed.Load() {
-		m.mu.Unlock()
+	adaptive := peer.adaptive.Load()
+	if adaptive == nil {
 		return errClosed
 	}
-	if _, ok := ps.getRemote(); !ok {
-		m.mu.Unlock()
-		return ErrNoHealthyPath
-	}
-	if ps.shaper == nil {
-		m.mu.Unlock()
-		return fmt.Errorf("bind: selected shaped path %q has no exact-byte shaper", ps.name)
-	}
-	// Snapshot this peer's send-FEC plane under m.mu. Before each later sequence/FEC
-	// mutation, pointer identity acts as its generation check: teardown/re-instantiation
-	// replaces the pointer, so this Send aborts instead of continuing on the stale encoder.
-	// The local reference prevents pointer-address reuse for the lifetime of the batch.
-	sendFEC = peer.fecSend.Load()
-	m.mu.Unlock()
-
-	for i, b := range bufs {
-		m.mu.Lock()
-		// Runtime removal may have retired the selected path while a preceding
-		// datagram waited in the shaper. Stop the suffix instead of silently
-		// rerouting it through a second scheduler selection.
-		if idx >= len(peer.paths) || peer.paths[idx] != ps || ps.recoveryFailed.Load() || peer.sendCodec == nil {
-			m.mu.Unlock()
-			return errClosed
-		}
-		if peer.fecSend.Load() != sendFEC {
-			m.mu.Unlock()
-			return errFECPlaneChanged
-		}
-		wires := make([]fecWire, 0, 1)
-		seq := peer.outerSeq.Add(1)
-		if sendFEC != nil {
-			// FEC on (T24): admit the inner datagram (coded as seq || inner) to the group
-			// encoder. The returned data shard rides a normal DATA frame carrying its FEC
-			// group + shard index; when this admission FILLS the group the encoder returns
-			// the group's parity shards, emitted here as KindParity frames on the SAME
-			// chosen path. Spreading parity onto a DIFFERENT path than its data (so one
-			// path outage cannot lose both) is a documented future refinement, deliberately
-			// NOT implemented here (see the T24 design notes).
-			ds, parity, err := sendFEC.enc.Admit(fecShardPayload(seq, b))
-			if err != nil {
-				m.mu.Unlock()
-				return err
-			}
-			wire, err := peer.sendCodec.Encode(nil, frame.Data{OuterSeq: seq, PathID: ps.id, FECGroup: uint32(ds.Group), FECIndex: uint8(ds.Index), Payload: b})
-			if err != nil {
-				m.mu.Unlock()
-				return err
-			}
-			wires = append(wires, fecWire{b: wire, innerBytes: len(b)})
-			for _, par := range parity {
-				pw, err := m.encodeParityLocked(peer, par, ps.id)
-				if err != nil {
-					m.mu.Unlock()
-					return err
-				}
-				wires = append(wires, fecWire{b: pw, parity: true})
-			}
-		} else {
-			wire, err := peer.sendCodec.Encode(nil, frame.Data{OuterSeq: seq, PathID: ps.id, Payload: b})
-			if err != nil {
-				m.mu.Unlock()
-				return err
-			}
-			wires = append(wires, fecWire{b: wire, innerBytes: len(b)})
-		}
-		m.mu.Unlock()
-
-		datagrams := make([]shaper.Datagram, len(wires))
-		for j, wire := range wires {
-			wireClass := shaper.ClassData
-			if j == 0 {
-				wireClass = classes[i]
-			}
-			datagrams[j] = shaper.Datagram{Class: wireClass, Payload: wire.b}
-		}
-		result, err := ps.shaper.WriteDatagrams(context.Background(), datagrams)
-		m.recordShapedResult(ps, peer, sendFEC, wires, result, err)
-		if err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func (m *Multipath) sendFECBatch(
-	peer *peerState,
-	fs *fecSender,
-	bufs [][]byte,
-	classes []shaper.Class,
-	class sched.FrameClass,
-	shaped bool,
-	complete func(),
-) error {
-	published := false
-	if complete != nil {
-		defer func() {
-			if !published {
-				complete()
-			}
-		}()
-	}
-	// Serialize the one Pick plus one owner publication for this original Send.
-	// Exact-byte shaping and an active exclusive direct-recovery contract wait only
-	// until the owner has copied and admitted every caller buffer, allowing the
-	// engine's sole sequential sender to fill a partial group. Uncontracted
-	// direct/pacing-off composition keeps its synchronous emission result.
-	peer.sendMu.Lock()
-
-	m.mu.Lock()
-	if peer.fecSend.Load() != fs || fs.owner == nil {
-		m.mu.Unlock()
-		peer.sendMu.Unlock()
-		return errFECPlaneChanged
-	}
-	if len(peer.paths) == 0 {
-		m.mu.Unlock()
-		peer.sendMu.Unlock()
-		return errClosed
-	}
-	frames := len(bufs) + int(peer.parityCarry.Swap(0))
-	if frames == 0 {
-		m.mu.Unlock()
-		peer.sendMu.Unlock()
-		return nil
-	}
-	var idx int
-	if shaped {
-		picker, ok := peer.scheduler.(sched.UnpacedPicker)
-		if !ok {
-			m.mu.Unlock()
-			peer.sendMu.Unlock()
-			return errors.New("bind: exact-byte shaping requires a scheduler with unpaced selection")
-		}
-		idx = picker.PickUnpaced(class, frames)
-	} else {
-		idx = peer.scheduler.Pick(class, frames)
-	}
-	if idx == sched.PickPaced {
-		m.mu.Unlock()
-		peer.sendMu.Unlock()
-		return errPacerShedding
-	}
-	if idx < 0 || idx >= len(peer.paths) {
-		m.mu.Unlock()
-		peer.sendMu.Unlock()
-		return ErrNoHealthyPath
-	}
-	path := peer.paths[idx]
-	if path.recoveryFailed.Load() {
-		m.mu.Unlock()
-		peer.sendMu.Unlock()
-		return errClosed
-	}
-	remote, ok := path.getRemote()
-	if !ok {
-		m.mu.Unlock()
-		peer.sendMu.Unlock()
-		return ErrNoHealthyPath
-	}
-	if shaped && path.shaper == nil {
-		m.mu.Unlock()
-		peer.sendMu.Unlock()
-		return fmt.Errorf("bind: selected shaped path %q has no exact-byte shaper", path.name)
-	}
-	ackOwned := shaped ||
-		(!shaped && path.directRecovery && path.recoveryContract().Enabled)
-	m.mu.Unlock()
-
-	batch := &fecOwnerBatch{
-		bufs:     bufs,
-		classes:  classes,
-		path:     path,
-		remote:   remote,
-		shaped:   shaped,
-		ackOwned: ackOwned,
-		complete: complete,
-		done:     make(chan error, 1),
-	}
-	if ackOwned {
-		batch.admitted = make(chan error, 1)
-	}
-	if err := fs.owner.publish(batch); err != nil {
-		peer.sendMu.Unlock()
-		return err
-	}
-	published = true
-	peer.sendMu.Unlock()
-	if ackOwned {
-		return fs.owner.waitAdmission(batch)
-	}
-	return fs.owner.wait(batch)
-}
-
-// sendDirectBatchLocked preserves the pacing-off/legacy Send contract: select
-// once and frame the complete batch, including every FEC admission and immediate
-// parity shard, while m.mu is held; only then release the lock and perform socket
-// writes. A partial write error therefore never changes how much of the batch
-// advanced outerSeq or the FEC encoder. Caller holds m.mu; this method releases it.
-func (m *Multipath) sendDirectBatchLocked(peer *peerState, bufs [][]byte, class sched.FrameClass) error {
-	if len(peer.paths) == 0 {
-		m.mu.Unlock()
-		return errClosed
-	}
-	frames := len(bufs) + int(peer.parityCarry.Swap(0))
-	if frames == 0 {
-		m.mu.Unlock()
-		return nil
-	}
-	idx := peer.scheduler.Pick(class, frames)
-	if idx == sched.PickPaced {
-		m.mu.Unlock()
-		return errPacerShedding
-	}
-	if idx < 0 || idx >= len(peer.paths) {
-		m.mu.Unlock()
-		return ErrNoHealthyPath
-	}
-	ps := peer.paths[idx]
-	remote, ok := ps.getRemote()
-	if !ok {
-		m.mu.Unlock()
-		return ErrNoHealthyPath
-	}
-	sendFEC := peer.fecSend.Load()
-	wires := make([]fecWire, 0, len(bufs))
-	for _, b := range bufs {
-		seq := peer.outerSeq.Add(1)
-		if sendFEC != nil {
-			ds, parity, err := sendFEC.enc.Admit(fecShardPayload(seq, b))
-			if err != nil {
-				m.mu.Unlock()
-				return err
-			}
-			wire, err := peer.sendCodec.Encode(nil, frame.Data{
-				OuterSeq: seq,
-				PathID:   ps.id,
-				FECGroup: uint32(ds.Group),
-				FECIndex: uint8(ds.Index),
-				Payload:  b,
-			})
-			if err != nil {
-				m.mu.Unlock()
-				return err
-			}
-			wires = append(wires, fecWire{b: wire, innerBytes: len(b)})
-			for _, par := range parity {
-				wire, err := m.encodeParityLocked(peer, par, ps.id)
-				if err != nil {
-					m.mu.Unlock()
-					return err
-				}
-				wires = append(wires, fecWire{b: wire, parity: true})
-			}
-			continue
-		}
-		wire, err := peer.sendCodec.Encode(nil, frame.Data{OuterSeq: seq, PathID: ps.id, Payload: b})
-		if err != nil {
-			m.mu.Unlock()
-			return err
-		}
-		wires = append(wires, fecWire{b: wire, innerBytes: len(b)})
-	}
-	m.mu.Unlock()
-
-	for _, wire := range wires {
-		if _, err := ps.writeToUDPAddrPort(wire.b, remote); err != nil {
-			ps.socketWriteErrors.Add(1)
-			return m.accountSendError(ps, err)
-		}
-		m.recordWireEmission(ps, peer, sendFEC, wire)
-	}
-	return nil
-}
-
-// accountGeneratedPriorityAfterWrite accounts an authenticated outer PROBE/echo
-// only after its direct socket write succeeds. Exact-byte shaping advances future
-// admission/serialization debt by the encoded datagram length without moving any
-// already-admitted deadline. Legacy composition retains the one-token ProbeBudget
-// contract. Callers must use this only for locally generated, authenticated outer
-// priority traffic; arbitrary/on-demand CONTROL is outside the configured Rp/Pburst
-// model.
-func (m *Multipath) accountGeneratedPriorityAfterWrite(ps *peerPathState, size int) {
-	if ps.shaper != nil {
-		if err := ps.shaper.AccountPriority(size); err != nil {
-			m.log.Warn(
-				"bind: generated outer priority accounting failed after socket write",
-				"path", ps.name,
-				"peer", ps.peer.name,
-				"bytes", size,
-				"error", err.Error(),
-			)
-		}
-		return
-	}
-	if budget, ok := ps.peer.scheduler.(sched.ProbeBudget); ok {
-		budget.AccountProbe(int(ps.schedIdx.Load()))
-	}
-}
-
-func (m *Multipath) recordShapedResult(ps *peerPathState, peer *peerState, fs *fecSender, wires []fecWire, result shaper.BatchResult, err error) {
-	ps.shapedAccepted.Add(uint64(result.Accepted))
-	ps.shapedEmitted.Add(uint64(result.Emitted))
-	for i := 0; i < result.Emitted && i < len(wires); i++ {
-		m.recordWireEmission(ps, peer, fs, wires[i])
-	}
-	if err != nil {
-		ps.shapedWriteErrors.Add(1)
-	}
+	return adaptive.enqueue(bufs, metadata)
 }
 
 func (ps *peerPathState) recordOuterWrite(payloadBytes int) {
 	ps.txBytes.Add(uint64(payloadBytes))
-	overhead := IPv4UDPOverhead
-	if pathIsV6(ps.src) {
-		overhead = IPv6UDPOverhead
-	}
-	ps.outerWireBytes.Add(uint64(payloadBytes + overhead))
-}
-
-func (m *Multipath) recordWireEmission(ps *peerPathState, peer *peerState, fs *fecSender, wire fecWire) {
-	ps.recordOuterWrite(len(wire.b))
-	if wire.innerBytes > 0 {
-		ps.innerDataBytes.Add(uint64(wire.innerBytes))
-	}
-	peer.lastWrite.Store(m.clock.Now().UnixNano())
-	if fs == nil {
-		return
-	}
-	if wire.parity {
-		fs.parityFrames.Add(1)
-		fs.parityBytes.Add(uint64(len(wire.b)))
-		peer.parityCarry.Add(1)
-		return
-	}
-	fs.dataFrames.Add(1)
-	fs.dataBytes.Add(uint64(len(wire.b)))
-}
-
-// fecWire is one framed outgoing datagram tagged with whether it is an FEC parity
-// frame, so the write loop can charge parity-overhead accounting (T24) without a
-// second pass.
-type fecWire struct {
-	b          []byte
-	parity     bool
-	innerBytes int
-}
-
-// emsgsizeWarnInterval bounds how often a path's EMSGSIZE (over-PMTU send, DF set)
-// diagnostic is emitted, so a persistent over-MTU flow — whose drop is per-datagram —
-// logs a coalesced record per path rather than one line per dropped datagram. The
-// counter (emsgsizeDrops) still advances on every occurrence.
-const emsgsizeWarnInterval = 1 * time.Second
-
-// accountSendError classifies a path write failure from the Send hot path. An EMSGSIZE
-// is the explicit "datagram exceeds the path MTU with DF set" that the T201 DF policy
-// (setDontFragment) surfaces in place of the kernel's old silent fragmentation: it is
-// COUNTED per (peer,path) and WARNed (rate-limited per path), then still RETURNED so the
-// engine observes the drop — the fail-fast invariant means the loss is surfaced, never
-// swallowed. Any other write error is returned unchanged (no counter, no log — those are
-// genuine send failures the caller already handles). It runs WITHOUT m.mu, off the Send
-// write loop, so it touches only the path's own lock-free atomics and the (safe-for-
-// concurrent-use) logger.
-func (m *Multipath) accountSendError(ps *peerPathState, err error) error {
-	if errors.Is(err, syscall.EMSGSIZE) {
-		ps.emsgsizeDrops.Add(1)
-		m.warnEMSGSIZE(ps)
-	}
-	return err
-}
-
-// warnEMSGSIZE emits the coalesced per-path over-PMTU WARN at most once per
-// emsgsizeWarnInterval. It gates on ps.lastEMSGSIZEWarnNanos with a load-then-CAS so
-// concurrent Send goroutines on the same path collapse to a single log line per window
-// (a lost CAS means another goroutine already claimed this window). The reported drop
-// count is the running total, so a reader sees the cumulative loss even across coalesced
-// windows.
-func (m *Multipath) warnEMSGSIZE(ps *peerPathState) {
-	now := time.Now().UnixNano()
-	last := ps.lastEMSGSIZEWarnNanos.Load()
-	if last != 0 && now-last < int64(emsgsizeWarnInterval) {
-		return
-	}
-	if !ps.lastEMSGSIZEWarnNanos.CompareAndSwap(last, now) {
-		return
-	}
-	m.log.Warn("bind: path send exceeded PMTU with DF set, datagram dropped (EMSGSIZE)",
-		"path", ps.name,
-		"peer", ps.peer.name,
-		"emsgsize_drops", ps.emsgsizeDrops.Load(),
-	)
-}
-
-// encodeParityLocked encodes one parity shard as a KindParity frame on the given
-// path, using the owning peer's send Codec. Caller holds m.mu (the send Codec is
-// shared and stateful per peer).
-func (m *Multipath) encodeParityLocked(peer *peerState, par fec.ParityShard, pathID uint8) ([]byte, error) {
-	return peer.sendCodec.Encode(nil, frame.Parity{
-		FECGroup:    uint32(par.Group),
-		ParityIndex: uint16(par.Index),
-		DataCount:   uint8(par.DataCount),
-		PathID:      pathID,
-		Payload:     par.Payload,
-	})
-}
-
-// fecFlushDeadline is the deterministic test/operational wake seam for all
-// per-peer owners. Production deadline closure uses each owner's exact timer.
-func (m *Multipath) fecFlushDeadline() {
-	peers := m.peersView.Load()
-	if peers == nil {
-		return
-	}
-	for _, peer := range *peers {
-		fs := peer.fecSend.Load()
-		if fs != nil && fs.owner != nil {
-			fs.owner.signalDeadline()
-		}
-	}
-}
-
-// driveAdaptiveController snapshots peer's adaptive FEC loss signal under m.mu,
-// releases it, then synchronously submits the immutable sample to the peer owner.
-// Only the owner mutates the controller and encoder. It is a no-op in fixed-ratio
-// mode and self-throttles to
-// adaptiveControlInterval so the controller's EWMA sees ~one sample per probe interval
-// regardless of the tick rate. peer is any bound peer (the embedded primary or a
-// concentrator peer) — the drive is entirely peer-scoped so one peer's control loop never
-// reads or perturbs another peer's controller/encoder/paths.
-//
-// WHICH LOSS drives the controller (design decision 1, revised D96 mechanisms 2+3 and T324):
-// the loss on the path(s) that ACTUALLY CARRY DATA, consulted through the scheduler's DataPaths
-// seam (T271) rather than a role-agnostic MAX over every StateUp prober. Under active-backup,
-// authenticated receiver feedback reports exact native/inferred DATA outcomes for the one
-// stable carrier; a fresh identity-matched report is combined with that carrier's probe loss
-// by taking the conservative maximum. Once this capability has produced a report, stale or
-// path/session/contract-mismatched feedback holds the controller rather than letting clean
-// priority PROBEs lower M. Under the weighted scheduler, DATA is striped across an aggregating
-// set and the deliberately single-carrier feedback record cannot represent its shares, so the
-// signal remains the WEIGHT-WEIGHTED MIX of those paths' probe losses. A role-agnostic MAX let
-// a lossy but data-idle STANDBY drive M up even though it carried no data to protect — the D96
-// defect this replaces. A
-// MIN-SAMPLE FLOOR (minAdaptiveLossSamples) additionally excludes any data path still in its
-// early loss-window regime, where a single dropped probe reads as a large fraction against a
-// tiny denominator (D96 mechanism 3); when the weighted mix's eligible subset is a strict
-// subset of the data paths the mix is RENORMALIZED over that subset, and when NO data path is
-// sample-eligible the drive takes the count==0 HOLD branch (below). The DATA report counts both
-// parity-reconstructed and final unrecoverable gaps exactly once, so it measures pre-recovery
-// carrier loss rather than the masked post-recovery ConnLoss. A down/probeless path carries no
-// data and is never in DataPaths, so it is excluded by construction.
-func (m *Multipath) driveAdaptiveController(peer *peerState) {
-	m.mu.Lock()
-	owner, sample, ok := m.adaptiveSampleLocked(peer)
-	m.mu.Unlock()
-	if ok {
-		_ = owner.submitAdaptiveSample(sample)
-	}
-}
-
-// adaptiveSampleLocked forms a controller sample without waiting for the owner.
-// Caller holds m.mu; submission must happen only after releasing it.
-func (m *Multipath) adaptiveSampleLocked(peer *peerState) (*fecSendOwner, fecAdaptiveSample, bool) {
-	fs := peer.fecSend.Load()
-	if fs == nil || fs.ctrl == nil || fs.owner == nil {
-		return nil, fecAdaptiveSample{}, false // FEC off for this peer, or fixed-ratio mode
-	}
-	now := m.clock.Now()
-
-	// Refresh the scheduler's liveness-derived selection before reading its data-path set: this
-	// sample can run independently of the send-path Pick that otherwise warms
-	// the cached active/eligible set, so without this the data-path signal could lag liveness on
-	// an idle-but-lossy peer. Recompute is non-consuming (advances no distribution/pacing/load
-	// state), takes only the scheduler lock, and never calls back into the Bind — the same
-	// m.mu->scheduler order the eager-failover nudge already relies on — so it composes with the
-	// DataPaths read below (which the T271 seam documents as NOT itself refreshing liveness).
-	peer.scheduler.Recompute()
-
-	loss, count := m.dataPathLossLocked(peer, now)
-	return fs.owner, fecAdaptiveSample{now: now, loss: loss, count: count}, true
-}
-
-// dataPathLossLocked computes the adaptive controller's loss input from the path(s) that
-// ACTUALLY CARRY DATA (D96 mechanisms 2+3), consulting the scheduler's DataPaths seam (T271)
-// instead of a role-agnostic MAX over every StateUp prober. Exactly one stable data path may use
-// fresh authenticated DATA-outcome feedback; multiple weighted data paths retain the weighted
-// raw probe-loss mix because one carrier record cannot represent their distribution shares. It
-// returns count 0 for the caller's HOLD condition when the selected evidence is unavailable or
-// stale. Caller holds m.mu.
-//
-// It calls peer.scheduler.DataPaths() (which takes the scheduler's own lock and returns a
-// caller-owned copy, never calling back into the Bind — the documented m.mu->scheduler order)
-// and then reads each named data path's prober (Estimate) — the prober is a LEAF lock that
-// never calls back into the Bind, so the whole read respects the m.mu->scheduler->prober order
-// the rest of the Bind takes. DataPath.Index is the priority-ordered path index, which by the
-// schedIdx invariant (attachPeerPathLocked) equals the position in peer.paths.
-func (m *Multipath) dataPathLossLocked(peer *peerState, now time.Time) (float64, int) {
-	dps := peer.scheduler.DataPaths()
-	probeLoss, probeCount := weightedDataPathLoss(dps, func(idx int) (telemetry.Estimate, bool) {
-		if idx < 0 || idx >= len(peer.paths) {
-			return telemetry.Estimate{}, false // stale index during a concurrent membership change
-		}
-		pr := peer.paths[idx].prober
-		if pr == nil {
-			return telemetry.Estimate{}, false // no probe transport: no per-path loss to read
-		}
-		return pr.Estimate(), true
-	})
-	if len(dps) != 1 || peer.dataLoss == nil || peer.contracts == nil {
-		return probeLoss, probeCount
-	}
-	pathIndex := dps[0].Index
-	if pathIndex < 0 || pathIndex >= len(peer.paths) {
-		return 0, 0
-	}
-	identity, haveOffer := peer.contracts.localDataLossIdentity()
-	if !haveOffer {
-		return probeLoss, probeCount
-	}
-	dataLoss, fresh, ever := peer.dataLoss.sampleIdentity(peer.paths[pathIndex].id, identity, now)
-	if fresh {
-		if dataLoss > probeLoss {
-			return dataLoss, 1
-		}
-		return probeLoss, 1
-	}
-	if ever {
-		return 0, 0
-	}
-	return probeLoss, probeCount
-}
-
-// weightedDataPathLoss folds the per-data-path loss estimates into one controller input: the
-// weight-weighted mix of the RAW loss over the SAMPLE-ELIGIBLE data paths, renormalized over
-// that eligible subset. estimate maps a DataPath.Index to that path's telemetry.Estimate (ok
-// false when the index is unreadable). A data path whose Estimate().LossSamples is below
-// minAdaptiveLossSamples (T270) is excluded — its denominator is too small to trust (D96
-// mechanism 3) — so a sub-threshold single-drop spike cannot cross the raise gate. The returned
-// weight is renormalized over the eligible subset: when the floor excludes a strict subset of a
-// weighted bond's data paths the mix is taken over the survivors (dividing by their weight sum);
-// when the eligible subset is EMPTY it returns (0, 0), the HOLD signal. For the single-carrier
-// active-backup result ([{active, 1.0}]) the mix collapses to the active path's own loss.
-//
-// AGGREGATION-GATE DISCONTINUITY: when a WeightedScheduler stops aggregating mid-stream its
-// DataPaths steps from the striped mix to the primary-only ([{primary, 1.0}]) signal — a step
-// change in the controller input smoothed downstream by the controller's EWMA, not here.
-func weightedDataPathLoss(dps []sched.DataPath, estimate func(idx int) (telemetry.Estimate, bool)) (float64, int) {
-	var weightedSum, weightTotal float64
-	count := 0
-	for _, dp := range dps {
-		est, ok := estimate(dp.Index)
-		if !ok {
-			continue
-		}
-		if est.LossSamples < minAdaptiveLossSamples {
-			continue // early-regime: denominator too small to be a trustworthy loss fraction
-		}
-		weightedSum += dp.Weight * est.Loss
-		weightTotal += dp.Weight
-		count++
-	}
-	if count == 0 {
-		return 0, 0
-	}
-	return weightedSum / weightTotal, count
 }
 
 // ParseEndpoint records a peer's wireguard endpoint as its per-path remote and returns THAT
@@ -4345,7 +2321,7 @@ func (m *Multipath) ParseEndpoint(s string) (Endpoint, error) {
 // leaves that peer endpoint-less (tolerant boot — the re-resolution loop installs it later). It
 // seeds two durable maps: the per-peer configuredRemote (Open seeds that peer's paths from it) and
 // the endpoint→peer map ParseEndpoint resolves the OWNING peer's virt through — so a multi-exit
-// edge routes each peer's DATA/PROBE frames to ITS OWN concentrator, not a single bind-global
+// edge routes each peer's frames to ITS OWN concentrator, not a single bind-global
 // default. It touches NO per-Open path state (only the durable seeds), so it MUST run before
 // dev.IpcSet/Open. The concentrator (peers learn remotes from inbound) and the single-peer edge
 // (one endpoint, bind-global default) never call it.
@@ -4370,8 +2346,9 @@ func (m *Multipath) SeedEdgePeerRemotes(remotes []netip.AddrPort) error {
 // paths without their own dest_addr — at ap, the concentrator endpoint the edge now
 // sends to. It is the edge-side HUB-FAILOVER switch (T57): when every path's liveness to
 // the active concentrator is DOWN (hub loss), the device advances to the next ordered
-// peer endpoint (config.Peer.Endpoints) and calls this so every subsequent DATA and
-// PROBE frame egresses toward the STANDBY concentrator on every path.
+// peer endpoint (config.Peer.Endpoints) and calls this so every subsequent PROBE
+// egresses toward the STANDBY concentrator on every path; the transport forgets its
+// lanes and learns the standby's from the first echoed hello.
 //
 // It repoints UNIFORMLY — overriding a path's own configured dest_addr too — because a
 // concentrator switch retargets the peer for the whole bond: the ordered endpoint list
@@ -4395,50 +2372,26 @@ func (m *Multipath) SeedEdgePeerRemotes(remotes []netip.AddrPort) error {
 // The edge fronts a SINGLE concentrator peer (hub failover is an edge-only event — the
 // concentrator learns remotes and never switches hubs), so this operates on the primary
 // peerState. The per-peer mechanics live in setPeerRemoteLocked, which touches ONLY that
-// peer's paths and resequencer, so the D32 re-baseline is scoped to the peer whose remote
-// changed and can never disturb another bound peer's release point.
+// peer's paths and transport. The standby is a separate process: its hello carries a new
+// boot epoch, on which the transport re-baselines this peer's resequencer (defect D32).
 func (m *Multipath) SetPeerRemote(ap netip.AddrPort) {
 	m.mu.Lock()
-	rq := m.setPeerRemoteLocked(m.peerState, ap)
+	m.setPeerRemoteLocked(m.peerState, ap)
 	m.mu.Unlock()
-
-	// A hub switch changes the DATA-frame SENDER identity: the standby concentrator is a
-	// separate process whose outer-seq restarts near 1, far below the release point the
-	// prior hub's stream advanced THIS peer's resequencer's `next` to. Re-baseline it so the
-	// standby's FIRST frame (the WG handshake response) re-anchors the release point instead
-	// of being dropped as a suspect low seq — without this the tunnel never re-establishes
-	// after failover (defect D32). Done OUTSIDE m.mu (the resequencer has its own mutex;
-	// never nest it under m.mu). Nil on a closed bind (a resequencer is Stored per Open) —
-	// the next Open seeds a fresh one whose release point re-pins to its first frame anyway.
-	if rq != nil {
-		var generation uint64
-		if m.contracts != nil {
-			generation = m.invalidatePeerRecoveryEvidence(m.peerState)
-		}
-		if generation != 0 {
-			rq.RebaselineGeneration(ap, generation)
-		} else {
-			rq.Rebaseline(ap)
-		}
-		m.refreshPeerRecoveryWindow(m.peerState)
-	}
 }
 
 // setPeerRemoteLocked repoints EVERY path bound to the given peer at ap — overriding an
-// already-learned/configured remote — and records ap as the bind's default remote seeded
-// onto that peer's future paths, returning the peer's receive resequencer so the caller
-// re-baselines it OUTSIDE m.mu (the resequencer keeps its own mutex; never nest it under
-// m.mu). It writes ONLY the given peer's per-path remotes and reads ONLY that peer's
-// resequencer, so a hub switch on one peer never disturbs another bound peer's wire remotes
-// or release point — the per-peer D32 boundary. Returns nil on a closed bind (no
-// resequencer Stored yet). Caller holds m.mu.
+// already-learned/configured remote — records ap as the bind's default remote seeded
+// onto that peer's future paths, and makes the peer's transport forget its lanes. It
+// writes ONLY the given peer's state, so a hub switch on one peer never disturbs another
+// bound peer's wire remotes or release point. Caller holds m.mu.
 //
 // It is the SINGLE-CONTROLLER (primary-peer) path: writing the bind-global m.defaultRemote
 // here is correct ONLY because exactly one hub-failover controller exists and it drives the
 // primary peer. The MULTI-controller per-peer seam is setPeerRemoteForLocked, which repoints
 // one peer WITHOUT touching m.defaultRemote (a per-peer hub switch has no bind-global meaning;
 // see that function and the m.defaultRemote field doc for the reader audit).
-func (m *Multipath) setPeerRemoteLocked(ps *peerState, ap netip.AddrPort) *reseq.Resequencer {
+func (m *Multipath) setPeerRemoteLocked(ps *peerState, ap netip.AddrPort) {
 	if adaptive := ps.adaptive.Load(); adaptive != nil {
 		adaptive.forgetRoutes()
 	}
@@ -4446,23 +2399,18 @@ func (m *Multipath) setPeerRemoteLocked(ps *peerState, ap netip.AddrPort) *reseq
 	for _, pp := range ps.paths {
 		pp.setRemote(ap)
 	}
-	if ps.adaptive.Load() != nil {
-		return nil
-	}
-	return ps.resequencer.Load()
 }
 
 // SetPeerRemoteFor is the PER-PEER hub-failover repoint seam (T252/G28/M105): it repoints
 // exactly the named peer's paths at ap, WITHOUT clobbering the bind-global m.defaultRemote or
-// any OTHER peer's wire remotes and resequencer. It is the multi-exit-edge / N-controller dual
+// any OTHER peer's wire remotes and transport. It is the multi-exit-edge / N-controller dual
 // of SetPeerRemote (which drives the primary and does write m.defaultRemote for single-peer-
 // edge back-compat): with N independent hub-failover controllers, peer B's endpoint switch must
 // not disturb the remote peer A relies on, so each controller repoints only ITS peer through
 // this seam. The existing single-controller SetPeerRemote call sites are unchanged.
 //
 // It returns an error for an unknown peer name (a wiring defect — fail fast rather than
-// silently repoint nothing). The resequencer re-baseline (D32) runs OUTSIDE m.mu, exactly as
-// SetPeerRemote does.
+// silently repoint nothing).
 //
 // T253 will hand each per-peer controller an adapter that routes its hub switch — and its
 // initial endpoint install for an endpoint-less (hostname-only) peer — through this seam.
@@ -4473,35 +2421,15 @@ func (m *Multipath) SetPeerRemoteFor(peerName string, ap netip.AddrPort) error {
 		m.mu.Unlock()
 		return fmt.Errorf("bind: SetPeerRemoteFor unknown peer %q", peerName)
 	}
-	rq, err := m.setPeerRemoteForLocked(p, ap)
+	// A cross-peer remote collision leaves ALL state untouched (the guard runs before
+	// any mutation) and surfaces the wiring defect.
+	err := m.setPeerRemoteForLocked(p, ap)
 	m.mu.Unlock()
-	if err != nil {
-		// A cross-peer remote collision left ALL state untouched (the guard runs before any
-		// mutation), so there is nothing to re-baseline — surface the wiring defect.
-		return err
-	}
-
-	// Re-baseline OUTSIDE m.mu (the resequencer owns its own mutex; never nest it under m.mu),
-	// mirroring SetPeerRemote — the standby hub's outer-seq restarts low and must re-anchor the
-	// release point instead of being SUSPECT-dropped (D32).
-	if rq != nil {
-		var generation uint64
-		if p.contracts != nil {
-			generation = m.invalidatePeerRecoveryEvidence(p)
-		}
-		if generation != 0 {
-			rq.RebaselineGeneration(ap, generation)
-		} else {
-			rq.Rebaseline(ap)
-		}
-		m.refreshPeerRecoveryWindow(p)
-	}
-	return nil
+	return err
 }
 
 // setPeerRemoteForLocked is the per-peer core of SetPeerRemoteFor: it repoints ONLY peer p's
-// per-path remotes at ap and returns p's receive resequencer for the caller to re-baseline
-// outside m.mu (nil on a closed bind — no resequencer Stored yet). Unlike setPeerRemoteLocked
+// per-path remotes at ap and makes p's transport forget its lanes. Unlike setPeerRemoteLocked
 // it does NOT write m.defaultRemote: that field is the SINGLE-PEER-EDGE bind-global fallback
 // (its only readers, in attachPeerPathLocked / attachSharedPathLocked, are gated on
 // len(m.edgePeerByRemote)==0), so a per-peer repoint has no business mutating it. Caller holds
@@ -4532,9 +2460,9 @@ func (m *Multipath) SetPeerRemoteFor(peerName string, ap netip.AddrPort) error {
 // deletes what is by then p's key — ParseEndpoint would then misresolve p to the primary's virt,
 // the same silent cross-wiring class as D100. Keying ap to p when it ALREADY maps to p is fine:
 // an idempotent self-repoint (or a repoint to p's own current remote) is a valid no-op path.
-func (m *Multipath) setPeerRemoteForLocked(p *peerState, ap netip.AddrPort) (*reseq.Resequencer, error) {
+func (m *Multipath) setPeerRemoteForLocked(p *peerState, ap netip.AddrPort) error {
 	if owner, ok := m.edgePeerByRemote[ap]; ok && owner != p {
-		return nil, fmt.Errorf("bind: SetPeerRemoteFor: remote %s is already owned by peer %q; refusing to repoint peer %q onto it (edgePeerByRemote cannot map two peers to one addr:port)", ap, owner.name, p.name)
+		return fmt.Errorf("bind: SetPeerRemoteFor: remote %s is already owned by peer %q; refusing to repoint peer %q onto it (edgePeerByRemote cannot map two peers to one addr:port)", ap, owner.name, p.name)
 	}
 	if p.hasConfiguredRemote && p.configuredRemote != ap {
 		delete(m.edgePeerByRemote, p.configuredRemote)
@@ -4547,10 +2475,7 @@ func (m *Multipath) setPeerRemoteForLocked(p *peerState, ap netip.AddrPort) (*re
 	for _, pp := range p.paths {
 		pp.setRemote(ap)
 	}
-	if p.adaptive.Load() != nil {
-		return nil, nil
-	}
-	return p.resequencer.Load(), nil
+	return nil
 }
 
 // Close tears down every per-path socket and CLEARS the bind's path state so a
@@ -4570,83 +2495,28 @@ func (m *Multipath) Close() error {
 	if m.recvClosed != nil {
 		close(m.recvClosed)
 	}
-	for _, peer := range m.peers {
-		if peer.contracts != nil {
-			peer.contracts.disable()
-		}
-	}
-	fecSenders := m.detachFECSendersLocked(m.fecGenerationCloseError())
-	if m.afterCloseFECDetach != nil {
-		m.afterCloseFECDetach()
-	}
 	retirement := m.detachSocketGenerationsLocked()
 	m.mu.Unlock()
 
 	err := retirement.retire()
-	waitFECSenders(fecSenders)
 	m.readersWG.Wait()
-	// A readLoop can already be inside lazy peer instantiation when the first
-	// detach runs. Once every reader has joined, detach and join any sender it
-	// published in that closing window before clearing/reopening the generation.
-	m.mu.Lock()
-	lateFECSenders := m.detachFECSendersLocked(m.fecGenerationCloseError())
-	m.mu.Unlock()
-	waitFECSenders(lateFECSenders)
 	m.clearPerOpenStateAfterReaders()
 	return err
 }
 
-func (m *Multipath) detachFECSendersLocked(err error) []*fecSender {
-	fecSenders := make([]*fecSender, 0, len(m.peers))
-	for _, p := range m.peers {
-		fs := p.fecSend.Swap(nil)
-		if fs == nil {
-			continue
-		}
-		if fs.owner != nil {
-			fs.owner.Stop(err)
-		}
-		fecSenders = append(fecSenders, fs)
-	}
-	return fecSenders
-}
-
-func (m *Multipath) fecGenerationCloseError() error {
-	if m.shaperConfigs != nil {
-		return shaper.ErrClosed
-	}
-	return errClosed
-}
-
-func waitFECSenders(fecSenders []*fecSender) {
-	for _, fs := range fecSenders {
-		if fs.owner != nil {
-			fs.owner.Wait()
-		}
-	}
-}
-
 func (m *Multipath) clearPerOpenStateAfterReaders() {
 	// No generation reader or writer remains, and transitionMu prevents a new
-	// Open until the old per-Open planes and channels are cleared. Snapshot the
+	// Open until the old per-Open resequencers and channels are cleared. Snapshot the
 	// durable peer registry under m.mu: AddConcentratorPeer may legally register
 	// a fresh (already-empty) peer once path detachment makes the bind closed.
 	m.mu.Lock()
 	peers := append([]*peerState(nil), m.peers...)
-	for _, peer := range peers {
-		if peer.contracts != nil {
-			peer.contracts.recoveryAuthority().SetChangeSignal(nil)
-		}
-	}
 	m.deliverSignal = nil
-	m.recoveryAuthoritySignal = nil
 	m.recvClosed = nil
 	m.mu.Unlock()
 	for _, p := range peers {
 		p.lifecycleMu.Lock()
 		rq := p.resequencer.Swap(nil)
-		p.fecRecv.Store(nil)
-		p.parityCarry.Store(0)
 		p.lifecycleMu.Unlock()
 		if rq != nil {
 			rq.Close()
@@ -4659,145 +2529,17 @@ type socketGenerationRetirement struct {
 	shared    []*sharedPathState
 }
 
-func (m *Multipath) abortRecoveryGeneration(pp *peerPathState, cause error) {
-	sp := pp.sharedPathState
-	sp.recoveryRetireOnce.Do(func() {
-		m.mu.Lock()
-		current := m.openGeneration.Load() == sp.openGeneration
-		if current {
-			current = false
-			for _, candidate := range m.shared {
-				if candidate == sp {
-					current = true
-					break
-				}
-			}
-		}
-		m.mu.Unlock()
-		if current {
-			views := sp.views.Load()
-			if views != nil {
-				for _, view := range *views {
-					if view.peer != nil && view.peer.contracts != nil {
-						view.peer.contracts.invalidateGeneration(sp.openGeneration)
-					}
-				}
-			}
-		}
-		if staged, ok := pp.shaper.(causedStagedPathShaper); ok {
-			staged.StopWithError(cause)
-		} else if staged, ok := pp.shaper.(stagedPathShaper); ok {
-			staged.Stop()
-		}
-		sp.abortWriteGeneration()
-		go m.retireRecoveryGeneration(pp, cause)
-	})
-}
-
-func (m *Multipath) retireRecoveryGeneration(failed *peerPathState, cause error) {
-	defer func() {
-		if m.afterRecoveryRetire != nil {
-			m.afterRecoveryRetire(failed.sharedPathState)
-		}
-	}()
-	m.transitionMu.Lock()
-	defer m.transitionMu.Unlock()
-
-	sp := failed.sharedPathState
-	m.mu.Lock()
-	sharedIndex := -1
-	if m.openGeneration.Load() == sp.openGeneration {
-		for index, candidate := range m.shared {
-			if candidate == sp {
-				sharedIndex = index
-				break
-			}
-		}
-	}
-	m.mu.Unlock()
-	if sharedIndex < 0 {
-		return
-	}
-
-	frozenPeers := m.freezePeerServices()
-	rotateContract := false
-	defer func() {
-		if err := m.finishPeerServiceTransition(frozenPeers, rotateContract); err != nil {
-			m.log.Error("bind: recovery contract rotation failed", "error", err)
-		}
-	}()
-
-	var retirement socketGenerationRetirement
-	m.mu.Lock()
-	sharedIndex = -1
-	if m.openGeneration.Load() == sp.openGeneration {
-		for index, candidate := range m.shared {
-			if candidate == sp {
-				sharedIndex = index
-				break
-			}
-		}
-	}
-	if sharedIndex < 0 {
-		m.mu.Unlock()
-		return
-	}
-	for _, peer := range m.peers {
-		pathIndex := -1
-		for index, candidate := range peer.paths {
-			if candidate.sharedPathState == sp {
-				pathIndex = index
-				break
-			}
-		}
-		if pathIndex < 0 {
-			continue
-		}
-		detached := peer.paths[pathIndex]
-		if dynamic, ok := peer.scheduler.(sched.DynamicScheduler); ok {
-			if err := dynamic.RemovePath(pathIndex); err != nil {
-				m.log.Error("bind: recovery generation scheduler retirement failed",
-					"path", detached.name,
-					"peer", peer.name,
-					"error", err,
-				)
-			}
-		}
-		peer.paths = append(peer.paths[:pathIndex], peer.paths[pathIndex+1:]...)
-		for index := pathIndex; index < len(peer.paths); index++ {
-			peer.paths[index].schedIdx.Store(int32(index))
-		}
-		detached.clearRemote()
-		retirement.preparePeerPathLocked(detached)
-	}
-	m.shared = append(m.shared[:sharedIndex], m.shared[sharedIndex+1:]...)
-	retirement.prepareSharedLocked(sp)
-	rotateContract = true
-	m.mu.Unlock()
-
-	if err := retirement.retire(); err != nil {
-		m.log.Error("bind: recovery generation retirement failed",
-			"path", failed.name,
-			"error", err,
-			"cause", cause,
-		)
-	}
-}
-
-// preparePeerPathLocked stops new shaper admission and generated PMTU work
-// without waiting. Caller holds m.mu, so detachment and admission closure form
-// one atomic transport-generation transition as observed by Send.
+// preparePeerPathLocked stops generated PMTU work without waiting. Caller holds
+// m.mu, so detachment and admission closure form one atomic transport-generation
+// transition as observed by Send.
 func (r *socketGenerationRetirement) preparePeerPathLocked(pp *peerPathState) {
 	pp.closeGeneratedProbes()
-	if staged, ok := pp.shaper.(stagedPathShaper); ok {
-		staged.Stop()
-	}
 	r.peerPaths = append(r.peerPaths, pp)
 }
 
-// prepareSharedLocked stops direct UDP-write admission after every shaper on
-// the shared socket has stopped. Retirement then closes the socket to interrupt
-// in-flight I/O before joining the exact writer/read/shaper generation.
+// prepareSharedLocked stops UDP-write admission on the shared socket and makes
+// each peer's transport forget its lanes on it. Retirement then closes the socket
+// to interrupt in-flight I/O before joining the in-flight writes.
 func (r *socketGenerationRetirement) prepareSharedLocked(sp *sharedPathState) {
 	sp.stopWrites()
 	for _, view := range r.peerPaths {
@@ -4812,28 +2554,14 @@ func (r *socketGenerationRetirement) prepareSharedLocked(sp *sharedPathState) {
 }
 
 // retire supplies the blocking half of generation teardown. It must run
-// without m.mu or a scheduler lock.
+// without m.mu.
 func (r socketGenerationRetirement) retire() error {
 	var firstErr error
 	// Interrupt readers and any writer blocked in the kernel before joining
-	// shapers/direct writes. Admission was stopped while the generation was
+	// the writes. Admission was stopped while the generation was
 	// detached, so no new writer can enter after this close.
 	for _, sp := range r.shared {
 		if err := sp.closeSocket(); err != nil && firstErr == nil {
-			firstErr = err
-		}
-	}
-	for _, pp := range r.peerPaths {
-		if pp.shaper == nil {
-			continue
-		}
-		var err error
-		if staged, ok := pp.shaper.(stagedPathShaper); ok {
-			err = staged.Wait()
-		} else {
-			err = pp.shaper.Close()
-		}
-		if err != nil && firstErr == nil {
 			firstErr = err
 		}
 	}
@@ -4859,7 +2587,6 @@ func (m *Multipath) detachSocketGenerationsLocked() socketGenerationRetirement {
 	m.deferred = nil
 	for _, p := range m.peers {
 		p.paths = nil
-		p.sendCodec = nil
 	}
 	return retirement
 }
@@ -4867,12 +2594,11 @@ func (m *Multipath) detachSocketGenerationsLocked() socketGenerationRetirement {
 // AddPath admits a new path to the running bond at runtime (T30): it binds the
 // path's source-addr'd socket, mints its prober (via the injected factory) joining
 // the current probe session, seeds its remote from the config dest_addr or the
-// learned default, admits it to the scheduler as a NEW LOWEST-PRIORITY path, and
-// spawns its Bind-owned reader. The path slice and scheduler membership mutate
-// together under m.mu; transitionMu keeps a concurrent transport generation change
+// learned default, and spawns its Bind-owned reader. The path slice mutates
+// under m.mu; transitionMu keeps a concurrent transport generation change
 // from overtaking any out-of-lock rollback retirement. The new path starts DOWN (its prober has no
-// echoes yet) and is only selected once its probes report healthy, so admission
-// disturbs neither the active selection of the surviving paths nor the WG session:
+// echoes yet); the transport learns a lane on it from its first echoed hello, so admission
+// disturbs neither the lanes of the surviving paths nor the WG session:
 // the single virtual endpoint is untouched, and the engine's receive set does not
 // change (the reader is the Bind's, not the engine's).
 //
@@ -4885,27 +2611,9 @@ func (m *Multipath) detachSocketGenerationsLocked() socketGenerationRetirement {
 // runtime AddPath admission combined, and is exhausted once 256 distinct ids have
 // been minted over the daemon's life, which fails fast rather than reusing an id and
 // colliding with the peer's per-path reflector state.
-func (m *Multipath) AddPath(def config.Path) error {
-	return m.addPath(def, nil)
-}
-
-// AddPathWithShaper is the runtime-membership counterpart of
-// NewMultipathWithShapers. The caller supplies the new path's derived byte
-// quantities atomically with the durable path definition.
-func (m *Multipath) AddPathWithShaper(def config.Path, shaperCfg config.PathShaperConfig) error {
-	return m.addPath(def, &shaperCfg)
-}
-
-func (m *Multipath) addPath(def config.Path, shaperCfg *config.PathShaperConfig) (retErr error) {
+func (m *Multipath) AddPath(def config.Path) (retErr error) {
 	m.transitionMu.Lock()
 	defer m.transitionMu.Unlock()
-	frozenPeers := m.freezePeerServices()
-	rotateContract := false
-	defer func() {
-		if err := m.finishPeerServiceTransition(frozenPeers, rotateContract); retErr == nil {
-			retErr = err
-		}
-	}()
 
 	var retirement socketGenerationRetirement
 	m.mu.Lock()
@@ -4915,20 +2623,11 @@ func (m *Multipath) addPath(def config.Path, shaperCfg *config.PathShaperConfig)
 			retErr = err
 		}
 	}()
-	if m.shaperConfigs != nil && shaperCfg == nil {
-		return fmt.Errorf("bind: add path %q: exact-byte shaper configuration is required", def.Name)
-	}
-	if m.shaperConfigs == nil && shaperCfg != nil {
-		return fmt.Errorf("bind: add path %q: bind was not constructed with exact-byte shaping", def.Name)
-	}
 	if len(m.paths) == 0 {
 		return errClosed // only a running bind can take a runtime path
 	}
 	if m.newProber == nil {
 		return errors.New("bind: cannot add a path at runtime without the probe transport")
-	}
-	if _, ok := m.scheduler.(sched.DynamicScheduler); !ok {
-		return errors.New("bind: scheduler does not support runtime path membership")
 	}
 	if !def.SourceAddr.IsValid() {
 		return fmt.Errorf("bind: add path %q: source_addr is required", def.Name)
@@ -4960,10 +2659,8 @@ func (m *Multipath) addPath(def config.Path, shaperCfg *config.PathShaperConfig)
 		if errors.Is(err, syscall.EADDRNOTAVAIL) {
 			// Symmetric with Open's tolerant bind: a well-formed-but-not-yet-assignable
 			// source_addr is DEFERRED, not fatal. Record it in the durable membership and
-			// the deferred set (Down, absent from the scheduler) and return success, so a
-			// reload that introduces such a path does not fail the entire reload. AddPath
-			// already requires the probe transport + a DynamicScheduler (checked above),
-			// which is exactly the Down model Open's tolerance needs. The prober is minted
+			// the deferred set (Down, without a socket) and return success, so a
+			// reload that introduces such a path does not fail the entire reload. The prober is minted
 			// here so the reserved id-stamp is consumed even while deferred; a later bind
 			// (T55 / a Close→Open) reuses the SAME stamp. No socket materialized (the
 			// source-IP-pin fallback failed too), so warnForcedDeviceStillDeferred — not
@@ -4980,8 +2677,8 @@ func (m *Multipath) addPath(def config.Path, shaperCfg *config.PathShaperConfig)
 			// m.defs, and the first Close->Open cycle that SUCCESSFULLY binds this deferred def
 			// would panic with index-out-of-range at Open's `pp.prober = p.probers[i]`. So mint
 			// each peer its OWN Down prober (keyed on that peer's psk, stamped with the shared
-			// id so DATA and PROBE agree), keeping every peer's prober slice index-aligned with
-			// m.defs. Each per-peer prober stays Down and absent from the scheduler until a later
+			// id), keeping every peer's prober slice index-aligned with m.defs. Each per-peer
+			// prober stays Down until a later
 			// bind admits it; the PRIMARY's is the durable deferredPath record (Open re-defers it
 			// as m.probers[i]). Guard each peer's factory up front so a missing one fails the add
 			// fast rather than nil-dereferencing mid fan-out.
@@ -4992,9 +2689,6 @@ func (m *Multipath) addPath(def config.Path, shaperCfg *config.PathShaperConfig)
 			}
 			prober := m.newProber(def.Name, id, def.RideThrough) // the primary's; also the durable deferred record
 			m.defs = append(m.defs, def)
-			if shaperCfg != nil {
-				m.shaperConfigs = append(m.shaperConfigs, *shaperCfg)
-			}
 			for pi, p := range m.peers {
 				if pi == 0 {
 					p.probers = append(p.probers, prober)
@@ -5005,7 +2699,6 @@ func (m *Multipath) addPath(def config.Path, shaperCfg *config.PathShaperConfig)
 			warned := m.warnForcedDeviceStillDeferred(def.Name, def.Bind, dev, false)
 			m.deferred = append(m.deferred, deferredPath{def: def, prober: prober, warnedUnresolvable: warned})
 			m.nextPathID++
-			rotateContract = true
 			return nil
 		}
 		return fmt.Errorf("bind: add path %q on %s: %w", def.Name, def.SourceAddr, err)
@@ -5018,40 +2711,34 @@ func (m *Multipath) addPath(def config.Path, shaperCfg *config.PathShaperConfig)
 	// outcome-false "falling back to source-IP pinning" claim for a path that never came up.
 	_ = c.SetReadBuffer(socketRecvBuffer)
 	shared := &sharedPathState{
-		name:           def.Name,
-		id:             id,
-		src:            def.SourceAddr,
-		conn:           c,
-		openGeneration: m.openGeneration.Load(),
-		bindMode:       def.Bind,
-		boundDevice:    dev,
+		name:        def.Name,
+		id:          id,
+		src:         def.SourceAddr,
+		conn:        c,
+		bindMode:    def.Bind,
+		boundDevice: dev,
 	}
 
 	// FAN-OUT (single owner): instantiate the per-(peer,path) state for EVERY currently-
-	// bound peer, minting each peer's own Codec + prober and admitting it to that peer's
-	// scheduler. attached[k] is m.peers[k]'s view of the new shared socket. A failure in any
-	// peer rolls back every peer already attached, so a partial fan-out never leaks.
-	attached, err := m.attachSharedPathLocked(shared, def, id, nil, shaperCfg, &retirement)
+	// bound peer, minting each peer's own Codec + prober. attached[k] is m.peers[k]'s view
+	// of the new shared socket. A failure in any peer rolls back every peer already
+	// attached, so a partial fan-out never leaks.
+	attached, err := m.attachSharedPathLocked(shared, def, id, nil, &retirement)
 	if err != nil {
 		retirement.prepareSharedLocked(shared)
 		return err
 	}
-	// The fan-out succeeded: every currently-bound peer now has a view + scheduler entry
-	// for this socket, so the fallback facts these log are backed by a real, live,
+	// The fan-out succeeded: every currently-bound peer now has a view
+	// of this socket, so the fallback facts these log are backed by a real, live,
 	// installed path, not a claim (D53 round 2 / FIX 2; ordering — round 3 / CRITICISM 1).
 	m.warnForcedDeviceUnresolvable(def.Name, def.Bind, def.SourceAddr, dev)
 	m.warnDeviceBindFallback(def.Name, def.Bind, dev, deviceErr)
 
 	// Durable membership: the def is SHARED (one socket), recorded once; each peer records
-	// its OWN prober so a subsequent Close→Open rebuilds THIS path and re-pins each peer's
-	// scheduler. Kept index-aligned with m.defs under m.mu, so the runtime add survives a
-	// reopen instead of vanishing — or leaving a frozen scheduler health entry with no path
-	// to Tick it (total-egress-outage defect).
+	// its OWN prober so a subsequent Close→Open rebuilds THIS path. Kept index-aligned
+	// with m.defs under m.mu, so the runtime add survives a reopen instead of vanishing.
 	m.shared = append(m.shared, shared)
 	m.defs = append(m.defs, def)
-	if shaperCfg != nil {
-		m.shaperConfigs = append(m.shaperConfigs, *shaperCfg)
-	}
 	for k, p := range m.peers {
 		p.probers = append(p.probers, attached[k].prober)
 	}
@@ -5064,7 +2751,6 @@ func (m *Multipath) addPath(def config.Path, shaperCfg *config.PathShaperConfig)
 	// the shared-socket demux shipped with T88/T93.)
 	m.readersWG.Add(1)
 	go m.readLoop(attached[0], m.deliverSignal)
-	rotateContract = true
 	return nil
 }
 
@@ -5100,9 +2786,9 @@ func (m *Multipath) autoRuntimeDeviceBind(targetSrc netip.Addr, targetMode confi
 // attachSharedPathLocked is the SINGLE OWNER of the runtime shared-path fan-out: for a
 // freshly-bound shared socket it instantiates the per-(peer,path) state — codec, learned/
 // configured remote, prober, and (implicitly) the tx/rx counters — for EVERY currently-bound
-// peer and admits each to that peer's scheduler. It returns the created views in peer order
+// peer. It returns the created views in peer order
 // (attached[k] belongs to m.peers[k]). On any peer's failure it rolls back every peer already
-// attached (dropping the scheduler entry and popping the appended peerPathState), so a
+// attached (popping the appended peerPathState), so a
 // partial fan-out never leaks a half-admitted path. Caller holds m.mu and, on success, owns
 // appending the shared socket + each peer's prober to the durable membership.
 //
@@ -5117,7 +2803,6 @@ func (m *Multipath) attachSharedPathLocked(
 	def config.Path,
 	id uint8,
 	probers []*telemetry.Prober,
-	shaperCfg *config.PathShaperConfig,
 	retirement *socketGenerationRetirement,
 ) ([]*peerPathState, error) {
 	attached := make([]*peerPathState, 0, len(m.peers))
@@ -5126,18 +2811,11 @@ func (m *Multipath) attachSharedPathLocked(
 		if probers != nil {
 			prober = probers[pi]
 		}
-		pp, err := m.attachPeerPathLocked(p, shared, def, id, prober, shaperCfg, retirement)
+		pp, err := m.attachPeerPathLocked(p, shared, def, id, prober)
 		if err != nil {
 			for k := len(attached) - 1; k >= 0; k-- {
-				detached, derr := m.detachPeerPathBoundLocked(m.peers[k], shared.name)
-				if detached != nil {
+				if detached := m.detachPeerPathBoundLocked(m.peers[k], shared.name); detached != nil {
 					retirement.preparePeerPathLocked(detached)
-				}
-				if derr != nil {
-					// D67: a rollback detach must not be silent — surface the failure. The
-					// path was still force-spliced from p.paths, so no stale view survives.
-					m.log.Error("bind: rollback detach failed during shared-path fan-out",
-						"path", shared.name, "err", derr.Error())
 				}
 			}
 			return nil, err
@@ -5147,41 +2825,13 @@ func (m *Multipath) attachSharedPathLocked(
 	return attached, nil
 }
 
-// attachPeerPathLocked builds ONE peer's view of a shared path: its own decode Codec, the
-// given prober (or a freshly-minted one, stamped with the shared path-id so DATA and PROBE
-// agree on the wire, when prober is nil), the seeded return remote, and admission to that
-// peer's scheduler as a NEW LOWEST-PRIORITY path (so it never steals a healthy survivor's
-// active selection). It does NOT touch the durable membership (m.defs / p.probers) —
-// attachSharedPathLocked's caller owns that after the whole fan-out succeeds. Caller holds
-// m.mu.
-// admissionFor pairs a path's prober (its scheduler health source) with the path's
-// identity-sourced legacy per-path pacing configuration (defect D79). Production
-// exact-byte composition disables scheduler admission, but dynamic membership still
-// preserves this compatibility seam by the prober's original definition index
-// (PathID). When no per-path legacy configuration exists, zero Pacing is inert.
-func admissionFor(scheduler sched.Scheduler, prober *telemetry.Prober) sched.PathAdmission {
-	adm := sched.PathAdmission{Health: prober}
-	if ppc, ok := scheduler.(sched.PerPathPacingConfig); ok && prober != nil {
-		if pacing, ok := ppc.ConfiguredPacing(int(prober.PathID())); ok {
-			adm.Pacing = pacing
-		}
-	}
-	return adm
-}
-
 func (m *Multipath) attachPeerPathLocked(
 	p *peerState,
 	shared *sharedPathState,
 	def config.Path,
 	id uint8,
 	prober *telemetry.Prober,
-	shaperCfg *config.PathShaperConfig,
-	retirement *socketGenerationRetirement,
 ) (*peerPathState, error) {
-	dyn, ok := p.scheduler.(sched.DynamicScheduler)
-	if !ok {
-		return nil, errors.New("bind: scheduler does not support runtime path membership")
-	}
 	if prober == nil {
 		if p.newProber == nil {
 			return nil, errors.New("bind: cannot add a path at runtime without the probe transport")
@@ -5210,35 +2860,8 @@ func (m *Multipath) attachPeerPathLocked(
 		// stay remoteless until its endpoint is installed, rather than inherit another peer's hub.
 		pp.setRemote(m.defaultRemote)
 	}
-	if shaperCfg == nil {
-		shaperCfg = m.shaperConfigLocked(def.Name)
-	}
-	if err := m.installPathShaperLocked(pp, shaperCfg); err != nil {
-		return nil, err
-	}
 	pp.pmtuProbe = m.buildPMTUProbe(pp)
-	// Append to the peer's path slice, then admit the prober to that peer's scheduler as the
-	// new tail; both are index-aligned, so the scheduler's returned index must equal the new
-	// path's slice index. A mismatch would mis-route datagrams, so fail loudly and roll back.
 	p.paths = append(p.paths, pp)
-	schedIdx, err := dyn.AddPath(admissionFor(p.scheduler, pp.prober))
-	if err != nil {
-		p.paths = p.paths[:len(p.paths)-1]
-		retirement.preparePeerPathLocked(pp)
-		return nil, err
-	}
-	if schedIdx != len(p.paths)-1 {
-		bindIdx := len(p.paths) - 1
-		// schedIdx triggered this invariant failure and cannot identify the
-		// member AddPath actually appended; the pre-add tail index does.
-		_ = dyn.RemovePath(bindIdx)
-		p.paths = p.paths[:len(p.paths)-1]
-		retirement.preparePeerPathLocked(pp)
-		return nil, fmt.Errorf("bind: scheduler/path index skew after add: sched=%d bind=%d", schedIdx, bindIdx)
-	}
-	// Stamp the scheduler index for the legacy ProbeBudget accounting seam; the skew
-	// guard above just proved schedIdx == its position.
-	pp.schedIdx.Store(int32(schedIdx))
 	// Publish this peer's view of the shared socket for the receive demux (T88): once >1 peer
 	// has a view, handleInbound source-demuxes the socket's datagrams to their owning peer.
 	shared.addViewLocked(pp)
@@ -5246,54 +2869,33 @@ func (m *Multipath) attachPeerPathLocked(
 }
 
 // detachPeerPathBoundLocked drops one peer's BOUND view of a shared path (matched by name)
-// from that peer's scheduler and paths slice. It does NOT touch the durable membership
-// (m.defs / p.probers) — the caller (RemovePath, or the fan-out rollback) owns that. It is a
-// no-op when the peer holds no bound view of the path. Caller holds m.mu.
-func (m *Multipath) detachPeerPathBoundLocked(p *peerState, name string) (*peerPathState, error) {
-	dyn, ok := p.scheduler.(sched.DynamicScheduler)
-	if !ok {
-		return nil, errors.New("bind: scheduler does not support runtime path membership")
-	}
-	idx := -1
+// from that peer's paths slice and returns it. It does NOT touch the durable membership
+// (m.defs / p.probers) — the caller (RemovePath, or the fan-out rollback) owns that. It
+// returns nil when the peer holds no bound view of the path. Caller holds m.mu.
+func (m *Multipath) detachPeerPathBoundLocked(p *peerState, name string) *peerPathState {
 	for i, pp := range p.paths {
 		if pp.name == name {
-			idx = i
-			break
+			p.paths = append(p.paths[:i], p.paths[i+1:]...)
+			return pp
 		}
 	}
-	if idx < 0 {
-		return nil, nil
-	}
-	detached := p.paths[idx]
-	// D67: capture the RemovePath outcome but ALWAYS splice p.paths (and re-stamp survivors)
-	// regardless of it, so a RemovePath failure never leaves a stale peerPathState in p.paths
-	// that the receive demux could still route to. The error is returned (the caller logs it),
-	// not short-circuited before the splice.
-	removeErr := dyn.RemovePath(idx)
-	p.paths = append(p.paths[:idx], p.paths[idx+1:]...)
-	// The scheduler shifted every path above idx down by one; re-stamp the survivors so
-	// their schedIdx keeps addressing the right legacy ProbeBudget slot.
-	for k := idx; k < len(p.paths); k++ {
-		p.paths[k].schedIdx.Store(int32(k))
-	}
-	return detached, removeErr
+	return nil
 }
 
-// RemovePath drains and closes the named path at runtime (T30). It drops the path
-// from the scheduler FIRST (so no further datagram is scheduled onto it), unlinks it
-// from the path slice, and closes its socket — which retires its Bind-owned reader.
-// Detachment is atomic under m.mu, then blocking writer/socket retirement runs
-// under transitionMu alone, so the structures stay coherent for Send without
-// holding the bind or scheduler lock across a wait. In-flight state is
-// preserved: frames the path already pushed into the resequencer stay queued and are
-// delivered in outer-seq order (T18 resequencing is connection-global, keyed on
-// outer-seq, NOT per-path, so a removal never resets it), the surviving paths and
-// their scheduling are untouched, and the single virtual endpoint / WG session is
+// RemovePath closes the named path at runtime (T30). It unlinks the path from the
+// path slice, makes each peer's transport forget its lanes on it (so no further
+// datagram is scheduled onto it), and closes its socket — which retires its
+// Bind-owned reader. Detachment is atomic under m.mu, then blocking writer/socket
+// retirement runs under transitionMu alone, so the structures stay coherent for Send
+// without holding the bind lock across a wait. In-flight state is preserved: frames
+// the path already pushed into the resequencer stay queued and are delivered in
+// order (resequencing is per peer, NOT per path, so a removal never resets it), the
+// surviving paths are untouched, and the single virtual endpoint / WG session is
 // undisturbed. The last remaining LIVE path cannot be removed (that would tear down
 // the virtual endpoint the engine holds).
 //
 // A DEFERRED path (present in the durable membership but not yet bound, because its
-// source_addr was not assignable at Open) has no socket, reader, or scheduler entry:
+// source_addr was not assignable at Open) has no socket or reader:
 // removing it merely drops it from the durable membership + deferred set, so a reload
 // that DROPS a still-deferred path retires it cleanly.
 //
@@ -5304,13 +2906,6 @@ func (m *Multipath) detachPeerPathBoundLocked(p *peerState, name string) (*peerP
 func (m *Multipath) RemovePath(name string) (retErr error) {
 	m.transitionMu.Lock()
 	defer m.transitionMu.Unlock()
-	frozenPeers := m.freezePeerServices()
-	rotateContract := false
-	defer func() {
-		if err := m.finishPeerServiceTransition(frozenPeers, rotateContract); retErr == nil {
-			retErr = err
-		}
-	}()
 
 	var retirement socketGenerationRetirement
 	m.mu.Lock()
@@ -5322,9 +2917,6 @@ func (m *Multipath) RemovePath(name string) (retErr error) {
 	}()
 	if len(m.paths) == 0 {
 		return errClosed
-	}
-	if _, ok := m.scheduler.(sched.DynamicScheduler); !ok {
-		return errors.New("bind: scheduler does not support runtime path membership")
 	}
 	// Locate the path in the DURABLE membership by identity. m.defs (and each peer's
 	// probers) are full-length (bound + deferred); m.shared is the bound subset and may be
@@ -5339,8 +2931,8 @@ func (m *Multipath) RemovePath(name string) (retErr error) {
 	if defIdx < 0 {
 		return fmt.Errorf("bind: remove path %q: no such configured path", name)
 	}
-	// Is it a LIVE (bound) shared socket? If so it owns a socket + per-peer scheduler
-	// entries to retire.
+	// Is it a LIVE (bound) shared socket? If so it owns a socket and per-peer views
+	// to retire.
 	sharedIdx := -1
 	for i, sp := range m.shared {
 		if sp.name == name {
@@ -5351,11 +2943,7 @@ func (m *Multipath) RemovePath(name string) (retErr error) {
 	if sharedIdx < 0 {
 		// A DEFERRED path: no transport to tear down — just drop it from the durable
 		// membership and the deferred set so it does not resurrect on the next Open.
-		if err := m.removeDurableLocked(defIdx, name); err != nil {
-			return err
-		}
-		rotateContract = true
-		return nil
+		return m.removeDurableLocked(defIdx, name)
 	}
 	// Removing a bound path: refuse if it is the LAST live socket (that tears down the
 	// virtual endpoint the engine holds). A deferred path carries no transport, so it
@@ -5365,27 +2953,16 @@ func (m *Multipath) RemovePath(name string) (retErr error) {
 	}
 	sp := m.shared[sharedIdx]
 	// FAN-OUT (single owner): drop this shared path's per-(peer,path) view from EVERY bound
-	// peer — its scheduler entry and its peerPathState — so no peer schedules onto the
-	// closing socket. Each peer's remaining paths are untouched (the splice is by identity).
-	var firstErr error
+	// peer, so no peer schedules onto the closing socket. Each peer's remaining paths are
+	// untouched (the splice is by identity).
 	for _, p := range m.peers {
-		detached, err := m.detachPeerPathBoundLocked(p, name)
-		if detached != nil {
+		if detached := m.detachPeerPathBoundLocked(p, name); detached != nil {
 			retirement.preparePeerPathLocked(detached)
-		}
-		if err != nil && firstErr == nil {
-			firstErr = err
 		}
 	}
 	m.shared = append(m.shared[:sharedIdx], m.shared[sharedIdx+1:]...)
 	retirement.prepareSharedLocked(sp)
-	if err := m.removeDurableLocked(defIdx, name); err != nil {
-		if firstErr == nil {
-			firstErr = err
-		}
-	}
-	rotateContract = firstErr == nil
-	return firstErr
+	return m.removeDurableLocked(defIdx, name)
 }
 
 // removeDurableLocked drops the path named name from the durable membership: m.defs and
@@ -5410,23 +2987,13 @@ func (m *Multipath) RemovePath(name string) (retErr error) {
 // crashing the daemon or corrupting the membership.
 func (m *Multipath) removeDurableLocked(defIdx int, name string) error {
 	for _, p := range m.peers {
-		if p.probers != nil && len(p.probers) != len(m.defs) {
+		if len(p.probers) != len(m.defs) {
 			return fmt.Errorf("bind: remove path %q: peer %q prober set (len %d) is misaligned with the durable membership (len %d) — per-peer prober fan-out desync (wiring defect)", name, p.name, len(p.probers), len(m.defs))
 		}
 	}
-	if m.shaperConfigs != nil {
-		if len(m.shaperConfigs) != len(m.defs) {
-			return fmt.Errorf("bind: remove path %q: shaper set (len %d) is misaligned with the durable membership (len %d)", name, len(m.shaperConfigs), len(m.defs))
-		}
-	}
 	m.defs = append(m.defs[:defIdx], m.defs[defIdx+1:]...)
-	if m.shaperConfigs != nil {
-		m.shaperConfigs = append(m.shaperConfigs[:defIdx], m.shaperConfigs[defIdx+1:]...)
-	}
 	for _, p := range m.peers {
-		if p.probers != nil {
-			p.probers = append(p.probers[:defIdx], p.probers[defIdx+1:]...)
-		}
+		p.probers = append(p.probers[:defIdx], p.probers[defIdx+1:]...)
 	}
 	for i := range m.deferred {
 		if m.deferred[i].def.Name == name {
@@ -5438,7 +3005,7 @@ func (m *Multipath) removeDurableLocked(defIdx int, name string) error {
 }
 
 // PathNames returns the names of the DURABLE configured membership — every path the
-// bond is configured for, in priority order, INCLUDING a path that is currently
+// bond is configured for, in configured order, INCLUDING a path that is currently
 // DEFERRED because its source_addr is not yet assignable (it is in m.defs but not
 // m.paths). The device's config reload diffs the desired path set against this to
 // decide what to add or remove; returning the deferred paths here is what keeps a
@@ -5491,8 +3058,7 @@ func (m *Multipath) PeerVirtEndpoints() []Endpoint {
 // under THAT peer's prober psk, so a test can assert each concentrator peer's prober is keyed on
 // its own configured psk — the bytes decode as a PROBE under it and under NO other peer's psk.
 // Wiring-verification accessor over the per-peer prober set the concentrator wiring builds; it
-// takes m.mu so it never races peer registration. It errors if the indices are out of range or
-// the peer carries no prober for that path (a bind without the probe transport).
+// takes m.mu so it never races peer registration. It errors if the indices are out of range.
 func (m *Multipath) PeerBootProbe(peerIdx, pathIdx int) ([]byte, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -5506,11 +3072,7 @@ func (m *Multipath) PeerBootProbe(peerIdx, pathIdx int) ([]byte, error) {
 	if p.probers[pathIdx] == nil {
 		return nil, fmt.Errorf("bind: peer %q has no prober for path %d", p.name, pathIdx)
 	}
-	var payload []byte
-	if p.contracts != nil {
-		payload = p.contracts.payload()
-	}
-	raw, _, err := p.probers[pathIdx].SendProbePayload(payload)
+	raw, _, err := p.probers[pathIdx].SendProbePayload(nil)
 	return raw, err
 }
 
@@ -5534,34 +3096,20 @@ func (m *Multipath) PeerReflect(peerIdx int, raw []byte) ([]byte, error) {
 // State (read verbatim from its Prober). It is the shape the metrics.Source adapter
 // maps into a metrics.PathSnapshot; the Bind reports raw cumulative byte counters and
 // the Estimate/State — it does NOT compute a rate here (the adapter derives throughput
-// from the byte-counter delta across scrapes). Estimate/State are the telemetry
-// zero-values on a bind without the probe transport (no prober).
+// from the byte-counter delta across scrapes).
 type PathTraffic struct {
-	Name                    string
-	TxBytes                 uint64
-	RxBytes                 uint64
-	Estimate                telemetry.Estimate
-	State                   telemetry.PathState
-	ShaperAcceptedDatagrams uint64
-	ShaperEmittedDatagrams  uint64
-	ShaperWriteErrors       uint64
-	SocketWriteErrors       uint64
-	// Shaper is present only while this path has an active exact-byte shaper
-	// generation. The snapshot is read after m.mu is released.
-	Shaper *shaper.Snapshot
-	// Congestion is present for active-backup paths with a configured shaper.
-	// The snapshot is read after m.mu is released.
-	Congestion *congestion.Snapshot
+	Name     string
+	TxBytes  uint64
+	RxBytes  uint64
+	Estimate telemetry.Estimate
+	State    telemetry.PathState
+	// SocketWriteErrors is the cumulative count of the transport's datagram writes
+	// this path's socket refused.
+	SocketWriteErrors uint64
 	// ProbeSendErrors is the cumulative count of unexpected locally-originated
 	// ordinary/PMTU PROBE socket write failures for this path. Expected PMTU
 	// EMSGSIZE verdicts are excluded. Read verbatim from peerPathState.probeSendErrors.
 	ProbeSendErrors uint64
-	// Generated-priority bounded-admission outcomes are distinct: ordinary
-	// cadence coalescence, cancellable PMTU admission, and reactive-echo
-	// overflow have different operational meaning.
-	ProbePriorityCoalesced uint64
-	PMTUAdmissionCanceled  uint64
-	EchoPriorityOverflow   uint64
 	// The following addressing fields surface this path's runtime networking
 	// identity for the G21 monitoring UI (value-wiring into the monitor snapshot
 	// is T220; the /metrics prometheus exposition ignores them). Source is the
@@ -5578,107 +3126,55 @@ type PathTraffic struct {
 	BoundDevice string
 }
 
-// PeerSnapshot is a consistent per-BOUND-PEER snapshot of path traffic+telemetry, FEC
-// counters, and resequencer counters (T94): the read side the per-peer /metrics
+// PeerSnapshot is a consistent per-BOUND-PEER snapshot of path traffic+telemetry, the
+// transport's state, and resequencer counters (T94): the read side the per-peer /metrics
 // exposition scrapes. It reports EVERY bound peer (not just the primary), so a
 // multi-peer concentrator's metrics can attribute each series to the edge it came
 // from. Name is BoundPeerNames()[i]: "" for the primary on the single-peer edge/hub only;
 // the peer's configured name otherwise, including the concentrator's first-configured peer
-// once SetPrimaryPeerName has run (D58).
+// once SetPrimaryPeerName has run (D58). Adaptive is nil while the bind is closed.
 type PeerSnapshot struct {
 	Adaptive *bond.Snapshot
 	Name     string
 	Paths    []PathTraffic
-	FEC      FECStats
 	Reseq    reseq.Stats
-	// Aggregation is the weighted scheduler's aggregation-gate snapshot (T146),
-	// present ONLY for a peer whose scheduler exposes it (the weighted policy, via
-	// *sched.WeightedScheduler's AggregationSnapshot(), T143). It is nil for an
-	// active-backup peer — which has no aggregation gate — so the four Q54 aggregation
-	// series are ABSENT for that peer, rather than fabricating a gate reading the way a
-	// zero-valued struct would.
-	Aggregation *sched.AggregationSnapshot
-}
-
-// aggregationReporter is the small OPTIONAL seam a scheduler implements to expose its
-// aggregation-gate state to the /metrics plumbing (T146). Only *sched.WeightedScheduler
-// satisfies it (its AggregationSnapshot() reads the gate under the scheduler's OWN mutex,
-// T143); active-backup does not, so type-asserting a peer's scheduler against it is how
-// PeerSnapshots decides per-peer whether the aggregation series exist. AggregationSnapshot
-// advances no per-frame distribution state, so polling it at scrape time never perturbs
-// selection — and, like the prober Estimate()/decoder stats() reads, it is called AFTER
-// m.mu is released so the scrape never blocks an in-flight Send.
-type aggregationReporter interface {
-	AggregationSnapshot() sched.AggregationSnapshot
 }
 
 // PeerSnapshots returns a consistent per-peer snapshot, in bound-peer order (matching
-// BoundPeerNames), for every bound peer's path traffic+telemetry, FEC counters, and
+// BoundPeerNames), for every bound peer's path traffic+telemetry, transport state, and
 // resequencer counters. Concurrency: grab each peer's name, per-path counters/prober
-// pointers, and FEC/resequencer pointers under m.mu in one bounded O(peers+paths) copy,
+// pointers, and transport/resequencer pointers under m.mu in one bounded O(peers+paths) copy,
 // then RELEASE m.mu before calling the independently-synchronized prober
-// Estimate()/State(), decoder stats(), and resequencer Stats() — so the scrape never
+// Estimate()/State(), transport Snapshot(), and resequencer Stats() — so the scrape never
 // blocks an in-flight Send behind m.mu. len(result) >= 1: NewMultipath always binds at
 // least the primary peer, so this is never empty — though the per-peer Paths slice can
 // still be empty for a peer with a currently-empty path set.
 func (m *Multipath) PeerSnapshots() []PeerSnapshot {
 	type pathRef struct {
-		name           string
-		tx, rx         uint64
-		probeErrs      uint64
-		probeCoalesced uint64
-		pmtuCanceled   uint64
-		echoOverflow   uint64
-		shaperAccepted uint64
-		shaperEmitted  uint64
-		shaperErrors   uint64
-		socketErrors   uint64
-		prober         *telemetry.Prober
-		shaper         pathShaperReporter
-		congestion     *congestion.Controller
-		// pp is captured under m.mu; its src/conn/bindMode/boundDevice are immutable
-		// and its remote is ps.mu-guarded (getRemote), so the addressing fields are
-		// read AFTER m.mu is released, exactly like the prober Estimate()/State() reads.
-		pp *peerPathState
+		tx, rx       uint64
+		probeErrs    uint64
+		socketErrors uint64
+		pp           *peerPathState
 	}
 	type peerRef struct {
-		adaptive  *adaptivePeer
-		name      string
-		paths     []pathRef
-		fs        *fecSender
-		fr        *fecReceiver
-		rq        *reseq.Resequencer
-		sched     sched.Scheduler
-		contracts *recoveryContractCoordinator
+		adaptive *adaptivePeer
+		name     string
+		paths    []pathRef
+		rq       *reseq.Resequencer
 	}
 
 	m.mu.Lock()
 	refs := make([]peerRef, len(m.peers))
 	for i, p := range m.peers {
-		r := peerRef{name: p.name, fs: p.fecSend.Load(), fr: p.fecRecv.Load(), rq: p.resequencer.Load(), sched: p.scheduler, contracts: p.contracts}
-		r.adaptive = p.adaptive.Load()
+		r := peerRef{name: p.name, rq: p.resequencer.Load(), adaptive: p.adaptive.Load()}
 		r.paths = make([]pathRef, len(p.paths))
 		for j, pp := range p.paths {
-			var reporter pathShaperReporter
-			if candidate, ok := pp.shaper.(pathShaperReporter); ok {
-				reporter = candidate
-			}
 			r.paths[j] = pathRef{
-				name:           pp.name,
-				tx:             pp.txBytes.Load(),
-				rx:             pp.rxBytes.Load(),
-				probeErrs:      pp.probeSendErrors.Load(),
-				probeCoalesced: pp.probePriorityCoalesced.Load(),
-				pmtuCanceled:   pp.pmtuAdmissionCanceled.Load(),
-				echoOverflow:   pp.echoPriorityOverflow.Load(),
-				shaperAccepted: pp.shapedAccepted.Load(),
-				shaperEmitted:  pp.shapedEmitted.Load(),
-				shaperErrors:   pp.shapedWriteErrors.Load(),
-				socketErrors:   pp.socketWriteErrors.Load(),
-				prober:         pp.prober,
-				shaper:         reporter,
-				congestion:     pp.congestion,
-				pp:             pp,
+				tx:           pp.txBytes.Load(),
+				rx:           pp.rxBytes.Load(),
+				probeErrs:    pp.probeSendErrors.Load(),
+				socketErrors: pp.socketWriteErrors.Load(),
+				pp:           pp,
 			}
 		}
 		refs[i] = r
@@ -5696,108 +3192,41 @@ func (m *Multipath) PeerSnapshots() []PeerSnapshot {
 		}
 		snap.Paths = make([]PathTraffic, len(r.paths))
 		for j, pr := range r.paths {
+			// name, src, bindMode, boundDevice and prober are immutable for the
+			// path's life; conn.LocalAddr() and getRemote() are internally
+			// synchronized. All are read here, after m.mu is released.
 			pt := PathTraffic{
-				Name:                    pr.name,
-				TxBytes:                 pr.tx,
-				RxBytes:                 pr.rx,
-				ProbeSendErrors:         pr.probeErrs,
-				ProbePriorityCoalesced:  pr.probeCoalesced,
-				PMTUAdmissionCanceled:   pr.pmtuCanceled,
-				EchoPriorityOverflow:    pr.echoOverflow,
-				ShaperAcceptedDatagrams: pr.shaperAccepted,
-				ShaperEmittedDatagrams:  pr.shaperEmitted,
-				ShaperWriteErrors:       pr.shaperErrors,
-				SocketWriteErrors:       pr.socketErrors,
+				Name:              pr.pp.name,
+				TxBytes:           pr.tx,
+				RxBytes:           pr.rx,
+				ProbeSendErrors:   pr.probeErrs,
+				SocketWriteErrors: pr.socketErrors,
+				Estimate:          pr.pp.prober.Estimate(),
+				State:             pr.pp.prober.State(),
+				Source:            pr.pp.src,
+				BindMode:          pr.pp.bindMode,
+				BoundDevice:       pr.pp.boundDevice,
 			}
-			if pr.prober != nil {
-				pt.Estimate = pr.prober.Estimate()
-				pt.State = pr.prober.State()
-			}
-			if pr.shaper != nil {
-				shaperSnapshot := pr.shaper.Snapshot()
-				shaperSnapshot.RecoveryContractEnabled = pr.pp.recoveryContract().Enabled
-				pt.Shaper = &shaperSnapshot
-			}
-			if pr.congestion != nil {
-				congestionSnapshot := pr.congestion.Snapshot()
-				pt.Congestion = &congestionSnapshot
-			}
-			// Addressing (G21): src/bindMode/boundDevice are immutable; LocalAddr comes
-			// from the socket; Remote is read under ps.mu via getRemote — all AFTER m.mu
-			// is released, so the scrape never blocks an in-flight Send.
-			if pr.pp != nil {
-				pt.Source = pr.pp.src
-				pt.BindMode = pr.pp.bindMode
-				pt.BoundDevice = pr.pp.boundDevice
-				if pr.pp.conn != nil {
-					if ua, ok := pr.pp.conn.LocalAddr().(*net.UDPAddr); ok {
-						pt.LocalAddr = ua.AddrPort()
-					}
+			if pr.pp.conn != nil {
+				if ua, ok := pr.pp.conn.LocalAddr().(*net.UDPAddr); ok {
+					pt.LocalAddr = ua.AddrPort()
 				}
-				if rem, ok := pr.pp.getRemote(); ok {
-					pt.Remote = rem
-				}
+			}
+			if rem, ok := pr.pp.getRemote(); ok {
+				pt.Remote = rem
 			}
 			snap.Paths[j] = pt
 		}
-		if r.fs != nil {
-			snap.FEC.DataFrames = r.fs.dataFrames.Load()
-			snap.FEC.DataBytes = r.fs.dataBytes.Load()
-			snap.FEC.ParityFrames = r.fs.parityFrames.Load()
-			snap.FEC.ParityBytes = r.fs.parityBytes.Load()
-			snap.FEC.DeadlineDecisions = r.fs.deadlineDecisions.Load()
-			snap.FEC.DeadlineMisses = r.fs.deadlineMisses.Load()
-			snap.FEC.DeadlineMaxOvershoot = time.Duration(r.fs.deadlineMaxOvershoot.Load())
-			snap.FEC.StagedGroups, snap.FEC.StagedDataFrames = r.fs.stagingSnapshot()
-			snap.FEC.GroupDecisions = r.fs.groupDecisions.Load()
-			if nanos := r.fs.openDeadlineNanos.Load(); nanos != 0 {
-				snap.FEC.OpenGroupDeadline = time.Unix(0, nanos)
-			}
-			// The adaptive controller's decision is present only in adaptive mode (ctrl is
-			// set once at construction and never mutated, so this nil-check is race-free
-			// after the fecSend atomic Load). A fixed-ratio peer leaves Adaptive nil so no
-			// adaptive series is fabricated (the Aggregation nil-precedent, T146). The read
-			// is lock-free — the atomics are published at the m.mu-held drive locus (T263).
-			if r.fs.ctrl != nil {
-				adaptive := r.fs.adaptiveSnapshot()
-				snap.FEC.Adaptive = &adaptive
-			}
-		}
-		if r.fr != nil {
-			// Recovered is the HONEST delivered count (frames placed ahead of the release
-			// point), NOT the decoder's raw reconstruction count — a frame rebuilt after the
-			// resequencer skipped its gap is reconstructed but never delivered, so counting it
-			// would overstate recovery on /metrics. Unrecoverable is the decoder's repair-
-			// failure count (groups evicted still incomplete).
-			if r.fr.connLoss != nil {
-				snap.FEC.ResidualLoss = r.fr.connLoss.Loss()
-			}
-			snap.FEC.Recovered = r.fr.deliveredRecovered.Load()
-			snap.FEC.Unrecoverable = r.fr.stats().Unrecoverable
-		}
 		if r.rq != nil {
 			snap.Reseq = r.rq.Stats()
-		}
-		if r.contracts != nil {
-			snap.FEC.Recovery = r.contracts.stats()
-		}
-		// Poll the aggregation gate only for a scheduler that reports one (weighted policy);
-		// active-backup does not satisfy aggregationReporter, so its peers leave Aggregation
-		// nil and the Q54 series are absent (T146). Like the prober/decoder reads above, this
-		// runs after m.mu is released — AggregationSnapshot takes the scheduler's own lock, not
-		// the sender-owner lock, so it never blocks Send across a Pick.
-		if rep, ok := r.sched.(aggregationReporter); ok {
-			agg := rep.AggregationSnapshot()
-			snap.Aggregation = &agg
 		}
 		out[i] = snap
 	}
 	return out
 }
 
-// SetMark is a no-op for T12: per-path SO_MARK is a scheduler concern (T15), and
-// the engine only calls SetMark when a fwmark is configured, which wanbond does
-// not set.
+// SetMark is a no-op for T12: the engine only calls SetMark when a fwmark is
+// configured, which wanbond does not set.
 func (m *Multipath) SetMark(uint32) error { return nil }
 
 // BatchSize is the max number of datagrams passed to a ReceiveFunc / Send.

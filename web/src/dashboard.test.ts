@@ -1,14 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type {
-  AggregationSnapshot,
   DaemonSnapshot,
   EndpointSnapshot,
-  FECSnapshot,
   MonitorSnapshot,
   PathSnapshot,
   PeerSessionSnapshot,
   ReseqSnapshot,
-  ShaperSnapshot,
 } from './types';
 import { mountDashboard } from './dashboard';
 import { SPARKLINE_MAX_POINTS } from './sparkline';
@@ -26,38 +23,6 @@ function path(overrides: Partial<PathSnapshot> = {}): PathSnapshot {
     up: true,
     bindMode: 'auto',
     boundDevice: '',
-    linkBandwidthBps: 0,
-    linkRttSeconds: 0,
-    ...overrides,
-  };
-}
-
-function shaper(overrides: Partial<ShaperSnapshot> = {}): ShaperSnapshot {
-  return {
-    queueDataBytes: 100,
-    queueControlBytes: 20,
-    queueBytes: 120,
-    inFlightBytes: 50,
-    scheduledDelaySeconds: 1_500 / 1_000_000,
-    rateBytesPerSecond: 1_000_000,
-    dataBudgetBytes: 1_500,
-    controlReserveBytes: 100,
-    queueBudgetBytes: 1_600,
-    maxDatagramBytes: 100,
-    acceptedBytes: 10_000,
-    emittedBytes: 9_830,
-    outerPriorityBytes: 200,
-    priorityDebtBytes: 50,
-    priorityRateBytesPerSecond: 1_000,
-    priorityBurstBytes: 200,
-    priorityDelayBoundSeconds: 250_251 / 1_000_000_000,
-    admissionWaits: 3,
-    admissionWaitSeconds: 0.04,
-    admissionCanceledDatagrams: 0,
-    asyncWriteErrors: 0,
-    asyncWriteErrorBytes: 0,
-    asyncWriteEmsgsizeErrors: 0,
-    asyncWriteEmsgsizeBytes: 0,
     ...overrides,
   };
 }
@@ -67,20 +32,6 @@ function daemon(overrides: Partial<DaemonSnapshot> = {}): DaemonSnapshot {
     role: 'edge',
     version: 'test',
     uptimeSeconds: 1,
-    ...overrides,
-  };
-}
-
-function fec(overrides: Partial<FECSnapshot> = {}): FECSnapshot {
-  return {
-    peer: '',
-    dataPackets: 100,
-    repairPackets: 10,
-    recoveredPackets: 2,
-    unrecoverablePackets: 0,
-    dataBytes: 10000,
-    repairBytes: 1000,
-    residualLossRatio: 0.001,
     ...overrides,
   };
 }
@@ -97,18 +48,10 @@ function reseq(overrides: Partial<ReseqSnapshot> = {}): ReseqSnapshot {
     rebaselines: 0,
     holds: 0,
     holdNanos: 0,
-    immediateReleases: 0,
-    ...overrides,
-  };
-}
-
-function aggregation(overrides: Partial<AggregationSnapshot> = {}): AggregationSnapshot {
-  return {
-    peer: '',
-    aggregating: true,
-    offeredLoadFps: 10,
-    engageThresholdFps: 5,
-    disengageThresholdFps: 2,
+    armedDeadlineUnixNano: 0,
+    armedWindowNanos: 0,
+    deadlineWakeups: 0,
+    gapFills: 0,
     ...overrides,
   };
 }
@@ -134,9 +77,7 @@ function peerSession(overrides: Partial<PeerSessionSnapshot> = {}): PeerSessionS
 function multiPeerSnapshot(): MonitorSnapshot {
   return {
     paths: [path({ name: 'wan0', peer: 'peerA' }), path({ name: 'wan1', peer: 'peerB' })],
-    fec: [fec({ peer: 'peerA' }), fec({ peer: 'peerB' })],
     reseq: [reseq({ peer: 'peerA' }), reseq({ peer: 'peerB' })],
-    aggregation: [aggregation({ peer: 'peerA' }), aggregation({ peer: 'peerB' })],
     session: { established: true, lastHandshakeSeconds: 3 },
     peerNames: ['peerA', 'peerB'],
     multiPeer: true,
@@ -155,9 +96,7 @@ function multiPeerSnapshot(): MonitorSnapshot {
 function singlePeerSnapshot(): MonitorSnapshot {
   return {
     paths: [path({ name: 'wan0', peer: '' })],
-    fec: [fec({ peer: '' })],
     reseq: [reseq({ peer: '' })],
-    aggregation: [],
     session: { established: true, lastHandshakeSeconds: 1 },
     peerNames: [],
     multiPeer: false,
@@ -180,9 +119,7 @@ function singlePeerSnapshot(): MonitorSnapshot {
 function twoPeerConcentratorSnapshot(): MonitorSnapshot {
   return {
     paths: [path({ name: 'wan0', peer: 'peerA' }), path({ name: 'wan1', peer: 'peerB' })],
-    fec: [fec({ peer: 'peerA' }), fec({ peer: 'peerB' })],
     reseq: [reseq({ peer: 'peerA' }), reseq({ peer: 'peerB' })],
-    aggregation: [aggregation({ peer: 'peerA' }), aggregation({ peer: 'peerB' })],
     session: { established: true, lastHandshakeSeconds: 3 },
     peerNames: ['peerA', 'peerB'],
     multiPeer: true,
@@ -213,9 +150,7 @@ function twoPeerConcentratorSnapshot(): MonitorSnapshot {
 function singlePeerNamedSnapshot(): MonitorSnapshot {
   return {
     paths: [path({ name: 'wan0', peer: 'peerA' })],
-    fec: [fec({ peer: 'peerA' })],
     reseq: [reseq({ peer: 'peerA' })],
-    aggregation: [aggregation({ peer: 'peerA' })],
     session: { established: true, lastHandshakeSeconds: 3 },
     peerNames: ['peerA'],
     multiPeer: false,
@@ -256,53 +191,12 @@ describe('mountDashboard', () => {
   it('converts bit-rate telemetry to byte-rate display units', () => {
     const dashboard = mountDashboard(container);
     const snapshot = singlePeerSnapshot();
-    snapshot.paths = [path({ throughputBps: 8192, linkBandwidthBps: 16384 })];
+    snapshot.paths = [path({ throughputBps: 8192 })];
     dashboard.onSnapshot(snapshot);
     const rows = Array.from(container.querySelectorAll('[data-testid="path-card"] tr'));
     const throughput = rows.find((row) => row.firstElementChild!.textContent === 'throughput');
     expect(throughput).toBeDefined();
     expect(throughput!.textContent).toContain('1.0KB/s');
-    expect(container.querySelector('[data-testid="path-link"]')!.textContent).toContain('2.0KB/s');
-  });
-
-  it('renders exact-byte shaper state only for a paced path', () => {
-    const dashboard = mountDashboard(container);
-    const paced = singlePeerSnapshot();
-    const shaperState = shaper();
-    const priorityDelayNanos = Math.ceil(
-      (shaperState.priorityDebtBytes + shaperState.priorityBurstBytes)
-        * 1_000_000_000
-        / (shaperState.rateBytesPerSecond - shaperState.priorityRateBytesPerSecond),
-    );
-    expect(shaperState.priorityDelayBoundSeconds).toBe(priorityDelayNanos / 1_000_000_000);
-    expect(shaperState.priorityDelayBoundSeconds).toBe(0.000250251);
-    expect(shaperState.scheduledDelaySeconds).toBeLessThanOrEqual(
-      shaperState.priorityDelayBoundSeconds
-        + shaperState.queueBudgetBytes / shaperState.rateBytesPerSecond
-        + shaperState.maxDatagramBytes / shaperState.rateBytesPerSecond,
-    );
-    paced.paths = [path({ name: 'paced', shaper: shaperState }), path({ name: 'unpaced' })];
-    dashboard.onSnapshot(paced);
-
-    const cards = container.querySelectorAll('[data-testid="path-card"]');
-    expect(cards[0].querySelector('[data-testid="path-shaper-queue"]')?.textContent).toContain('100B DATA');
-    expect(cards[0].querySelector('[data-testid="path-shaper-queue"]')?.textContent).toContain('120B total');
-    expect(cards[0].querySelector('[data-testid="path-shaper-queue"]')?.textContent).toContain('50B in flight');
-    const envelope = cards[0].querySelector('[data-testid="path-shaper-envelope"]')?.textContent;
-    expect(envelope).toContain('1.5KB B');
-    expect(envelope).toContain('100B C');
-    expect(envelope).toContain('1.6KB Q');
-    expect(envelope).toContain('100B Lmax');
-    expect(cards[0].textContent).toContain('1.5ms scheduled');
-    expect(cards[0].textContent).toContain('50B P0');
-    expect(cards[0].textContent).toContain('0.3ms Dp');
-    expect(cards[0].textContent).toContain('977KB/s R');
-    expect(cards[0].textContent).toContain('1000B/s Rp');
-    expect(cards[0].textContent).toContain('200B Pburst');
-    expect(cards[0].textContent).toContain('3 waits');
-    expect(cards[0].textContent).toContain('0 generic (0B)');
-    expect(cards[0].textContent).toContain('0 EMSGSIZE (0B)');
-    expect(cards[1].querySelector('[data-testid="path-shaper-queue"]')).toBeNull();
   });
 
   it('renders one per-peer section per peer with all named stat groups, for a multi-peer stream', () => {
@@ -318,11 +212,8 @@ describe('mountDashboard', () => {
 
     for (const section of Array.from(sections)) {
       expect(section.querySelector('[data-testid="stat-group-paths"]')).not.toBeNull();
-      expect(section.querySelector('[data-testid="stat-group-fec"]')).not.toBeNull();
       expect(section.querySelector('[data-testid="stat-group-reseq"]')).not.toBeNull();
-      expect(section.querySelector('[data-testid="stat-group-aggregation"]')).not.toBeNull();
       expect(section.querySelector('[data-testid="path-card"]')).not.toBeNull();
-      expect(section.querySelector('[data-testid="fec-card"]')).not.toBeNull();
       expect(section.querySelector('[data-testid="reseq-card"]')).not.toBeNull();
     }
 
@@ -341,10 +232,7 @@ describe('mountDashboard', () => {
     expect(container.querySelectorAll('[data-testid="peer-label"]').length).toBe(0);
 
     expect(flatSections[0].querySelector('[data-testid="stat-group-paths"]')).not.toBeNull();
-    expect(flatSections[0].querySelector('[data-testid="stat-group-fec"]')).not.toBeNull();
     expect(flatSections[0].querySelector('[data-testid="stat-group-reseq"]')).not.toBeNull();
-    // No aggregation entries in this snapshot -> group omitted entirely.
-    expect(flatSections[0].querySelector('[data-testid="stat-group-aggregation"]')).toBeNull();
   });
 
   it('accumulates sparkline samples across frames and caps the buffer at SPARKLINE_MAX_POINTS', () => {
@@ -385,7 +273,7 @@ describe('mountDashboard', () => {
     expect(container.querySelector<HTMLDetailsElement>('.path-details')!.open).toBe(true);
   });
 
-  it('renders the daemon header, bind/link path columns, populated addressing, and an ordered endpoint list on a full edge snapshot', () => {
+  it('renders the daemon header, bind path column, populated addressing, and an ordered endpoint list on a full edge snapshot', () => {
     const dashboard = mountDashboard(container);
     const snapshot: MonitorSnapshot = {
       paths: [
@@ -394,14 +282,10 @@ describe('mountDashboard', () => {
           peer: '',
           bindMode: 'device',
           boundDevice: 'eth0',
-          linkBandwidthBps: 1048576,
-          linkRttSeconds: 0.025,
           addressing: { source: '10.0.0.5', remote: '203.0.113.9:51820' },
         }),
       ],
-      fec: [fec({ peer: '' })],
       reseq: [reseq({ peer: '' })],
-      aggregation: [],
       session: { established: true, lastHandshakeSeconds: 1 },
       peerNames: [],
       multiPeer: false,
@@ -425,8 +309,6 @@ describe('mountDashboard', () => {
 
     expect(container.querySelector('[data-testid="path-bind"]')!.textContent).toContain('device');
     expect(container.querySelector('[data-testid="path-bind"]')!.textContent).toContain('eth0');
-    expect(container.querySelector('[data-testid="path-link"]')!.textContent).toContain('128KB/s');
-    expect(container.querySelector('[data-testid="path-link"]')!.textContent).toContain('25.0ms');
 
     const addressing = container.querySelector('[data-testid="addressing"]');
     expect(addressing).not.toBeNull();

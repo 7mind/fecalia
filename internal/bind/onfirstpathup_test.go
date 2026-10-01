@@ -50,7 +50,7 @@ func driveConcurrentPathUp(m *Multipath, idx int, psk config.Key, src netip.Addr
 // goroutine-safe and would itself trip -race here.
 func TestOnFirstPathUpFiresExactlyOnceUnderConcurrentPaths(t *testing.T) {
 	psk := testKey(t, 0x37)
-	m, _, _ := newProbingMultipath(t, loopbackPaths(2), psk, telemetry.SystemClock{})
+	m, _ := newProbingMultipath(t, loopbackPaths(2), psk, telemetry.SystemClock{})
 	if _, _, err := m.Open(0); err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -107,7 +107,7 @@ func TestOnFirstPathUpFiresExactlyOnceUnderConcurrentPaths(t *testing.T) {
 func TestOnFirstPathUpNilSafeWithoutCallback(t *testing.T) {
 	psk := testKey(t, 0x38)
 	clk := newFakeClock()
-	m, _, _ := newProbingMultipath(t, loopbackPaths(1), psk, clk)
+	m, _ := newProbingMultipath(t, loopbackPaths(1), psk, clk)
 	if _, _, err := m.Open(0); err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -128,7 +128,7 @@ func TestOnFirstPathUpNilSafeWithoutCallback(t *testing.T) {
 func TestOnFirstPathUpNoFireWhileAllPathsDown(t *testing.T) {
 	psk := testKey(t, 0x39)
 	clk := newFakeClock()
-	m, _, _ := newProbingMultipath(t, loopbackPaths(2), psk, clk)
+	m, _ := newProbingMultipath(t, loopbackPaths(2), psk, clk)
 	if _, _, err := m.Open(0); err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -166,7 +166,7 @@ func TestOnFirstPathUpNoFireWhileAllPathsDown(t *testing.T) {
 func TestOnFirstPathUpNoRefireAcrossDownUpDownUpCycle(t *testing.T) {
 	psk := testKey(t, 0x3A)
 	clk := newFakeClock()
-	m, _, _ := newProbingMultipath(t, loopbackPaths(1), psk, clk)
+	m, _ := newProbingMultipath(t, loopbackPaths(1), psk, clk)
 	if _, _, err := m.Open(0); err != nil {
 		t.Fatalf("Open: %v", err)
 	}

@@ -3,21 +3,19 @@ package bind
 import (
 	"net/netip"
 	"testing"
-
-	"github.com/7mind/wanbond/internal/frame"
 )
 
 // TestReceiveDemuxPerPeerResequencerAndEndpoint is the T86 acceptance: with TWO peerStates
-// bound over the same shared socket, interleaved DATA for the two peers is delivered up by
+// bound over the same shared socket, interleaved data for the two peers is delivered up by
 // the SINGLE engine-facing drainer with per-packet endpoints matching EACH peer, and each
-// peer's resequencer orders ITS OWN outer-seq stream independently (no cross-peer frame is
+// peer's resequencer orders ITS OWN stream independently (no cross-peer frame is
 // ever observed in either resequencer). It exercises the receive/delivery path only: the
 // per-(peer,path) ingestion demux (handleInbound -> ps.peer.resequencer) is T83's; the
 // drainer fanning each peer's in-order releases up under that peer's virt is T86's.
 func TestReceiveDemuxPerPeerResequencerAndEndpoint(t *testing.T) {
 	psk := testKey(t, 0x42)
 	clk := newFakeClock()
-	m, _, _ := newProbingMultipath(t, loopbackPaths(1), psk, clk) // one shared path "a"
+	m, _ := newProbingMultipath(t, loopbackPaths(1), psk, clk) // one shared path "a"
 	recvs, _, err := m.Open(0)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
@@ -45,37 +43,24 @@ func TestReceiveDemuxPerPeerResequencerAndEndpoint(t *testing.T) {
 	srcA := netip.MustParseAddrPort("192.0.2.10:4000")
 	srcB := netip.MustParseAddrPort("198.51.100.20:5000")
 
-	codec, err := frame.NewCodec(psk)
-	if err != nil {
-		t.Fatalf("build feed codec: %v", err)
-	}
-	feed := func(path *peerPathState, seq uint64, payload string, src netip.AddrPort, senderPathID uint8) {
-		t.Helper()
-		raw, encErr := codec.Encode(nil, frame.Data{OuterSeq: seq, PathID: senderPathID, Payload: []byte(payload)})
-		if encErr != nil {
-			t.Fatalf("encode DATA seq=%d: %v", seq, encErr)
-		}
-		m.handleInbound(path, raw, src)
+	remoteA := newRemoteTransport(t, primary, 987)
+	remoteA.join(primaryPath, srcA)
+	remoteB := newRemoteTransport(t, second, 988)
+	remoteB.join(secondPath, srcB)
+	var framesA, framesB [][]byte
+	for _, n := range []string{"0", "1", "2"} {
+		framesA = append(framesA, remoteA.wire(remoteA.bulk(primaryPath, []byte("a"+n))))
+		framesB = append(framesB, remoteB.wire(remoteB.bulk(secondPath, []byte("b"+n))))
 	}
 
 	// Interleave the two peers' arrivals AND deliver each peer's own stream OUT OF ORDER
-	// (seq 0, then 2, then 1) so a correct result proves each resequencer reorders its OWN
-	// stream to 0,1,2 independently — a shared/leaky resequencer would interleave or reorder
-	// across peers.
-	//
-	// The out-of-order frame (seq 2) is stamped with a SECOND sender path id: since the
-	// D93 single-path immediate release (T240/T241), a gap on ONE delivering path is
-	// treated as genuine loss and skipped with ~0 hold — same-path out-of-order repair is
-	// no longer the contract. Stamping the early frame as arriving over a second sender
-	// WAN (the same-socket concentrator-uplink topology, review R250) makes the reorder a
-	// CROSS-PATH one, which the resequencer still holds for and repairs when the missing
-	// seq 1 lands.
-	feed(primaryPath, 0, "a0", srcA, primaryPath.id)
-	feed(secondPath, 0, "b0", srcB, secondPath.id)
-	feed(primaryPath, 2, "a2", srcA, primaryPath.id+1)
-	feed(secondPath, 2, "b2", srcB, secondPath.id+1)
-	feed(primaryPath, 1, "a1", srcA, primaryPath.id)
-	feed(secondPath, 1, "b1", srcB, secondPath.id)
+	// (datagram 0, then 2, then 1) so a correct result proves each resequencer reorders its
+	// OWN stream to 0,1,2 independently — a shared/leaky resequencer would interleave or
+	// reorder across peers.
+	for _, n := range []int{0, 2, 1} {
+		m.handleInbound(primaryPath, framesA[n], srcA)
+		m.handleInbound(secondPath, framesB[n], srcB)
+	}
 
 	// Drain exactly the six buffered frames (each Pop is ready, so no call parks).
 	type delivered struct {
@@ -124,7 +109,7 @@ func TestReceiveDemuxPerPeerResequencerAndEndpoint(t *testing.T) {
 		}
 	}
 
-	// Each peer's stream is delivered in its OWN outer-seq order (0,1,2), proving each
+	// Each peer's stream is delivered in its OWN order (0,1,2), proving each
 	// resequencer ordered its own stream independently despite the out-of-order arrival.
 	assertOrdered := func(who string, stream []string, want []string) {
 		t.Helper()

@@ -19,12 +19,10 @@ import (
 // complete with NO reset (the single virtual endpoint, hence the WireGuard
 // session, is preserved), and the OTHER path must be undisturbed.
 //
-// The path chosen for re-addressing is the PRIMARY: the active-backup scheduler
-// runs all traffic over it, so re-roaming it is the strongest test — the flow can
-// only survive if that path comes back on its new address (or fails over and then
-// back). Recovery is then proven UNAMBIGUOUSLY by blackholing the OTHER path and
-// confirming the tunnel still carries traffic: that is possible only if the
-// re-roamed primary is itself forwarding again on its new source address.
+// The path chosen for re-addressing is the first configured one. Recovery is proven
+// UNAMBIGUOUSLY by blackholing the OTHER path and confirming the tunnel still
+// carries traffic: that is possible only if the re-roamed path is itself forwarding
+// again on its new source address.
 //
 // Requires CAP_NET_ADMIN + /dev/net/tun; the plain `go test` never compiles it
 // (e2e build tag), and it is run under the privileged netns harness.
@@ -37,7 +35,7 @@ func TestMultipathReRoamSurvivesEdgeIPChange(t *testing.T) {
 		t.Fatalf("bond never came up\n--- edge ---\n%s\n--- conc ---\n%s", edge.log(), conc.log())
 	}
 
-	primary := DefaultPaths[0] // starlink — the active-backup primary
+	primary := DefaultPaths[0] // starlink — the re-roamed path
 	secondary := DefaultPaths[1]
 
 	// A bulk TCP transfer that spans the re-roam. If the WG session resets, this

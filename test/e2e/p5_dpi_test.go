@@ -84,7 +84,7 @@ const (
 	dpiToolTimeout = 90 * time.Second
 
 	// dpiLoadSecs is the bulk-transfer duration driving the wanbond capture: long enough
-	// to put DATA/PARITY/PROBE frames + amnezia junk on the wire for the engines to
+	// to put data/PROBE frames + amnezia junk on the wire for the engines to
 	// inspect, short enough to keep the test quick.
 	dpiLoadSecs = 5
 
@@ -161,7 +161,7 @@ func TestP5DPI(t *testing.T) {
 		t.Logf("positive control OK: nDPI classified plain WireGuard as %q by payload (matched %q, %s)", label, pat, f.String())
 	}
 
-	// (2) Capture the OBFUSCATED wanbond flow (amnezia junk + FEC parity active) on a
+	// (2) Capture the OBFUSCATED wanbond flow (amnezia junk active) on a
 	// NON-registered port and run both engines over it. Neither may classify it
 	// WireGuard/VPN by payload. The SAME session also runs the zero-DNS-egress guard
 	// (Q29/Q33): this config carries no `dns = true` opt-in (every endpoint is an IP
@@ -175,7 +175,7 @@ func TestP5DPI(t *testing.T) {
 	negFlows := runNdpiFlows(t, wbPcap)
 	if f, label, pat, ok := payloadVPNFlow(negFlows); ok {
 		t.Fatalf("REQUIREMENT-6 DEFECT: nDPI classified the OBFUSCATED wanbond flow as a WireGuard/VPN protocol BY PAYLOAD: label %q (matched %q), %s. "+
-			"The flow was captured on non-registered port %d, so this is NOT a port guess — the amnezia+FEC obfuscation is leaking a DPI-identifiable payload fingerprint. "+
+			"The flow was captured on non-registered port %d, so this is NOT a port guess — the amnezia obfuscation is leaking a DPI-identifiable payload fingerprint. "+
 			"Fix the codec; do NOT weaken this matcher. All nDPI flows: %s",
 			label, pat, f.String(), dpiListenPort, formatFlows(negFlows))
 	}
@@ -233,10 +233,10 @@ func plainWGPcapPath(t *testing.T) string {
 	return abs
 }
 
-// captureWanbondFlow brings up one fresh amnezia+FEC wanbond tunnel over auditPath on the
+// captureWanbondFlow brings up one fresh amnezia wanbond tunnel over auditPath on the
 // NON-registered dpiListenPort, captures the outer UDP wire on the edge veth with tcpdump
 // (T26's startPcap — no `-Z root`) while a short bulk transfer drives the full
-// DATA/PARITY/PROBE/junk mix, and returns the path to the completed pcap savefile PLUS the
+// data/PROBE/junk mix, and returns the path to the completed pcap savefile PLUS the
 // path to a second, concurrent capture over the SAME veth/window restricted to the
 // system-DNS/DoT/DoH ports (dpiDNSGuardFilter) — the zero-DNS-egress guard's evidence. The
 // tunnel config carries no `dns = true` opt-in, so the second capture must be empty.
@@ -295,9 +295,8 @@ func assertZeroDNSEgress(t *testing.T, dnsGuardPcap string) {
 	t.Logf("zero-DNS-egress guard OK: 0 packets on ports 53/853/443 over the wanbond capture window (DNS opt-in off)")
 }
 
-// setupWanbondDPITunnel brings the edge+concentrator tunnel up over auditPath with BOTH
-// the amnezia obfuscation profile (junk active) AND the fixed-ratio FEC plane (parity
-// active) on a caller-chosen WireGuard listen port. It mirrors setupAuditTunnel but
+// setupWanbondDPITunnel brings the edge+concentrator tunnel up over auditPath with
+// the amnezia obfuscation profile (junk active) on a caller-chosen WireGuard listen port. It mirrors setupAuditTunnel but
 // parametrises the port (the P5 capture runs on a non-registered port to defeat nDPI's
 // port guess — see dpiListenPort). Addressing/bring-up otherwise match the audit tunnel.
 func setupWanbondDPITunnel(t *testing.T, top *Topology, bin string, port int) (edge, conc *proc) {
@@ -307,9 +306,6 @@ func setupWanbondDPITunnel(t *testing.T, top *Topology, bin string, port int) (e
 	concPriv, concPub := genKey(t)
 	psk := randKey(t)
 
-	fecBlock := fmt.Sprintf("[fec]\nenabled = true\ndata_shards = %d\nparity_shards = %d\ndeadline = \"%dms\"\n\n",
-		auditFECData, auditFECParity, auditFECDeadlineNanos/1_000_000)
-
 	dir := t.TempDir()
 	edgeCfg := writeConfig(t, filepath.Join(dir, "edge.toml"), fmt.Sprintf(`role = "edge"
 psk = "%s"
@@ -318,7 +314,7 @@ psk = "%s"
 name = "%s"
 source_addr = "%s"
 
-%s%s[wireguard]
+%s[wireguard]
 private_key = "%s"
 
 [[wireguard.peers]]
@@ -328,7 +324,7 @@ allowed_ips = ["%s/32"]
 
 [log]
 level = "error"
-`, psk, auditPath.name, auditPath.edgeIP, amneziaProfileA, fecBlock, edgePriv, concPub, auditPath.concIP, port, concInner))
+`, psk, auditPath.name, auditPath.edgeIP, amneziaProfileA, edgePriv, concPub, auditPath.concIP, port, concInner))
 
 	concCfg := writeConfig(t, filepath.Join(dir, "conc.toml"), fmt.Sprintf(`role = "concentrator"
 psk = "%s"
@@ -337,7 +333,7 @@ psk = "%s"
 name = "%s"
 source_addr = "%s"
 
-%s%s[wireguard]
+%s[wireguard]
 private_key = "%s"
 listen_port = %d
 
@@ -347,7 +343,7 @@ allowed_ips = ["%s/32"]
 
 [log]
 level = "error"
-`, psk, auditPath.name, auditPath.concIP, amneziaProfileA, fecBlock, concPriv, port, edgePub, edgeInner))
+`, psk, auditPath.name, auditPath.concIP, amneziaProfileA, concPriv, port, edgePub, edgeInner))
 
 	conc = top.startProc(t, "concentrator", "nsenter", "-t", strconv.Itoa(top.pid), "-n", bin, "--config", concCfg)
 	edge = top.startProc(t, "edge", bin, "--config", edgeCfg)

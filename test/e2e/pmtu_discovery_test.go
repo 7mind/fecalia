@@ -81,9 +81,8 @@ const (
 func TestE2EPMTUDiscovery(t *testing.T) {
 	bin := buildWanbond(t)
 
-	// The constrained path is the PRIMARY (paths[0]) so the "first healthy path" scheduler
-	// rides it; the healthy 1500 path is the real second path so the daemon's assumed-1500
-	// ceiling is exercised. NO `mtu` knob is declared on either — auto-discovery, not the
+	// The constrained path is paths[0]; the healthy 1500 path is the real second path so
+	// the daemon's assumed-1500 ceiling is exercised. NO `mtu` knob is declared on either — auto-discovery, not the
 	// operator, must resolve the constrained sizing. The veth names match T210's; the suite
 	// is sequential (fixed names forbid parallel), and Setup idempotently pre-deletes them.
 	constrained := pathSpec{name: "cellular", edgeIP: "10.100.2.1", concIP: "10.100.2.2", edgeVeth: "wbBe", concVeth: "wbBc", delayMs: 20, outerMTU: constrainedOuterMTU}
@@ -103,7 +102,7 @@ func TestE2EPMTUDiscovery(t *testing.T) {
 		// Under the T201 Don't-Fragment policy an oversize outer probe/datagram surfaces
 		// EMSGSIZE at the edge rather than IP-fragmenting; discovery must then converge on the
 		// constrained path and the T209 resizer must shrink wanbond0 to InnerMTU(1400).
-		want := bind.InnerMTU(constrainedOuterMTU, false)
+		want := bind.InnerMTU(constrainedOuterMTU)
 		if !top.waitLinkMTU(t, tunDev, false, want, pmtuConvergeTimeout) {
 			t.Fatalf("wanbond0 MTU = %d after %s, want auto-discovered InnerMTU(1400) = %d — PMTU discovery did not converge and shrink the TUN (no mtu knob declared)\n--- edge ---\n%s",
 				top.linkMTU(t, tunDev, false), pmtuConvergeTimeout, want, edge.log())
@@ -121,7 +120,7 @@ func TestE2EPMTUDiscovery(t *testing.T) {
 			t.Fatalf("tunnel never came up\n--- edge ---\n%s\n--- conc ---\n%s", edge.log(), conc.log())
 		}
 
-		want := bind.InnerMTU(constrainedOuterMTU, false)
+		want := bind.InnerMTU(constrainedOuterMTU)
 		if !top.waitLinkMTU(t, tunDev, false, want, pmtuConvergeTimeout) {
 			t.Fatalf("wanbond0 did not auto-shrink to InnerMTU(1400) = %d before the flow (got %d)\n--- edge ---\n%s",
 				want, top.linkMTU(t, tunDev, false), edge.log())
@@ -156,7 +155,7 @@ func TestE2EPMTUDiscovery(t *testing.T) {
 			t.Fatalf("tunnel never came up\n--- edge ---\n%s\n--- conc ---\n%s", edge.log(), conc.log())
 		}
 
-		shrunk := bind.InnerMTU(constrainedOuterMTU, false)
+		shrunk := bind.InnerMTU(constrainedOuterMTU)
 		if !top.waitLinkMTU(t, tunDev, false, shrunk, pmtuConvergeTimeout) {
 			t.Fatalf("wanbond0 did not auto-shrink to InnerMTU(1400) = %d before the roam (got %d)\n--- edge ---\n%s",
 				shrunk, top.linkMTU(t, tunDev, false), edge.log())
@@ -174,7 +173,7 @@ func TestE2EPMTUDiscovery(t *testing.T) {
 		time.Sleep(2500 * time.Millisecond)
 		top.Restore(constrained.name)
 
-		grown := bind.InnerMTU(bind.DefaultPathMTU, false)
+		grown := bind.InnerMTU(bind.DefaultPathMTU)
 		if !top.waitLinkMTU(t, tunDev, false, grown, pmtuRegrowTimeout) {
 			t.Fatalf("wanbond0 MTU = %d after the roam+dwell, want regrown InnerMTU(1500) = %d — the re-probe/loosening resize did not grow the TUN back\n--- edge ---\n%s",
 				top.linkMTU(t, tunDev, false), grown, edge.log())

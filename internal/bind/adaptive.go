@@ -1,7 +1,6 @@
 package bind
 
 import (
-	"errors"
 	"net/netip"
 	"sync"
 	"time"
@@ -34,18 +33,6 @@ type adaptivePeer struct {
 	restarted   func()
 }
 
-// EnableAdaptive must be called before Open. The transport owns its pacing and
-// recovery; composing it with the legacy FEC owner or shaper is an invariant error.
-func (m *Multipath) EnableAdaptive() error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if len(m.paths) != 0 || m.fecCfg != nil || m.shaperConfigs != nil {
-		return errors.New("bind: adaptive requires a closed bind without legacy FEC or shapers")
-	}
-	m.adaptiveEnabled = true
-	return nil
-}
-
 func (m *Multipath) openAdaptivePeer(peer *peerState) error {
 	codec, err := peer.newCodec()
 	if err != nil {
@@ -67,7 +54,6 @@ func (m *Multipath) openAdaptivePeer(peer *peerState) error {
 	}
 	peer.adaptive.Store(a)
 	if rq := peer.resequencer.Load(); rq != nil {
-		rq.SetMultiPathExpected(true)
 		rq.SetHoldBound(adaptiveReorderHold)
 	}
 	done := m.recvClosed
@@ -194,7 +180,6 @@ func (a *adaptivePeer) receive(ps *peerPathState, remote netip.AddrPort, f frame
 		return
 	}
 	if rq := a.owner.resequencer.Load(); rq != nil {
-		rq.SetMultiPathExpected(true)
 		rq.SetHoldBound(adaptiveReorderHold)
 		for _, d := range deliveries {
 			if d.Interactive {
@@ -204,7 +189,7 @@ func (a *adaptivePeer) receive(ps *peerPathState, remote netip.AddrPort, f frame
 				default:
 				}
 			} else {
-				rq.ObserveFromPath(d.Sequence, d.Payload, remote, uint32(id))
+				rq.Observe(d.Sequence, d.Payload, remote)
 			}
 		}
 	}

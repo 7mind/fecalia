@@ -25,26 +25,24 @@ func drainHold(r *reseq.Resequencer) []string {
 	}
 }
 
-// gapHoldDuration measures, under the fake clock, how long a two-pathKey
-// head-of-line gap is held before its successor releases: it pins the release
-// point at 0 (delivered), buffers seq 2 behind the missing seq 1 with TWO
-// distinct pathKeys in the trailing window (so single-path immediate release is
-// disarmed), then advances the clock in 1 ms steps until seq 2 pops.
+// gapHoldDuration measures, under the fake clock, how long a head-of-line gap is
+// held before its successor releases: it pins the release point at 0
+// (delivered), buffers seq 2 behind the missing seq 1, then advances the clock
+// in 1 ms steps until seq 2 pops.
 func gapHoldDuration(t *testing.T, r *reseq.Resequencer, clk *fakeClock) time.Duration {
 	t.Helper()
-	r.ObserveFromPath(0, []byte("p0"), holdSrc, 1)
+	r.Observe(0, []byte("p0"), holdSrc)
 	if got := drainHold(r); len(got) != 1 || got[0] != "p0" {
 		t.Fatalf("seed delivery = %v, want [p0]", got)
 	}
-	// A frame from a SECOND key disarms immediate release for the trailing window.
-	r.ObserveFromPath(2, []byte("p2"), holdSrc, 2)
+	r.Observe(2, []byte("p2"), holdSrc)
 	if got := drainHold(r); len(got) != 0 {
 		t.Fatalf("gap released %v before any hold elapsed", got)
 	}
 	start := clk.now
 	for i := 0; i < 1000; i++ {
 		clk.advance(time.Millisecond)
-		r.ObserveFromPath(2, nil, holdSrc, 2) // duplicate: dropped, but ticks expire()
+		r.Observe(2, nil, holdSrc) // duplicate: dropped, but ticks expire()
 		if got := drainHold(r); len(got) > 0 {
 			return clk.now.Sub(start)
 		}
@@ -53,15 +51,14 @@ func gapHoldDuration(t *testing.T, r *reseq.Resequencer, clk *fakeClock) time.Du
 	return 0
 }
 
-// TestSetHoldBoundShortensMultiPathHold is the T241 core: with a dynamic hold
-// bound set (the bind feeds k*SRTT), a multi-pathKey gap is held ~the bound, not
-// the full 250 ms construction timeout. RED before SetHoldBound exists.
-func TestSetHoldBoundShortensMultiPathHold(t *testing.T) {
+// TestSetHoldBoundShortensHold is the T241 core: with a hold bound set, a gap is
+// held ~the bound, not the full 250 ms construction timeout.
+func TestSetHoldBoundShortensHold(t *testing.T) {
 	clk := newFakeClock()
 	r := reseq.New(64, 250*time.Millisecond, clk)
 	r.SetHoldBound(80 * time.Millisecond) // e.g. k=4 x SRTT=20ms
 	if held := gapHoldDuration(t, r, clk); held < 75*time.Millisecond || held > 90*time.Millisecond {
-		t.Fatalf("two-key gap held %v, want ~80ms (the dynamic bound, not the 250ms cap)", held)
+		t.Fatalf("gap held %v, want ~80ms (the dynamic bound, not the 250ms cap)", held)
 	}
 }
 
@@ -81,71 +78,5 @@ func TestSetHoldBoundClampsToCapAndFloor(t *testing.T) {
 	r2.SetHoldBound(time.Millisecond) // k*SRTT on an ultra-low-RTT path: floored
 	if held := gapHoldDuration(t, r2, clk2); held < 8*time.Millisecond || held > 20*time.Millisecond {
 		t.Fatalf("under-floor bound held %v, want ~the floor (10ms)", held)
-	}
-}
-
-// TestFECActiveKeepsFullHoldAndRecoveryFills is the T241 FEC policy (R249): with
-// FEC active, the adaptive shortening is suppressed — the gap is held the FULL
-// 250 ms cap even under a short bound — so a parity reconstruction arriving
-// mid-hold still fills the gap and the recovered frame is NOT dropped late.
-func TestFECActiveKeepsFullHoldAndRecoveryFills(t *testing.T) {
-	clk := newFakeClock()
-	r := reseq.New(64, 250*time.Millisecond, clk)
-	r.SetFECActive(true)
-	r.SetHoldBound(20 * time.Millisecond) // would skip at ~20ms if wrongly applied
-
-	r.ObserveFromPath(0, []byte("p0"), holdSrc, 1)
-	if got := drainHold(r); len(got) != 1 || got[0] != "p0" {
-		t.Fatalf("seed delivery = %v, want [p0]", got)
-	}
-	r.ObserveFromPath(2, []byte("p2"), holdSrc, 1)
-	// Well past the (suppressed) 20ms bound but inside the 250ms cap: still held.
-	clk.advance(100 * time.Millisecond)
-	r.ObserveFromPath(2, nil, holdSrc, 1) // duplicate tick
-	if got := drainHold(r); len(got) != 0 {
-		t.Fatalf("FEC-active gap released %v at the shortened bound; must hold the full cap for recovery", got)
-	}
-	// The parity reconstruction lands mid-hold and fills the gap: 1 then 2 release.
-	if !r.ObserveRecovered(1, []byte("p1"), holdSrc) {
-		t.Fatalf("ObserveRecovered(1) rejected; want accepted into the open gap")
-	}
-	if got := drainHold(r); len(got) != 2 || got[0] != "p1" || got[1] != "p2" {
-		t.Fatalf("post-recovery delivery = %v, want [p1 p2] (recovered frame fills the held gap)", got)
-	}
-}
-
-// TestMultiPathExpectedSuppressesImmediateRelease pins the weighted-bond suppression
-// (D93 follow-up; the o3 TestP2Aggregation regression): with SetMultiPathExpected(true) a
-// single-pathKey gap is NOT fast-released — it waits the full hold like the pre-D93
-// behaviour — because the suppression is RETAINED PENDING a link-bound-venue A/B,
-// default-under-uncertainty (defect D95, decisions:K35, tasks:T287/T293 branch 4), not the
-// earlier burstiness-coupling theory (superseded by the frame-accurate offered-load fix).
-func TestMultiPathExpectedSuppressesImmediateRelease(t *testing.T) {
-	clk := newFakeClock()
-	r := reseq.New(64, 250*time.Millisecond, clk)
-	r.SetMultiPathExpected(true)
-
-	r.ObserveFromPath(0, []byte("p0"), holdSrc, 1)
-	if got := drainHold(r); len(got) != 1 || got[0] != "p0" {
-		t.Fatalf("seed delivery = %v, want [p0]", got)
-	}
-	r.ObserveFromPath(2, []byte("p2"), holdSrc, 1) // single key, genuine gap at seq 1
-	if got := drainHold(r); len(got) != 0 {
-		t.Fatalf("multiPathExpected gap released %v immediately; must wait the full hold", got)
-	}
-	clk.advance(240 * time.Millisecond)
-	if got := drainHold(r); len(got) != 0 {
-		t.Fatalf("multiPathExpected gap released %v before the deadline", got)
-	}
-	clk.advance(20 * time.Millisecond)
-	if got := drainHold(r); len(got) != 1 || got[0] != "p2" {
-		t.Fatalf("post-deadline delivery = %v, want [p2]", got)
-	}
-
-	// Toggling it off restores the single-path fast path.
-	r.SetMultiPathExpected(false)
-	r.ObserveFromPath(4, []byte("p4"), holdSrc, 1) // gap at seq 3
-	if got := drainHold(r); len(got) != 1 || got[0] != "p4" {
-		t.Fatalf("after SetMultiPathExpected(false) single-key gap = %v, want [p4] released immediately", got)
 	}
 }

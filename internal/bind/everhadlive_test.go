@@ -45,7 +45,7 @@ func driveEdgePathUp(t *testing.T, m *Multipath, idx int, psk config.Key, src ne
 func TestEverHadLivePathLatchesOnFirstUpAndStaysStickyAfterOutage(t *testing.T) {
 	psk := testKey(t, 0x71)
 	clk := newFakeClock()
-	m, _, _ := newProbingMultipath(t, loopbackPaths(1), psk, clk)
+	m, _ := newProbingMultipath(t, loopbackPaths(1), psk, clk)
 	if _, _, err := m.Open(0); err != nil {
 		t.Fatalf("Open: %v", err)
 	}

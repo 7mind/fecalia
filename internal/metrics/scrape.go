@@ -52,7 +52,7 @@ func Fetch(ctx context.Context, client *http.Client, baseURL string) (Exposition
 func (e Exposition) Families() map[string]*dto.MetricFamily { return e.families }
 
 // Has reports whether the named metric family is present (registered), regardless
-// of its value — useful for asserting the placeholder FEC series exist.
+// of its value.
 func (e Exposition) Has(name string) bool {
 	_, ok := e.families[name]
 	return ok
@@ -65,7 +65,7 @@ func (e Exposition) PathValue(name, path string) (float64, bool) {
 	return e.labeledValue(name, labelPath, path)
 }
 
-// PeerValue returns the value of a per-peer series `name` (FEC/resequencer, T94) for
+// PeerValue returns the value of a per-peer series `name` (resequencer, T94) for
 // the given `peer` label value, and whether such a series was found.
 func (e Exposition) PeerValue(name, peer string) (float64, bool) {
 	return e.labeledValue(name, labelPeer, peer)
@@ -96,8 +96,8 @@ func (e Exposition) PeerPathValue(name, peer, path string) (float64, bool) {
 	return 0, false
 }
 
-// Value returns the value of an unlabeled series `name` (e.g. the FEC
-// placeholders), and whether it was found.
+// Value returns the value of an unlabeled series `name` (e.g. wanbond_tun_mtu),
+// and whether it was found.
 func (e Exposition) Value(name string) (float64, bool) {
 	fam, ok := e.families[name]
 	if !ok {

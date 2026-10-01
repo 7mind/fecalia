@@ -31,23 +31,23 @@ func uapiPeerKey(pubHex string, handshake time.Time) string {
 // errIpc is a stand-in engine read error.
 var errIpc = fmt.Errorf("device closed")
 
-// mutableEngine is an ipcGetter whose UAPI dump the test swaps between polls, so a single
-// monitor can be driven across a dead -> live -> dead sequence.
-type mutableEngine struct {
-	mu   sync.Mutex
-	dump string
+// scriptedEngine is an ipcGetter whose engine state (a UAPI dump or a read error) the test
+// swaps between polls, so a single monitor can be driven across a dead -> live -> dead sequence.
+type scriptedEngine struct {
+	mu    sync.Mutex
+	state fakeEngine
 }
 
-func (e *mutableEngine) set(dump string) {
+func (e *scriptedEngine) set(state fakeEngine) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	e.dump = dump
+	e.state = state
 }
 
-func (e *mutableEngine) IpcGet() (string, error) {
+func (e *scriptedEngine) IpcGet() (string, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	return e.dump, nil
+	return e.state.IpcGet()
 }
 
 // recordingTearer is a peerTearer that records every TearDownPeer(name) call in order so a test
@@ -116,171 +116,178 @@ func TestPerPeerHandshakeNano(t *testing.T) {
 	}
 }
 
-// TestPeerTeardownAgedOut is acceptance (a): a non-primary peer whose handshake has aged past
-// RejectAfterTime is torn down — TearDownPeer invoked with its configured name — and ONE INFO
-// logs the transition.
-func TestPeerTeardownAgedOut(t *testing.T) {
+// TestPeerTeardownPoll drives the level check over a scripted engine: one poll per entry of
+// polls, each against that entry's engine state. It asserts WHICH peers were torn down, in call
+// order, and how many teardown INFO records were logged.
+func TestPeerTeardownPoll(t *testing.T) {
+	const teardownInfo = "concentrator peer session lost"
 	now := time.Unix(1_000_000, 0)
 	aged := now.Add(-(awgdevice.RejectAfterTime + time.Second))
-	eng := fakeEngine{dump: uapiPeerKey("bbbb", aged)}
-	tearer := &recordingTearer{}
-	buf := &syncBuffer{}
-	lg, err := log.New("info", buf)
-	if err != nil {
-		t.Fatalf("log.New: %v", err)
-	}
-	mon := newPeerTeardownMonitor(eng, tearer, []monitoredPeer{{name: "peer-b", publicKey: "bbbb"}}, &fakeClock{now: now})
-
-	mon.poll(lg)
-
-	if got := tearer.snapshot(); len(got) != 1 || got[0] != "peer-b" {
-		t.Fatalf("TearDownPeer calls = %v, want exactly [peer-b]", got)
-	}
-	if n := strings.Count(buf.String(), "concentrator peer session lost"); n != 1 {
-		t.Errorf("teardown INFO logged %d times, want 1\n%s", n, buf.String())
-	}
-}
-
-// TestPeerTeardownNeverHandshaked is acceptance (b) — the D50 core: a peer that instantiated
-// heavy state via an authenticated PROBE but has last_handshake=0 (NO handshake ever, hence NO
-// Established 1->0 edge) is STILL torn down by the LEVEL check, not skipped for lack of an edge.
-func TestPeerTeardownNeverHandshaked(t *testing.T) {
-	eng := fakeEngine{dump: uapiPeerKey("bbbb", time.Time{})}
-	tearer := &recordingTearer{}
-	mon := newPeerTeardownMonitor(eng, tearer, []monitoredPeer{{name: "peer-b", publicKey: "bbbb"}}, &fakeClock{now: time.Unix(1_000_000, 0)})
-
-	mon.poll(discardInfo(t))
-
-	if got := tearer.snapshot(); len(got) != 1 || got[0] != "peer-b" {
-		t.Fatalf("never-handshaked peer: TearDownPeer calls = %v, want [peer-b] (the level check must fire without a 1->0 edge)", got)
-	}
-}
-
-// TestPeerTeardownLivePeerUntouched is acceptance (c): a peer with a fresh handshake is
-// established, so the level check leaves it alone — even across repeated polls (no teardown, no
-// spurious log). The primary is never even a monitored peer.
-func TestPeerTeardownLivePeerUntouched(t *testing.T) {
-	now := time.Unix(1_000_000, 0)
 	fresh := now.Add(-3 * time.Second)
-	eng := fakeEngine{dump: uapiPeerKey("bbbb", fresh)}
-	tearer := &recordingTearer{}
-	buf := &syncBuffer{}
-	lg, err := log.New("info", buf)
-	if err != nil {
-		t.Fatalf("log.New: %v", err)
-	}
-	mon := newPeerTeardownMonitor(eng, tearer, []monitoredPeer{{name: "peer-b", publicKey: "bbbb"}}, &fakeClock{now: now})
+	peerB := []monitoredPeer{{name: "peer-b", publicKey: "bbbb"}}
+	agedB := fakeEngine{dump: uapiPeerKey("bbbb", aged)}
+	freshB := fakeEngine{dump: uapiPeerKey("bbbb", fresh)}
 
-	for i := 0; i < 3; i++ {
-		mon.poll(lg)
+	cases := []struct {
+		name      string
+		peers     []monitoredPeer
+		polls     []fakeEngine
+		wantCalls []string
+		wantInfos int
+		// wantSilent additionally requires that the polls logged nothing at all.
+		wantSilent bool
+	}{
+		{
+			// Acceptance (a): a non-primary peer whose handshake has aged past RejectAfterTime
+			// is torn down — TearDownPeer invoked with its configured name — and ONE INFO logs
+			// the transition.
+			name:      "aged out",
+			peers:     peerB,
+			polls:     []fakeEngine{agedB},
+			wantCalls: []string{"peer-b"},
+			wantInfos: 1,
+		},
+		{
+			// Acceptance (b) — the D50 core: a peer that instantiated heavy state via an
+			// authenticated PROBE but has last_handshake=0 (NO handshake ever, hence NO
+			// Established 1->0 edge) is STILL torn down by the LEVEL check, not skipped for
+			// lack of an edge.
+			name:      "never handshaked",
+			peers:     peerB,
+			polls:     []fakeEngine{{dump: uapiPeerKey("bbbb", time.Time{})}},
+			wantCalls: []string{"peer-b"},
+			wantInfos: 1,
+		},
+		{
+			// Acceptance (c): a peer with a fresh handshake is established, so the level check
+			// leaves it alone — even across repeated polls (no teardown, no spurious log). The
+			// primary is never even a monitored peer.
+			name:       "live peer untouched",
+			peers:      peerB,
+			polls:      []fakeEngine{freshB, freshB, freshB},
+			wantCalls:  nil,
+			wantInfos:  0,
+			wantSilent: true,
+		},
+		{
+			// "Dedupe the LOG, not the call": a persistently-dead peer is torn down on EVERY
+			// poll (the idempotent call repeats — that is what survives a daemon-reload loss of
+			// edge memory), but only ONE INFO logs the transition.
+			name:      "repeated level check dedupes log",
+			peers:     peerB,
+			polls:     []fakeEngine{agedB, agedB, agedB, agedB},
+			wantCalls: []string{"peer-b", "peer-b", "peer-b", "peer-b"},
+			wantInfos: 1,
+		},
+		{
+			// The acceptance (d) analog at the monitor level: a peer torn down, then
+			// RE-ESTABLISHED (a fresh handshake — the same signal a re-bind PROBE + relayed
+			// traffic ultimately produces), stops being torn down; and a SUBSEQUENT loss tears
+			// it down and logs again (the dedupe resets on re-establishment).
+			name:      "re-establish relogs",
+			peers:     peerB,
+			polls:     []fakeEngine{agedB, freshB, agedB},
+			wantCalls: []string{"peer-b", "peer-b"},
+			wantInfos: 2,
+		},
+		{
+			// An engine read error skips the sweep entirely — no spurious teardown on a
+			// transiently unreadable engine.
+			name:      "engine error skips",
+			peers:     peerB,
+			polls:     []fakeEngine{{err: errIpc}},
+			wantCalls: nil,
+			wantInfos: 0,
+		},
+		{
+			// A dump peer NOT in the monitored set (e.g. the primary, which is excluded) is
+			// never torn down, and the monitored peers are checked independently: one aged
+			// (torn), one fresh (kept).
+			name: "only monitored peers",
+			peers: []monitoredPeer{
+				{name: "peer-b", publicKey: "bbbb"},
+				{name: "peer-c", publicKey: "cccc"},
+			},
+			polls: []fakeEngine{{dump: uapiPeerKey("aaaa", aged) + // primary key — present in dump but NOT monitored
+				uapiPeerKey("bbbb", aged) + // monitored, dead -> torn
+				uapiPeerKey("cccc", fresh)}}, // monitored, live -> kept
+			wantCalls: []string{"peer-b"},
+			wantInfos: 1,
+		},
 	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			eng := &scriptedEngine{}
+			tearer := &recordingTearer{}
+			buf := &syncBuffer{}
+			lg, err := log.New("info", buf)
+			if err != nil {
+				t.Fatalf("log.New: %v", err)
+			}
+			mon := newPeerTeardownMonitor(eng, tearer, tc.peers, &fakeClock{now: now})
 
-	if got := tearer.snapshot(); len(got) != 0 {
-		t.Fatalf("live peer torn down: TearDownPeer calls = %v, want none", got)
-	}
-	if buf.String() != "" {
-		t.Errorf("live peer produced a teardown log: %s", buf.String())
+			for _, state := range tc.polls {
+				eng.set(state)
+				mon.poll(lg)
+			}
+
+			if got := tearer.snapshot(); !equalStrings(got, tc.wantCalls) {
+				t.Fatalf("TearDownPeer calls = %v, want %v", got, tc.wantCalls)
+			}
+			if n := strings.Count(buf.String(), teardownInfo); n != tc.wantInfos {
+				t.Errorf("teardown INFO logged %d times, want %d\n%s", n, tc.wantInfos, buf.String())
+			}
+			if tc.wantSilent && buf.String() != "" {
+				t.Errorf("polls produced a log: %s", buf.String())
+			}
+		})
 	}
 }
 
-// TestPeerTeardownRepeatedLevelCheckDedupesLog pins the "dedupe the LOG, not the call" rule: a
-// persistently-dead peer is torn down on EVERY poll (the idempotent call repeats — that is what
-// survives a daemon-reload loss of edge memory), but only ONE INFO logs the transition.
-func TestPeerTeardownRepeatedLevelCheckDedupesLog(t *testing.T) {
-	now := time.Unix(1_000_000, 0)
-	aged := now.Add(-(awgdevice.RejectAfterTime + time.Second))
-	eng := fakeEngine{dump: uapiPeerKey("bbbb", aged)}
-	tearer := &recordingTearer{}
-	buf := &syncBuffer{}
-	lg, err := log.New("info", buf)
-	if err != nil {
-		t.Fatalf("log.New: %v", err)
-	}
-	mon := newPeerTeardownMonitor(eng, tearer, []monitoredPeer{{name: "peer-b", publicKey: "bbbb"}}, &fakeClock{now: now})
-
-	const polls = 4
-	for i := 0; i < polls; i++ {
-		mon.poll(lg)
-	}
-
-	if got := tearer.countOf("peer-b"); got != polls {
-		t.Errorf("TearDownPeer(peer-b) called %d times, want %d (the level-triggered call must repeat every poll)", got, polls)
-	}
-	if n := strings.Count(buf.String(), "concentrator peer session lost"); n != 1 {
-		t.Errorf("teardown INFO logged %d times, want 1 (the LOG is deduped, not the call)\n%s", n, buf.String())
-	}
+// configuredPeer is one configured WireGuard peer of a monitored-peer-set case: its name and
+// the byte its 32-byte public key is filled with.
+type configuredPeer struct {
+	name    string
+	keyFill byte
 }
 
-// TestPeerTeardownReestablishRelogs is the acceptance (d) analog at the monitor level: a peer
-// torn down, then RE-ESTABLISHED (a fresh handshake — the same signal a re-bind PROBE + relayed
-// traffic ultimately produces), stops being torn down; and a SUBSEQUENT loss tears it down and
-// logs again (the dedupe resets on re-establishment).
-func TestPeerTeardownReestablishRelogs(t *testing.T) {
-	now := time.Unix(1_000_000, 0)
-	aged := now.Add(-(awgdevice.RejectAfterTime + time.Second))
-	fresh := now.Add(-2 * time.Second)
-	eng := &mutableEngine{}
-	tearer := &recordingTearer{}
-	buf := &syncBuffer{}
-	lg, err := log.New("info", buf)
-	if err != nil {
-		t.Fatalf("log.New: %v", err)
-	}
-	mon := newPeerTeardownMonitor(eng, tearer, []monitoredPeer{{name: "peer-b", publicKey: "bbbb"}}, &fakeClock{now: now})
-
-	// (1) dead -> torn down + logged once.
-	eng.set(uapiPeerKey("bbbb", aged))
-	mon.poll(lg)
-	// (2) re-established -> not torn down; dedupe cleared.
-	eng.set(uapiPeerKey("bbbb", fresh))
-	mon.poll(lg)
-	// (3) dead again -> torn down + logged AGAIN (a new loss warrants a new record).
-	eng.set(uapiPeerKey("bbbb", aged))
-	mon.poll(lg)
-
-	if got := tearer.snapshot(); len(got) != 2 || got[0] != "peer-b" || got[1] != "peer-b" {
-		t.Fatalf("TearDownPeer calls = %v, want [peer-b peer-b] (torn, kept while live, torn again)", got)
-	}
-	if n := strings.Count(buf.String(), "concentrator peer session lost"); n != 2 {
-		t.Errorf("teardown INFO logged %d times, want 2 (one per loss; the dedupe resets on re-establishment)\n%s", n, buf.String())
-	}
+// monitoredPeersCase is one config shape handed to a monitored-peer-set builder, with the
+// peers the builder must return for it — each as the name the monitor reports and the
+// keyFill of the configured peer whose lowercase-hex public key identifies it in the UAPI dump.
+type monitoredPeersCase struct {
+	name  string
+	role  config.Role
+	peers []configuredPeer
+	want  []configuredPeer
 }
 
-// TestPeerTeardownEngineErrorSkips asserts an engine read error skips the sweep entirely — no
-// spurious teardown on a transiently unreadable engine.
-func TestPeerTeardownEngineErrorSkips(t *testing.T) {
-	eng := fakeEngine{err: errIpc}
-	tearer := &recordingTearer{}
-	mon := newPeerTeardownMonitor(eng, tearer, []monitoredPeer{{name: "peer-b", publicKey: "bbbb"}}, &fakeClock{now: time.Unix(1_000_000, 0)})
+// runMonitoredPeersCases builds each case's config and asserts build returns exactly the
+// wanted monitored peers, in order.
+func runMonitoredPeersCases(t *testing.T, build func(*config.Config, []config.PeerIdentity) []monitoredPeer, cases []monitoredPeersCase) {
+	t.Helper()
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &config.Config{Role: tc.role}
+			for _, p := range tc.peers {
+				cfg.WireGuard.Peers = append(cfg.WireGuard.Peers, config.Peer{PublicKey: testPubKey(t, p.keyFill), Name: p.name})
+			}
+			want := make([]monitoredPeer, len(tc.want))
+			for i, p := range tc.want {
+				raw := testPubKey(t, p.keyFill).Bytes()
+				want[i] = monitoredPeer{name: p.name, publicKey: hex.EncodeToString(raw[:])}
+			}
 
-	mon.poll(discardInfo(t))
+			got := build(cfg, cfg.PeerIdentities())
 
-	if got := tearer.snapshot(); len(got) != 0 {
-		t.Fatalf("engine error caused teardown: calls = %v, want none", got)
-	}
-}
-
-// TestPeerTeardownOnlyMonitoredPeers asserts a dump peer NOT in the monitored set (e.g. the
-// primary, which is excluded) is never torn down, and the monitored peers are checked
-// independently: one aged (torn), one fresh (kept).
-func TestPeerTeardownOnlyMonitoredPeers(t *testing.T) {
-	now := time.Unix(1_000_000, 0)
-	aged := now.Add(-(awgdevice.RejectAfterTime + time.Second))
-	fresh := now.Add(-1 * time.Second)
-	dump := uapiPeerKey("aaaa", aged) + // primary key — present in dump but NOT monitored
-		uapiPeerKey("bbbb", aged) + // monitored, dead -> torn
-		uapiPeerKey("cccc", fresh) // monitored, live -> kept
-	eng := fakeEngine{dump: dump}
-	tearer := &recordingTearer{}
-	mon := newPeerTeardownMonitor(eng, tearer, []monitoredPeer{
-		{name: "peer-b", publicKey: "bbbb"},
-		{name: "peer-c", publicKey: "cccc"},
-	}, &fakeClock{now: now})
-
-	mon.poll(discardInfo(t))
-
-	if got := tearer.snapshot(); len(got) != 1 || got[0] != "peer-b" {
-		t.Fatalf("TearDownPeer calls = %v, want exactly [peer-b] (primary excluded, live peer-c kept)", got)
+			if len(got) != len(want) {
+				t.Fatalf("monitored peers = %+v, want %+v", got, want)
+			}
+			for i := range want {
+				if got[i] != want[i] {
+					t.Errorf("monitored peer %d = %+v, want %+v", i, got[i], want[i])
+				}
+			}
+		})
 	}
 }
 
@@ -289,58 +296,31 @@ func TestPeerTeardownOnlyMonitoredPeers(t *testing.T) {
 // multi-peer config yields every NON-primary peer paired with its configured name and the
 // lowercase-hex public key the UAPI dump identifies it by.
 func TestConcentratorMonitoredPeers(t *testing.T) {
-	t.Run("single-peer config monitors nothing", func(t *testing.T) {
-		cfg := &config.Config{}
-		cfg.WireGuard.Peers = []config.Peer{{PublicKey: testPubKey(t, 0x11), Name: "solo"}}
-		if got := concentratorMonitoredPeers(cfg, cfg.PeerIdentities()); len(got) != 0 {
-			t.Fatalf("single-peer config produced %v monitored peers, want none", got)
-		}
-	})
-
-	t.Run("multi-peer concentrator config monitors every non-primary peer", func(t *testing.T) {
-		k0 := testPubKey(t, 0x11)
-		k1 := testPubKey(t, 0x22)
-		k2 := testPubKey(t, 0x33)
-		cfg := &config.Config{Role: config.RoleConcentrator}
-		cfg.WireGuard.Peers = []config.Peer{
-			{PublicKey: k0, Name: "primary"},
-			{PublicKey: k1, Name: "peer-b"},
-			{PublicKey: k2, Name: "peer-c"},
-		}
-		got := concentratorMonitoredPeers(cfg, cfg.PeerIdentities())
-		b1, b2 := k1.Bytes(), k2.Bytes()
-		want := []monitoredPeer{
-			{name: "peer-b", publicKey: hex.EncodeToString(b1[:])},
-			{name: "peer-c", publicKey: hex.EncodeToString(b2[:])},
-		}
-		if len(got) != len(want) {
-			t.Fatalf("monitored peers = %v, want %v", got, want)
-		}
-		for i := range want {
-			if got[i] != want[i] {
-				t.Errorf("monitored peer %d = %+v, want %+v", i, got[i], want[i])
-			}
-		}
-	})
-
-	// D50 guard (T251/Q68b): a MULTI-PEER EDGE config monitors NOTHING. The additional edge peers
-	// are warm-standby concentrators — healthy by design even carrying no data — so the level-check
-	// teardown must never engage on the edge, where it would tear a warm standby down the moment its
-	// session momentarily aged. This is the exact shape that, before the role gate, wrongly returned
-	// the non-primary set (identical to the concentrator subtest above but for the role).
-	t.Run("multi-peer edge config monitors nothing", func(t *testing.T) {
-		k0 := testPubKey(t, 0x11)
-		k1 := testPubKey(t, 0x22)
-		k2 := testPubKey(t, 0x33)
-		cfg := &config.Config{Role: config.RoleEdge}
-		cfg.WireGuard.Peers = []config.Peer{
-			{PublicKey: k0, Name: "primary"},
-			{PublicKey: k1, Name: "peer-b"},
-			{PublicKey: k2, Name: "peer-c"},
-		}
-		if got := concentratorMonitoredPeers(cfg, cfg.PeerIdentities()); len(got) != 0 {
-			t.Fatalf("multi-peer EDGE config produced %v monitored peers, want none (warm standbys must never be torn down)", got)
-		}
+	threePeers := []configuredPeer{{"primary", 0x11}, {"peer-b", 0x22}, {"peer-c", 0x33}}
+	runMonitoredPeersCases(t, concentratorMonitoredPeers, []monitoredPeersCase{
+		{
+			name:  "single-peer config monitors nothing",
+			peers: []configuredPeer{{"solo", 0x11}},
+			want:  nil,
+		},
+		{
+			name:  "multi-peer concentrator config monitors every non-primary peer",
+			role:  config.RoleConcentrator,
+			peers: threePeers,
+			want:  []configuredPeer{{"peer-b", 0x22}, {"peer-c", 0x33}},
+		},
+		{
+			// D50 guard (T251/Q68b): a MULTI-PEER EDGE config monitors NOTHING. The additional
+			// edge peers are warm-standby concentrators — healthy by design even carrying no
+			// data — so the level-check teardown must never engage on the edge, where it would
+			// tear a warm standby down the moment its session momentarily aged. This is the
+			// exact shape that, before the role gate, wrongly returned the non-primary set
+			// (identical to the concentrator case above but for the role).
+			name:  "multi-peer edge config monitors nothing",
+			role:  config.RoleEdge,
+			peers: threePeers,
+			want:  nil,
+		},
 	})
 }
 
@@ -351,68 +331,28 @@ func TestConcentratorMonitoredPeers(t *testing.T) {
 // peer, PRIMARY INCLUDED, each paired with its own configured name and the lowercase-hex
 // public key the UAPI dump identifies it by.
 func TestAllMonitoredPeers(t *testing.T) {
-	t.Run("single-peer config yields one entry named \"\"", func(t *testing.T) {
-		k0 := testPubKey(t, 0x11)
-		cfg := &config.Config{}
-		cfg.WireGuard.Peers = []config.Peer{{PublicKey: k0, Name: "solo"}}
-		got := allMonitoredPeers(cfg, cfg.PeerIdentities())
-		b0 := k0.Bytes()
-		want := []monitoredPeer{{name: "", publicKey: hex.EncodeToString(b0[:])}}
-		if len(got) != len(want) || got[0] != want[0] {
-			t.Fatalf("allMonitoredPeers = %+v, want %+v", got, want)
-		}
-	})
-
-	t.Run("multi-peer concentrator config yields every peer including the primary", func(t *testing.T) {
-		k0 := testPubKey(t, 0x11)
-		k1 := testPubKey(t, 0x22)
-		cfg := &config.Config{Role: config.RoleConcentrator}
-		cfg.WireGuard.Peers = []config.Peer{
-			{PublicKey: k0, Name: "primary"},
-			{PublicKey: k1, Name: "peer-b"},
-		}
-		got := allMonitoredPeers(cfg, cfg.PeerIdentities())
-		b0, b1 := k0.Bytes(), k1.Bytes()
-		want := []monitoredPeer{
-			{name: "primary", publicKey: hex.EncodeToString(b0[:])},
-			{name: "peer-b", publicKey: hex.EncodeToString(b1[:])},
-		}
-		if len(got) != len(want) {
-			t.Fatalf("allMonitoredPeers = %+v, want %+v", got, want)
-		}
-		for i := range want {
-			if got[i] != want[i] {
-				t.Errorf("peer %d = %+v, want %+v", i, got[i], want[i])
-			}
-		}
-	})
-
-	// Generalized to the EDGE role (T256): a multi-peer edge's additional peers are
-	// warm-standby concentrators, not concentrator-side edges, but PeerSessions() still
-	// needs a session verdict for EACH — unlike concentratorMonitoredPeers' D50 teardown
-	// set, which is deliberately EMPTY on the edge.
-	t.Run("multi-peer edge config yields every peer including the primary", func(t *testing.T) {
-		k0 := testPubKey(t, 0x11)
-		k1 := testPubKey(t, 0x22)
-		cfg := &config.Config{Role: config.RoleEdge}
-		cfg.WireGuard.Peers = []config.Peer{
-			{PublicKey: k0, Name: "primary"},
-			{PublicKey: k1, Name: "standby"},
-		}
-		got := allMonitoredPeers(cfg, cfg.PeerIdentities())
-		b0, b1 := k0.Bytes(), k1.Bytes()
-		want := []monitoredPeer{
-			{name: "primary", publicKey: hex.EncodeToString(b0[:])},
-			{name: "standby", publicKey: hex.EncodeToString(b1[:])},
-		}
-		if len(got) != len(want) {
-			t.Fatalf("allMonitoredPeers = %+v, want %+v", got, want)
-		}
-		for i := range want {
-			if got[i] != want[i] {
-				t.Errorf("peer %d = %+v, want %+v", i, got[i], want[i])
-			}
-		}
+	runMonitoredPeersCases(t, allMonitoredPeers, []monitoredPeersCase{
+		{
+			name:  "single-peer config yields one entry named \"\"",
+			peers: []configuredPeer{{"solo", 0x11}},
+			want:  []configuredPeer{{"", 0x11}},
+		},
+		{
+			name:  "multi-peer concentrator config yields every peer including the primary",
+			role:  config.RoleConcentrator,
+			peers: []configuredPeer{{"primary", 0x11}, {"peer-b", 0x22}},
+			want:  []configuredPeer{{"primary", 0x11}, {"peer-b", 0x22}},
+		},
+		{
+			// Generalized to the EDGE role (T256): a multi-peer edge's additional peers are
+			// warm-standby concentrators, not concentrator-side edges, but PeerSessions() still
+			// needs a session verdict for EACH — unlike concentratorMonitoredPeers' D50 teardown
+			// set, which is deliberately EMPTY on the edge.
+			name:  "multi-peer edge config yields every peer including the primary",
+			role:  config.RoleEdge,
+			peers: []configuredPeer{{"primary", 0x11}, {"standby", 0x22}},
+			want:  []configuredPeer{{"primary", 0x11}, {"standby", 0x22}},
+		},
 	})
 }
 

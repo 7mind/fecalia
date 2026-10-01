@@ -14,27 +14,22 @@ import (
 )
 
 // T104 (Q39, goals:G6) is an IN-GOAL VERIFICATION task, not a refactor: it asks
-// whether an idle-but-"up" standby path's liveness is genuinely BIDIRECTIONAL, or
-// whether it can be satisfied by receive-only traffic. The motivating production
-// observation was wanbond_path_up{path="5g"}=1 with wanbond_path_tx_bytes_total{
-// path="5g"}=0 — a standby path reported healthy while its tx counter never moved.
-// That gap was defect D48: emitProbes and dispatchInbound's echo reflection wrote
-// real PROBE/echo frames to the wire but never counted them into ps.txBytes, which
-// was charged only on the DATA/PARITY send paths (internal/bind/probe.go,
+// whether an "up" path's liveness is genuinely BIDIRECTIONAL, or whether it can be
+// satisfied by receive-only traffic. The motivating production observation was
+// wanbond_path_up{path="5g"}=1 with wanbond_path_tx_bytes_total{path="5g"}=0 — a
+// path reported healthy while its tx counter never moved. That gap was defect D48:
+// emitProbes and dispatchInbound's echo reflection wrote real PROBE/echo frames to
+// the wire but never counted them into ps.txBytes (internal/bind/probe.go,
 // internal/bind/multipath.go). D48's fix adopted a true-wire-volume contract — every
-// successful egress write on a path, DATA/PARITY or PROBE/echo, counts — so
-// txBytes now advances on ANY wire activity, and the standby's periodic probes are
-// enough by themselves to move it even with zero DATA. Two independent checks:
+// successful egress write on a path counts — so txBytes advances on ANY wire
+// activity. Two independent checks:
 //
-//   - standby-transmits-when-idle: an UP standby that carries no DATA (active-backup
-//     collapses all DATA onto the primary) must still be observed TRANSMITTING —
-//     its own periodic liveness probes are real wire writes (bind.emitProbes ->
-//     conn.WriteToUDPAddrPort, now counted per D48) — while the primary carries a
-//     live flow.
-//   - standby-egress-blocked-goes-down: with the standby's EGRESS direction (only)
+//   - standby-transmits-when-idle: an UP second path must be observed TRANSMITTING
+//     (its tx counter grows) while a live flow runs over the bond.
+//   - standby-egress-blocked-goes-down: with the second path's EGRESS direction (only)
 //     blocked one-way at the edge veth (BlockEgress, a tc clsact/matchall/drop
-//     filter — see netns.go), the standby must transition DOWN and must NOT be
-//     selected when the primary is then killed. This is the affirmative half: it
+//     filter — see netns.go), it must transition DOWN and must NOT restore
+//     connectivity when the first path is then killed. This is the affirmative half: it
 //     proves the liveness verdict requires THIS path's own send-probe/receive-echo
 //     round trip, not merely "traffic arrived on this interface" (the peer's own
 //     probes keep ARRIVING at the blocked path the whole time — see
@@ -44,17 +39,12 @@ import (
 //
 // This harness cannot execute the `-tags e2e` netns tier itself (it requires
 // CAP_NET_ADMIN/root and runs via the dedicated privileged target — see AGENTS.md);
-// it is written to COMPILE and, once run there, is expected to PASS both subtests
-// against the D48-fixed implementation — the delta>0 assertion below was never
-// inverted, only its surrounding commentary updated once the fix landed (per the
-// Q39 either-outcome acceptance: a genuine failure here now would indicate a fresh
-// regression, not the original D48 gap, and should be refiled as a new defect
-// linked to goals:G6 with this test kept as the reproduction).
+// it is written to COMPILE and, once run there, is expected to PASS both subtests.
 const (
 	t104MetricsListen = "127.0.0.1:9100"
 	t104MetricsURL    = "http://" + t104MetricsListen + "/metrics"
 
-	// t104ProbeWindow is the idle-standby observation window for the tx-growth
+	// t104ProbeWindow is the observation window for the tx-growth
 	// check: long enough (15 probe intervals at the default 200ms cadence) that
 	// even ONE counted probe would show up as a nonzero delta, well clear of
 	// scrape/scheduling jitter.
@@ -75,11 +65,9 @@ func TestStandbyLivenessBidirectional(t *testing.T) {
 	})
 }
 
-// testStandbyIdleTransmits is the FIRST T104 check: with the primary (starlink)
-// carrying a live flow and the standby (cellular) carrying no DATA (active-backup
-// default), the standby's wanbond_path_tx_bytes_total must still grow over a
-// multi-probe-interval window — its own periodic liveness probes are genuine wire
-// writes even though no DATA rides them.
+// testStandbyIdleTransmits is the FIRST T104 check: with a live flow over the bond,
+// the second path's (cellular) wanbond_path_tx_bytes_total must grow over a
+// multi-probe-interval window while it reports up.
 func testStandbyIdleTransmits(t *testing.T, bin string) {
 	t.Helper()
 	top := Setup(t)
@@ -94,9 +82,7 @@ func testStandbyIdleTransmits(t *testing.T, bin string) {
 
 	waitPathUp(t, t104MetricsURL, standby.name, 1, 10*time.Second)
 
-	// Drive a live flow on the primary for (at least) the whole observation window;
-	// active-backup keeps ALL of it off the standby, so the standby's own tx (if
-	// any is counted) can only come from its periodic probes.
+	// Drive a live flow for (at least) the whole observation window.
 	loadSecs := int(t104ProbeWindow.Seconds()) + 10
 	top.startProc(t, "iperf3-server", "nsenter", "-t", strconv.Itoa(top.pid), "-n", "iperf3", "-s", "-1", "-B", concInner)
 	time.Sleep(400 * time.Millisecond)
@@ -128,17 +114,15 @@ func testStandbyIdleTransmits(t *testing.T, bin string) {
 	}
 
 	delta := txAfter - txBefore
-	t.Logf("standby %q: wanbond_path_up=1 throughout a %s window with the primary carrying a live flow, tx delta = %.0f bytes",
+	t.Logf("standby %q: wanbond_path_up=1 throughout a %s window with a live flow over the bond, tx delta = %.0f bytes",
 		standby.name, t104ProbeWindow, delta)
 	if delta <= 0 {
-		t.Errorf("standby path %q stayed wanbond_path_up=1 for the whole %s window while the primary carried a live "+
-			"flow, but its %s did not grow (delta=%.0f bytes) — this would reproduce the pre-D48 production "+
-			"observation path_up{%s}=1 with tx{%s}=0. D48 made emitProbes' and dispatchInbound's echo-reflection "+
-			"writes (internal/bind/probe.go, internal/bind/multipath.go) both count into ps.txBytes alongside "+
-			"Send()/fecFlushDeadline()'s DATA/PARITY writes, so the standby's own periodic probes alone should "+
-			"move this counter even with zero DATA. A failure here now indicates a fresh regression in that "+
-			"accounting, not the original D48 gap — refile as a new defect linked to goals:G6 (Q39) and keep this "+
-			"test as the reproduction.",
+		t.Errorf("standby path %q stayed wanbond_path_up=1 for the whole %s window with a live flow over the "+
+			"bond, but its %s did not grow (delta=%.0f bytes) — this would reproduce the pre-D48 production "+
+			"observation path_up{%s}=1 with tx{%s}=0. Every successful egress write on a path counts into "+
+			"ps.txBytes (internal/bind/probe.go, internal/bind/multipath.go, internal/bind/adaptive.go). A "+
+			"failure here now indicates a fresh regression in that accounting, not the original D48 gap — "+
+			"refile as a new defect linked to goals:G6 (Q39) and keep this test as the reproduction.",
 			standby.name, t104ProbeWindow, metrics.MetricTxBytes, delta, standby.name, standby.name)
 	}
 }
@@ -146,12 +130,10 @@ func testStandbyIdleTransmits(t *testing.T, bin string) {
 // testStandbyEgressBlockedGoesDown is the SECOND T104 check: with the standby's
 // egress (only) blocked one-way, it must transition DOWN — proving liveness needs
 // this path's own probe/echo round trip, not merely inbound traffic arriving on it
-// — and, once the primary is then killed, it must NOT be selected for failover.
+// — and, once the primary is then killed, connectivity must NOT recover over it.
 func testStandbyEgressBlockedGoesDown(t *testing.T, bin string) {
 	t.Helper()
 	top := Setup(t)
-	// "info" so the scheduler's "active path change" transitions are readable from
-	// the edge log, the same idiom TestP1Failover uses.
 	edge, conc := setupT104Tunnel(t, top, bin, DefaultPaths, "info")
 
 	if !top.pingUntil(concInner, 15*time.Second) {
@@ -173,22 +155,17 @@ func testStandbyEgressBlockedGoesDown(t *testing.T, bin string) {
 	t.Logf("standby %q went DOWN within %s of its egress being blocked one-way (its own probe/echo round trip broke; inbound traffic alone did not keep it up)",
 		standby.name, PLivenessDetectBudget)
 
-	// Force a failover decision: kill the still-healthy primary. If the standby's
-	// DOWN verdict is genuine, active-backup has no healthy path left, so egress
-	// must NOT reroute onto the standby and connectivity must NOT recover.
+	// Kill the still-healthy primary. If the standby's DOWN verdict is genuine, no
+	// healthy path is left, so connectivity must NOT recover.
 	top.Blackhole(primary.name)
 	t.Cleanup(func() { top.Restore(primary.name) })
 
 	noFailoverWindow := PLivenessFailoverBudget + 3*time.Second
 	if top.pingUntil(concInner, noFailoverWindow) {
 		t.Errorf("connectivity recovered within %s after the primary died with the standby's egress still blocked "+
-			"— the falsely-live standby was selected for failover\n--- edge ---\n%s", noFailoverWindow, edge.log())
+			"— the falsely-live standby carried traffic\n--- edge ---\n%s", noFailoverWindow, edge.log())
 	} else {
-		t.Logf("connectivity correctly did NOT recover within %s — the down standby was not selected", noFailoverWindow)
-	}
-	if idx := currentActivePathIdx(edge.log()); idx == backupPathIdx {
-		t.Errorf("edge scheduler switched its active path to the standby (index %d, %q) despite its egress being "+
-			"blocked and its liveness DOWN\n%s", backupPathIdx, standby.name, edge.log())
+		t.Logf("connectivity correctly did NOT recover within %s — the down standby carried nothing", noFailoverWindow)
 	}
 
 	// Sanity: the fixture recovers once both faults are cleared — a genuine
@@ -201,8 +178,8 @@ func testStandbyEgressBlockedGoesDown(t *testing.T, bin string) {
 	}
 }
 
-// setupT104Tunnel brings the multipath tunnel up over paths with the (default,
-// omitted) active-backup scheduler and the /metrics endpoint enabled on the edge —
+// setupT104Tunnel brings the multipath tunnel up over paths with the /metrics
+// endpoint enabled on the edge —
 // only the edge's tx/up series are asserted by either T104 check, so only the edge
 // carries the [metrics] block. It otherwise mirrors setupMultipathTunnelLevel.
 func setupT104Tunnel(t *testing.T, top *Topology, bin string, paths []pathSpec, level string) (edge, conc *proc) {

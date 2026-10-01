@@ -5,15 +5,23 @@ import (
 	"testing"
 )
 
-// boolPtr is a test helper for the *bool computed-verdict fields (WeightedCapacitySane,
-// LivenessBudgetSane), used both here and by the golden-shape config tests.
+// boolPtr is a test helper for the *bool computed-verdict field LivenessBudgetSane,
+// used both here and by the golden-shape config tests.
 func boolPtr(b bool) *bool { return &b }
+
+// derefBool renders a *bool for a failure message without panicking on nil.
+func derefBool(b *bool) any {
+	if b == nil {
+		return nil
+	}
+	return *b
+}
 
 // TestLivenessBudgetVerdict is the D86-decision-4 WARN-and-allow acceptance (T211):
 // a config whose failover budget EXCEEDS the 3s P1 recovery deadline must still LOAD
 // (never rejected), carrying LivenessBudgetSane=false; a default config (1.6s budget)
 // must load with LivenessBudgetSane=true. The verdict is ALWAYS non-nil — the budget
-// applies to every config, unlike the weighted-only WeightedCapacitySane.
+// applies to every config.
 func TestLivenessBudgetVerdict(t *testing.T) {
 	t.Run("defaults are within budget (true)", func(t *testing.T) {
 		path := writeConfig(t, 0o600, fill(edgeConfig))

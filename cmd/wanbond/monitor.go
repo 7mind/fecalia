@@ -228,29 +228,6 @@ func renderMonitor(s monitor.MonitorSnapshot, now time.Time, interactive, color 
 			fmt.Fprintf(&b, "    source %s  remote %s\n", p.Addressing.Source, p.Addressing.Remote)
 		}
 	}
-	if len(s.Aggregation) > 0 {
-		fmt.Fprintln(&b, "\n"+monitorStyle("AGGREGATION", monitorHeadingColor, color))
-		for _, a := range s.Aggregation {
-			state := "idle"
-			if a.Aggregating {
-				state = "active"
-			}
-			state = fmt.Sprintf("%-7s", state)
-			if a.Aggregating {
-				state = monitorStyle(state, monitorUpColor, color)
-			} else {
-				state = monitorStyle(state, monitorIdleColor, color)
-			}
-			fmt.Fprintf(&b, "  %-18s %s offered %.1f fps\n", peerName(a.Peer), state, a.OfferedLoadFPS)
-		}
-	}
-	if len(s.FEC) > 0 {
-		fmt.Fprintln(&b, "\n"+monitorStyle("FEC", monitorHeadingColor, color))
-		for _, f := range s.FEC {
-			fmt.Fprintf(&b, "  %-18s data %d  repair %d  recovered %d  lost %d  residual %.2f%%\n",
-				peerName(f.Peer), f.DataPackets, f.RepairPackets, f.RecoveredPackets, f.UnrecoverablePackets, f.ResidualLossRatio*100)
-		}
-	}
 	if len(s.Reseq) > 0 {
 		fmt.Fprintln(&b, "\n"+monitorStyle("RESEQUENCER", monitorHeadingColor, color))
 		for _, r := range s.Reseq {

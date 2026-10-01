@@ -2,9 +2,11 @@ package frame
 
 import (
 	"bytes"
+	crand "crypto/rand"
 	"encoding/base64"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"math/rand"
 	"reflect"
 	"testing"
@@ -30,10 +32,6 @@ func testPSK(t testing.TB, seed byte) config.Key {
 // non-empty and empty payloads.
 func sampleFrames() []Frame {
 	return []Frame{
-		Data{OuterSeq: 0xDEADBEEFCAFEBABE, PathID: 3, FECGroup: 0x01020304, FECIndex: 0xC7, Flags: 0xA5, Payload: []byte("opaque wireguard datagram bytes")},
-		Data{OuterSeq: 0, PathID: 0, FECGroup: 0, FECIndex: 0, Flags: 0, Payload: nil},
-		Parity{FECGroup: 0x11223344, ParityIndex: 0x7F0E, DataCount: 0xB3, PathID: 2, Payload: []byte{0xFF, 0x00, 0x10, 0x20}},
-		Parity{FECGroup: 1, ParityIndex: 0, DataCount: 0, PathID: 0, Payload: nil},
 		Probe{PathID: 1, ProbeSeq: 42, TimestampNanos: 1_700_000_000_123_456_789, SessionID: 0x0102030405060708, Challenge: 0x1122334455667788, Payload: []byte("probe")},
 		Probe{PathID: 0, ProbeSeq: 0, TimestampNanos: -1, SessionID: 0, Challenge: 0, Payload: nil},
 		Control{ControlType: 9, Seq: 0x1122334455667788, Payload: []byte("control payload")},
@@ -128,16 +126,16 @@ func TestCodecReuseDecodeStability(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewCodec: %v", err)
 	}
-	first := Data{OuterSeq: 1, PathID: 1, Payload: []byte("first-payload-value")}
+	first := Control{ControlType: 1, Seq: 1, Payload: []byte("first-payload-value")}
 	rawFirst, _ := c.Encode(nil, first)
 	got1, err := c.Decode(rawFirst)
 	if err != nil {
 		t.Fatalf("decode first: %v", err)
 	}
-	firstPayload := got1.(Data).Payload
+	firstPayload := got1.(Control).Payload
 
 	// Decode an unrelated, longer frame through the SAME codec.
-	second := Data{OuterSeq: 2, PathID: 2, Payload: bytes.Repeat([]byte{0xAB}, 200)}
+	second := Control{ControlType: 2, Seq: 2, Payload: bytes.Repeat([]byte{0xAB}, 200)}
 	rawSecond, _ := c.Encode(nil, second)
 	if _, err := c.Decode(rawSecond); err != nil {
 		t.Fatalf("decode second: %v", err)
@@ -165,15 +163,13 @@ func TestCodecPSKMismatch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("encode: %v", err)
 	}
-	// A wrong-PSK decode of an AUTHENTICATED frame must never yield a valid frame of
-	// the SAME (authenticated) kind: the HMAC cannot pass under the wrong authKey. Note
-	// Decode CAN return err==nil ~2/256 of the time — the wrong obfKey de-obfuscates the
-	// body to garbage whose uniformly-random kind byte occasionally lands on the
-	// UNAUTHENTICATED KindData/KindParity, which carry no MAC by design (inner WireGuard
-	// authenticates real DATA). That is expected, not an auth failure, so assert on the
-	// decoded KIND, not merely on err (defect D27, same class as D17).
-	if f2, err := b.Decode(raw); err == nil && f2.Kind() == orig.Kind() {
-		t.Fatal("cross-PSK authenticated frame accepted as the same (authenticated) kind")
+	// The wrong obfKey de-obfuscates the kind byte to garbage: an unknown kind is
+	// ErrMalformed, and one that lands on PROBE/CONTROL fails the MAC under the
+	// wrong authKey. No outcome decodes.
+	if f2, err := b.Decode(raw); err == nil {
+		t.Fatalf("cross-PSK frame accepted as %#v", f2)
+	} else if !errors.Is(err, ErrAuth) && !errors.Is(err, ErrMalformed) {
+		t.Fatalf("cross-PSK frame: got %v, want ErrAuth or ErrMalformed", err)
 	}
 }
 
@@ -185,49 +181,152 @@ func TestNewCodecRejectsUnsetPSK(t *testing.T) {
 	}
 }
 
-// TestAuthenticatedFramesCarryTag confirms CONTROL/PROBE append a tag and
-// DATA/PARITY do not.
-func TestAuthenticatedFramesCarryTag(t *testing.T) {
+// TestEveryFrameCarriesTag confirms every kind appends the authentication tag.
+func TestEveryFrameCarriesTag(t *testing.T) {
 	psk := testPSK(t, 0x5A)
-	cases := []struct {
-		f    Frame
-		auth bool
-	}{
-		{Data{Payload: []byte("x")}, false},
-		{Parity{Payload: []byte("x")}, false},
-		{Probe{Payload: []byte("x")}, true},
-		{Control{Payload: []byte("x")}, true},
-	}
-	for _, c := range cases {
-		raw, err := Encode(psk, c.f)
+	for _, f := range []Frame{
+		Probe{Payload: []byte("x")},
+		Control{Payload: []byte("x")},
+	} {
+		raw, err := Encode(psk, f)
 		if err != nil {
 			t.Fatal(err)
 		}
-		body := c.f.appendBody(nil)
-		wantLen := nonceLen + len(body)
-		if c.auth {
-			wantLen += tagLen
-		}
-		if len(raw) != wantLen {
-			t.Fatalf("kind %d: encoded len %d, want %d (auth=%v)", c.f.Kind(), len(raw), wantLen, c.auth)
+		body := f.appendBody(nil)
+		if wantLen := nonceLen + len(body) + tagLen; len(raw) != wantLen {
+			t.Fatalf("kind %d: encoded len %d, want %d", f.Kind(), len(raw), wantLen)
 		}
 	}
 }
 
-// TestTamperedRejected verifies the authentication guarantee for CONTROL/PROBE
-// frames: no single-byte mutation is ever accepted AS an authenticated frame,
-// and every mutation in the MAC-covered region (everything after the kind byte,
-// including the tag) fails the MAC check with ErrAuth. The PROBE case carries a
-// non-zero SessionID and Challenge (T38) so those body bytes are exercised as
-// MAC-covered too.
+// TestControlOverheadMatchesEncoding pins ControlOverhead to the codec: it is the
+// encoded size of a payload-less CONTROL frame, and a payload adds exactly its
+// own length on top.
+func TestControlOverheadMatchesEncoding(t *testing.T) {
+	psk := testPSK(t, 0x5A)
+	empty, err := Encode(psk, Control{Payload: nil})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(empty) != ControlOverhead {
+		t.Fatalf("len(Encode(Control{Payload: nil})) = %d, want ControlOverhead %d", len(empty), ControlOverhead)
+	}
+	payload := bytes.Repeat([]byte{0xAB}, 1200)
+	full, err := Encode(psk, Control{ControlType: 7, Seq: 1 << 40, Payload: payload})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(full) != ControlOverhead+len(payload) {
+		t.Fatalf("encoded CONTROL with %d payload bytes is %d bytes, want %d", len(payload), len(full), ControlOverhead+len(payload))
+	}
+}
+
+// sealBody builds the wire image nonce || obf(body) || tag for an arbitrary
+// plaintext body under psk, exactly as Codec.Encode seals a frame's body. It lets
+// a test put a kind byte on the wire that no Frame value can produce.
+func sealBody(t *testing.T, psk config.Key, body []byte, withTag bool) []byte {
+	t.Helper()
+	obfKey, authKey, err := subkeys(psk)
+	if err != nil {
+		t.Fatalf("subkeys: %v", err)
+	}
+	nonce := make([]byte, nonceLen)
+	if _, err := crand.Read(nonce); err != nil {
+		t.Fatalf("read nonce: %v", err)
+	}
+	obfBody := append([]byte(nil), body...)
+	obfuscate(obfKey, nonce, obfBody)
+	raw := append(append([]byte(nil), nonce...), obfBody...)
+	if withTag {
+		raw = append(raw, tag(authKey, nonce, obfBody)...)
+	}
+	return raw
+}
+
+// TestSealBodyMatchesEncode guards the white-box helper: sealing a valid frame's
+// own body yields a datagram Decode accepts as that frame, so a rejection of a
+// sealed image is attributable to its kind byte and not to a helper/codec drift.
+func TestSealBodyMatchesEncode(t *testing.T) {
+	psk := testPSK(t, 0x5A)
+	for i, want := range sampleFrames() {
+		got, err := Decode(psk, sealBody(t, psk, want.appendBody(nil), true))
+		if err != nil {
+			t.Fatalf("frame %d: decode sealed body: %v", i, err)
+		}
+		if !reflect.DeepEqual(want, got) {
+			t.Fatalf("frame %d: sealed body mismatch:\n want %#v\n got  %#v", i, want, got)
+		}
+	}
+}
+
+// Kind bytes of the removed DATA and PARITY frames.
+const (
+	removedKindData   = 1
+	removedKindParity = 2
+)
+
+// TestRemovedKindsRejected: a datagram whose kind byte de-obfuscates to the
+// removed DATA (1) or PARITY (2) kind is rejected as malformed in both shapes a
+// peer could send — the tag-less layout the removed transports emitted, and the
+// same body sealed with a valid MAC by a PSK holder.
+func TestRemovedKindsRejected(t *testing.T) {
+	psk := testPSK(t, 0x5A)
+	payload := []byte("opaque wireguard datagram bytes")
+
+	// kind || outer-seq(8) || path-id || fec-group(4) || fec-index || flags || payload
+	data := []byte{removedKindData}
+	data = binary.BigEndian.AppendUint64(data, 0xDEADBEEFCAFEBABE)
+	data = append(data, 3)
+	data = binary.BigEndian.AppendUint32(data, 0x01020304)
+	data = append(data, 0xC7, 0xA5)
+	data = append(data, payload...)
+
+	// kind || fec-group(4) || parity-index(2) || data-count || path-id || payload
+	parity := []byte{removedKindParity}
+	parity = binary.BigEndian.AppendUint32(parity, 0x11223344)
+	parity = binary.BigEndian.AppendUint16(parity, 0x7F0E)
+	parity = append(parity, 0xB3, 2)
+	parity = append(parity, payload...)
+
+	for name, body := range map[string][]byte{"data": data, "parity": parity, "data-empty": data[:1], "parity-empty": parity[:1]} {
+		for _, withTag := range []bool{false, true} {
+			got, err := Decode(psk, sealBody(t, psk, body, withTag))
+			if !errors.Is(err, ErrMalformed) {
+				t.Fatalf("%s (tag=%v): got frame %#v err %v, want ErrMalformed", name, withTag, got, err)
+			}
+		}
+	}
+}
+
+// TestUnknownKindsRejected: only PROBE and CONTROL decode; every other kind byte,
+// sealed with a valid MAC, is malformed.
+func TestUnknownKindsRejected(t *testing.T) {
+	psk := testPSK(t, 0x5A)
+	control := Control{ControlType: 4, Seq: 9, Payload: []byte("payload")}.appendBody(nil)
+	for k := 0; k < 256; k++ {
+		if Kind(k) == KindProbe || Kind(k) == KindControl {
+			continue
+		}
+		body := append([]byte(nil), control...)
+		body[0] = byte(k)
+		got, err := Decode(psk, sealBody(t, psk, body, true))
+		if !errors.Is(err, ErrMalformed) {
+			t.Fatalf("kind %d: got frame %#v err %v, want ErrMalformed", k, got, err)
+		}
+	}
+}
+
+// TestTamperedRejected verifies the authentication guarantee: no mutation of a
+// valid frame's bytes decodes. Every single-bit flip of every byte, every other
+// value of the kind byte, and every truncation is rejected, and every mutation
+// in the region after the kind byte (header, payload, tag) fails the MAC check
+// with ErrAuth. The PROBE case carries a non-zero SessionID and Challenge (T38)
+// so those body bytes are exercised as MAC-covered too.
 //
-// The one place a mutation is "accepted" is a flip of the kind byte itself that
-// re-labels the frame as an unauthenticated kind (DATA/PARITY). That is not a
-// break: DATA/PARITY are forgeable by design (DoS-grade risk accepted — the
-// inner WireGuard layer authenticates the real payload), so an attacker who can
-// flip the kind byte could equally have injected a fresh DATA/PARITY frame. The
-// invariant that matters — a tampered frame is never accepted as an authentic
-// CONTROL/PROBE — holds for every mutation.
+// The kind byte is MAC-covered as well, but Decode classifies it before it
+// verifies the tag: rewriting it to the other valid kind fails the MAC, and
+// rewriting it to anything else (including the removed DATA/PARITY kinds) is
+// malformed.
 func TestTamperedRejected(t *testing.T) {
 	psk := testPSK(t, 0x5A)
 	for _, f := range []Frame{
@@ -238,34 +337,53 @@ func TestTamperedRejected(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		rejected := func(what string, mutated []byte) error {
+			got, err := Decode(psk, mutated)
+			if err == nil {
+				t.Fatalf("kind %d: %s accepted as %#v", f.Kind(), what, got)
+			}
+			if !errors.Is(err, ErrAuth) && !errors.Is(err, ErrMalformed) {
+				t.Fatalf("kind %d: %s: got %v, want ErrAuth or ErrMalformed", f.Kind(), what, err)
+			}
+			return err
+		}
 		// The kind byte sits at offset nonceLen; everything after it is
 		// MAC-covered.
 		const kindOffset = nonceLen
 		for i := 0; i < len(raw); i++ {
-			mutated := append([]byte(nil), raw...)
-			mutated[i] ^= 0x01
-			got, err := Decode(psk, mutated)
-			// Never accepted as an authenticated frame.
-			if err == nil && got.Kind().authenticated() {
-				t.Fatalf("kind %d: flip at byte %d accepted as authenticated frame %#v", f.Kind(), i, got)
-			}
-			// Any mutation strictly after the kind byte is covered by the MAC and
-			// must fail authentication.
-			if i > kindOffset {
-				if !errors.Is(err, ErrAuth) {
-					t.Fatalf("kind %d: flip at byte %d (MAC-covered): got %v, want ErrAuth", f.Kind(), i, err)
+			for bit := 0; bit < 8; bit++ {
+				mutated := append([]byte(nil), raw...)
+				mutated[i] ^= 1 << bit
+				err := rejected(fmt.Sprintf("flip of bit %d at byte %d", bit, i), mutated)
+				// Any mutation strictly after the kind byte is covered by the MAC and
+				// must fail authentication.
+				if i > kindOffset && !errors.Is(err, ErrAuth) {
+					t.Fatalf("kind %d: flip of bit %d at byte %d (MAC-covered): got %v, want ErrAuth", f.Kind(), bit, i, err)
 				}
 			}
 		}
-		// A flip inside the tag region must fail the MAC specifically.
-		mutated := append([]byte(nil), raw...)
-		mutated[len(mutated)-1] ^= 0x80
-		if _, err := Decode(psk, mutated); !errors.Is(err, ErrAuth) {
-			t.Fatalf("kind %d: tag flip: got %v, want ErrAuth", f.Kind(), err)
+		// XOR on the obfuscated kind byte is XOR on the plaintext kind, so this
+		// enumerates every other kind value, among them the other valid kind and the
+		// removed kinds 1 and 2.
+		for x := 1; x < 256; x++ {
+			mutated := append([]byte(nil), raw...)
+			mutated[kindOffset] ^= byte(x)
+			err := rejected(fmt.Sprintf("kind byte rewritten to %d", byte(f.Kind())^byte(x)), mutated)
+			want := ErrMalformed
+			if Kind(byte(f.Kind()) ^ byte(x)).valid() {
+				want = ErrAuth
+			}
+			if !errors.Is(err, want) {
+				t.Fatalf("kind %d: kind byte rewritten to %d: got %v, want %v", f.Kind(), byte(f.Kind())^byte(x), err, want)
+			}
 		}
-		// Truncating the tag must be rejected.
-		if _, err := Decode(psk, raw[:len(raw)-1]); err == nil {
-			t.Fatalf("kind %d: truncated tag accepted", f.Kind())
+		// Every truncation, including one that only shortens the tag.
+		for n := 0; n < len(raw); n++ {
+			rejected(fmt.Sprintf("truncation to %d bytes", n), raw[:n])
+		}
+		// Trailing garbage shifts the tag window.
+		if err := rejected("one appended byte", append(append([]byte(nil), raw...), 0)); !errors.Is(err, ErrAuth) {
+			t.Fatalf("kind %d: appended byte: got %v, want ErrAuth", f.Kind(), err)
 		}
 	}
 }
@@ -333,15 +451,13 @@ func TestPSKMismatchRejected(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		// A wrong-PSK AUTHENTICATED frame must never decode as a valid frame of the
-		// SAME kind: its HMAC cannot pass under the wrong authKey. Note Decode CAN
-		// return err==nil ~2/256 of the time even here — the wrong obfKey de-obfuscates
-		// the body to garbage whose uniformly-random kind byte occasionally lands on the
-		// UNAUTHENTICATED KindData/KindParity, which carry no MAC by design (D9 threat
-		// model; inner WireGuard authenticates real DATA). That is expected, not an auth
-		// failure, so assert on the decoded KIND, not merely on err (defect D17).
-		if f2, err := Decode(pskB, raw); err == nil && f2.Kind() == f.Kind() {
-			t.Fatalf("kind %d: PSK-mismatched authenticated frame accepted as the same kind", f.Kind())
+		// The wrong obfKey de-obfuscates the kind byte to garbage: an unknown kind
+		// is ErrMalformed, and one that lands on PROBE/CONTROL fails the MAC under
+		// the wrong authKey. No outcome decodes.
+		if f2, err := Decode(pskB, raw); err == nil {
+			t.Fatalf("kind %d: PSK-mismatched frame accepted as %#v", f.Kind(), f2)
+		} else if !errors.Is(err, ErrAuth) && !errors.Is(err, ErrMalformed) {
+			t.Fatalf("kind %d: PSK-mismatched frame: got %v, want ErrAuth or ErrMalformed", f.Kind(), err)
 		}
 	}
 }
@@ -360,10 +476,6 @@ func TestByteHistogramNoConstantPosition(t *testing.T) {
 
 	build := func(kind Kind, payload []byte) Frame {
 		switch kind {
-		case KindData:
-			return Data{OuterSeq: rng.Uint64(), PathID: uint8(rng.Intn(256)), FECGroup: rng.Uint32(), FECIndex: uint8(rng.Intn(256)), Flags: uint8(rng.Intn(256)), Payload: payload}
-		case KindParity:
-			return Parity{FECGroup: rng.Uint32(), ParityIndex: uint16(rng.Intn(1 << 16)), DataCount: uint8(rng.Intn(256)), PathID: uint8(rng.Intn(256)), Payload: payload}
 		case KindProbe:
 			return Probe{PathID: uint8(rng.Intn(256)), ProbeSeq: rng.Uint64(), TimestampNanos: int64(rng.Uint64()), SessionID: rng.Uint64(), Challenge: rng.Uint64(), Payload: payload}
 		case KindControl:
@@ -374,7 +486,7 @@ func TestByteHistogramNoConstantPosition(t *testing.T) {
 		}
 	}
 
-	for _, kind := range []Kind{KindData, KindParity, KindProbe, KindControl} {
+	for _, kind := range []Kind{KindProbe, KindControl} {
 		var encodings [][]byte
 		frameLen := -1
 		for s := 0; s < samples; s++ {
@@ -432,12 +544,8 @@ func TestPropertyRoundTrip(t *testing.T) {
 
 func randomFrame(rng *rand.Rand) Frame {
 	payload := randomBytes(rng)
-	switch rng.Intn(4) {
+	switch rng.Intn(2) {
 	case 0:
-		return Data{OuterSeq: rng.Uint64(), PathID: uint8(rng.Intn(256)), FECGroup: rng.Uint32(), FECIndex: uint8(rng.Intn(256)), Flags: uint8(rng.Intn(256)), Payload: payload}
-	case 1:
-		return Parity{FECGroup: rng.Uint32(), ParityIndex: uint16(rng.Intn(1 << 16)), DataCount: uint8(rng.Intn(256)), PathID: uint8(rng.Intn(256)), Payload: payload}
-	case 2:
 		return Probe{PathID: uint8(rng.Intn(256)), ProbeSeq: rng.Uint64(), TimestampNanos: int64(rng.Uint64()), SessionID: rng.Uint64(), Challenge: rng.Uint64(), Payload: payload}
 	default:
 		return Control{ControlType: uint8(rng.Intn(256)), Seq: rng.Uint64(), Payload: payload}
