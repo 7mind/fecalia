@@ -512,6 +512,14 @@ does while a probe's queue drains. Delay above what is left of the backlog is
 a queue as before, since the backlog only shrinks
 (`TestStallDoesNotEndDiscovery`, `TestStalledLaneKeepsItsEstimate`).
 
+Discovery that ends while the sender, not the lane, is the limit has measured
+the sender. A return to discovery that ends so keeps the estimate the lane
+had; a first discovery has none, so its target gives way to the delay and
+discovery goes on (`TestSenderLimitedDiscoveryKeepsTheEstimate`). Taken for
+capacity, the first datagrams of an upload left the production uplink lane,
+which had demonstrated 1.16 MB/s a minute earlier, at the 16 kB/s floor
+(2026-10-01).
+
 A path may also slow down without going silent, and delivery, measured over a
 control interval and smoothed over a quarter of a second, follows it down. A
 lane therefore remembers the highest delivery it kept up over half a second

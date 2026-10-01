@@ -267,3 +267,59 @@ Not answered, and open:
 - Whether the delay signals on the uplink are stalls is not known.
 - Not run in the lab: the host was loaded (load average 18) when the branch
   was ready, and the lab has no WAN that stalls.
+
+## After the deployment of `7351328` (2026-10-01, 20:55)
+
+Same edge, same method, captures `prodfast-20261001-205813-post1` and
+`…-210307-post2`. The mobile link alone was slower than in the afternoon.
+
+| | Bond, Mbit/s | Mobile link alone, Mbit/s |
+|---|---|---|
+| Down, one TCP flow | 26.5, 28.6, 27.6 | 28.3, 38.1, 32.0 |
+| Up, one TCP flow, alternating with the direct uploads | 5.1, 5.4 | 7.5, 6.7 |
+| Up, bond only, ten seconds apart | 0.4, 0.4, 2.8 | — |
+| Speedtest (operator) | 26.5 / 4.4 | — |
+
+Downstream, per download, before and after: loss signals 7, 0, 3 against
+0, 0, 1; estimate 2.9-5.1 MB/s with one re-measure and three ends of
+discovery against 4.7-5.4 with none; lowerings of the estimate 4 against 2.
+The bond carried 75-94% of what the mobile link alone did in the adjacent
+runs, against 43%; the link itself delivered a third less, so the two
+comparisons are not under equal conditions.
+
+What did not work, or is new:
+
+- **Repairs still arrive as duplicates**: 757 repairs on the mobile lane in
+  three downloads, 760 duplicates at the edge, no sequence skipped. They are
+  now sent when a stall ends, not during it, in groups of 70-150. Inferred
+  from the code and their timing, not traced: what a stall held arrives at
+  once, the first acknowledgement after it reports the newest lane sequence
+  but can confirm 64 datagrams by lane and 256 by receipt, and every datagram
+  it does not confirm counts as overtaken. This is item 5 again. A rule that
+  waits for a second report before calling a datagram overtaken would cover
+  it without a wire change; not built.
+- **Stall recognition rarely applies**: 2 stall signals in three downloads,
+  none on the uplink. The field's stalls are mostly not 100 ms silences of
+  the acknowledgement stream.
+- **A return to discovery left open at the end of a transfer was ended by
+  the next transfer's first delay sample**, at the sender's rate: 1.16 MB/s
+  became the 16 kB/s floor, and two uploads ran at 0.4 Mbit/s. The rule is
+  as old as discovery; the ported probe settling made the recovery slower
+  (next point). Fixed on branch `cold-estimate`
+  (`TestSenderLimitedDiscoveryKeepsTheEstimate`).
+- **Below about 170 kB/s a probe's win is never counted**: the next probe
+  begins before thirty datagrams have confirmed the last and replaces it. The
+  gain stays at a twentieth and the lane does not return to discovery. This
+  came with `level-shift2`, and its policed-lane tests depend on it: with
+  wins counted, a path that polices was returned to discovery and dropped a
+  fifth of what it was offered. A lane this slow cannot tell a probe's loss
+  from none in thirty datagrams; it needs a larger probe, not a faster count.
+- **The delay threshold has no upper bound.** Traffic on the mobile link
+  outside the tunnel (the direct uploads of this comparison) raised the idle
+  forward variation of the uplink lane to 90 and 273 ms and its threshold to
+  181 and 546 ms. The bond uploads that followed within two seconds ran
+  without a delay signal, with 100-336 ms of queue, 282 and 830 datagrams
+  expired and 14 and 65 sequences skipped at the concentrator. The estimate
+  recovers within ten seconds of idleness. In production nothing but the
+  tunnel uses that link; the comparison method must leave ten seconds after
+  a direct transfer.
