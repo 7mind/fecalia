@@ -281,10 +281,20 @@ func (p *lane) congested(now time.Time, lost, laneLimited bool) {
 		c.draining, c.holdSignal = false, true
 	}
 	switch {
+	case p.startup && c.capacity == 0 && !laneLimited && !lost:
+		// The sender, not the lane, is the limit, and the lane has shown
+		// nothing yet: what it delivers measures the sender. Taken for its
+		// capacity, that held the target at the sender's first datagrams,
+		// and probes then raised it by a twentieth at a time. The target
+		// gives way to the delay and discovery goes on
+		// (`TestSenderLimitedDiscoveryKeepsTheEstimate`).
+		p.rate = math.Max(minimumRate, p.cut(false))
 	case p.startup || c.capacity == 0:
 		// Discovery saturated the path, so recent delivery measures capacity,
 		// unless the sender was the limit: then it measures the sender, and
-		// pulses must find the rest.
+		// what the lane was known to carry before this return to discovery
+		// still stands. Material loss is the path's own answer whoever was
+		// the limit.
 		// Discovery leaves a queue in the path. Lower classes wait for
 		// about as long as it takes to drain, or until a clear interval
 		// shows it has gone: real-time traffic alone may use most of a slow
@@ -293,7 +303,11 @@ func (p *lane) congested(now time.Time, lost, laneLimited bool) {
 		// trace 20260929-171122-radio-down-k1: 995 datagrams expired at once).
 		p.decisions.DiscoveryCongested++
 		p.startup = false
-		c.capacity, c.holdSignal, c.pulseWins, c.draining = p.demonstrated(now), false, 0, true
+		shown := p.demonstrated(now)
+		if !laneLimited && !lost {
+			shown = math.Max(shown, c.capacity)
+		}
+		c.capacity, c.holdSignal, c.pulseWins, c.draining = shown, false, 0, true
 		c.drainBy = now.Add(p.drainTime(queued))
 		c.flushUntil = now.Add(min(maxFlush, flushQueues*queued))
 		p.schedulePulse(now)
