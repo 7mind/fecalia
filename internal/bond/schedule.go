@@ -207,11 +207,21 @@ func (p *lane) latency() time.Duration {
 	return p.idleRTT + jitterAllowanceFactor*p.idleRTTVariation
 }
 
-// allowed is the rate a class may use on the lane: what higher classes have
-// not reserved, and at least the minimum share on the lane that guarantees it.
+// realtimeLane reports that real-time datagrams need most of what the lane
+// carries. The target of a lane whose capacity was never found is not what it
+// carries: beside a real-time stream it is held near recent delivery, and
+// judged by it the stream alone made the lane a real-time lane, bulk kept its
+// minimum share, delivery could not grow and neither could the target
+// (`TestBulkBesideVoiceDiscoversTheOnlyLane`).
 func (p *lane) realtimeLane() bool {
+	if p.startup && p.control.capacity == 0 {
+		return false
+	}
 	return p.reserved[classRealtime] > realtimeLane*p.rate
 }
+
+// allowed is the rate a class may use on the lane: what higher classes have
+// not reserved, and at least the minimum share on the lane that guarantees it.
 
 func (p *lane) allowed(c class) float64 {
 	if c == classBulk && p.realtimeLane() {
