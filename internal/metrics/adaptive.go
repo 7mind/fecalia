@@ -69,6 +69,7 @@ func newAdaptiveCollector(source AdaptiveSource) *adaptiveCollector {
 		makeMetric("congestion_threshold_seconds", "Queue delay above which the lane is taken to queue.", prometheus.GaugeValue, func(p bond.PathStats) float64 { return p.Threshold.Seconds() }),
 		makeMetric("delay_signals_total", "Control intervals judged congested by queue delay.", prometheus.CounterValue, func(p bond.PathStats) float64 { return float64(p.Decisions.DelaySignals) }),
 		makeMetric("loss_signals_total", "Control intervals judged congested by material loss.", prometheus.CounterValue, func(p bond.PathStats) float64 { return float64(p.Decisions.LossSignals) }),
+		makeMetric("stall_signals_total", "Control intervals whose queue delay was put down to a stall of the path, not to congestion.", prometheus.CounterValue, func(p bond.PathStats) float64 { return float64(p.Decisions.StallSignals) }),
 		makeMetric("discovery_congestion_ends_total", "Discoveries ended by a congestion signal.", prometheus.CounterValue, func(p bond.PathStats) float64 { return float64(p.Decisions.DiscoveryCongested) }),
 		makeMetric("discovery_plateau_ends_total", "Discoveries ended by delivery that stopped growing at the pacing rate.", prometheus.CounterValue, func(p bond.PathStats) float64 { return float64(p.Decisions.DiscoveryPlateau) }),
 		makeMetric("capacity_remeasures_total", "Capacity estimates replaced by measured delivery after repeated cuts.", prometheus.CounterValue, func(p bond.PathStats) float64 { return float64(p.Decisions.CapacityRemeasured) }),

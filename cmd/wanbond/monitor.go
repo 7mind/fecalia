@@ -251,8 +251,8 @@ func renderMonitor(s monitor.MonitorSnapshot, now time.Time, interactive, color 
 				name, monitorStatus(fmt.Sprintf("%-7s", state), l.Up, color), formatRate(l.TargetBps/8), formatRate(l.SendBps/8), capacity)
 			fmt.Fprintf(&b, "    delivered %-11s queue %.0fms of %.0fms  rtt %.0fms  in flight %s of %s\n",
 				formatRate(l.DeliveryBps/8), l.QueueDelaySeconds*1000, l.ThresholdSeconds*1000, l.RTTSeconds*1000, formatBytes(uint64(l.InFlightBytes)), formatBytes(uint64(l.WindowBytes)))
-			fmt.Fprintf(&b, "    signals delay %d loss %d  probes %d won %d lost %d  estimate remeasured %d decayed %d  repairs %d\n",
-				l.DelaySignals, l.LossSignals, l.Pulses, l.PulseWins, l.PulseLosses, l.CapacityRemeasured, l.CapacityDecays, l.Repairs)
+			fmt.Fprintf(&b, "    signals delay %d loss %d stall %d  probes %d won %d lost %d  estimate remeasured %d decayed %d  repairs %d\n",
+				l.DelaySignals, l.LossSignals, l.StallSignals, l.Pulses, l.PulseWins, l.PulseLosses, l.CapacityRemeasured, l.CapacityDecays, l.Repairs)
 		}
 	}
 	if len(s.Transport) > 0 {

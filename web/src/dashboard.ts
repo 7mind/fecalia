@@ -243,7 +243,7 @@ export function mountDashboard(container: HTMLElement): DashboardHandle {
           <tr><td>in flight</td><td colspan="2">${formatBytes(l.inFlightBytes)} of ${formatBytes(l.windowBytes)}</td></tr>
         </table>
         <details class="path-details" data-path-detail="lane:${encodeURIComponent(l.peer)}:${l.lane}"><summary>Control decisions</summary><table data-testid="lane-decisions">
-          <tr><td>signals</td><td>delay ${l.delaySignals} · loss ${l.lossSignals}</td></tr>
+          <tr><td>signals</td><td>delay ${l.delaySignals} · loss ${l.lossSignals} · stall ${l.stallSignals}</td></tr>
           <tr><td>probes</td><td>${l.pulses} · won ${l.pulseWins} · lost ${l.pulseLosses}</td></tr>
           <tr><td>estimate</td><td>remeasured ${l.capacityRemeasured} · decayed ${l.capacityDecays}</td></tr>
           <tr><td>discovery</td><td>ended by congestion ${l.discoveryCongested} · plateau ${l.discoveryPlateau} · restarted ${l.rediscoveries}</td></tr>

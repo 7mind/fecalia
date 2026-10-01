@@ -62,6 +62,7 @@ export interface LaneSnapshot {
   repairs: number;
   delaySignals: number;
   lossSignals: number;
+  stallSignals: number;
   discoveryCongested: number;
   discoveryPlateau: number;
   capacityRemeasured: number;

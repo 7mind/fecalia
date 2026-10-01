@@ -22,7 +22,7 @@ func TestAdaptiveCollectorExportsControlDecisions(t *testing.T) {
 		Paths: []bond.PathStats{{
 			Path: 256, Capacity: 130000, Threshold: 30 * time.Millisecond,
 			Decisions: bond.Decisions{DelaySignals: 1, LossSignals: 2, DiscoveryCongested: 3, DiscoveryPlateau: 4,
-				CapacityRemeasured: 5, CapacityDecays: 6, Pulses: 7, PulseWins: 8, PulseLosses: 10, Rediscoveries: 11},
+				CapacityRemeasured: 5, CapacityDecays: 6, Pulses: 7, PulseWins: 8, PulseLosses: 10, Rediscoveries: 11, StallSignals: 12},
 		}},
 	}}}
 	registry := prometheus.NewRegistry()
@@ -45,6 +45,7 @@ func TestAdaptiveCollectorExportsControlDecisions(t *testing.T) {
 		"wanbond_adaptive_congestion_threshold_seconds":    0.03,
 		"wanbond_adaptive_delay_signals_total":             1,
 		"wanbond_adaptive_loss_signals_total":              2,
+		"wanbond_adaptive_stall_signals_total":             12,
 		"wanbond_adaptive_discovery_congestion_ends_total": 3,
 		"wanbond_adaptive_discovery_plateau_ends_total":    4,
 		"wanbond_adaptive_capacity_remeasures_total":       5,

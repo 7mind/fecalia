@@ -104,6 +104,7 @@ type LaneSnapshot struct {
 	// The control's decisions (bond.Decisions), cumulative.
 	DelaySignals       uint64 `json:"delaySignals"`
 	LossSignals        uint64 `json:"lossSignals"`
+	StallSignals       uint64 `json:"stallSignals"`
 	DiscoveryCongested uint64 `json:"discoveryCongested"`
 	DiscoveryPlateau   uint64 `json:"discoveryPlateau"`
 	CapacityRemeasured uint64 `json:"capacityRemeasured"`
@@ -458,6 +459,7 @@ func BuildSnapshot(src metrics.Source, info Info, revealAddressing, controlAvail
 				Repairs:            lane.Retransmits,
 				DelaySignals:       d.DelaySignals,
 				LossSignals:        d.LossSignals,
+				StallSignals:       d.StallSignals,
 				DiscoveryCongested: d.DiscoveryCongested,
 				DiscoveryPlateau:   d.DiscoveryPlateau,
 				CapacityRemeasured: d.CapacityRemeasured,

@@ -652,7 +652,7 @@ func TestBuildSnapshotLanesMirrorTransport(t *testing.T) {
 					RTT: 60 * time.Millisecond, QueueDelay: 37 * time.Millisecond, Threshold: 30 * time.Millisecond,
 					InFlight: 5000, Window: 30000, Sent: 11, ACKed: 10, Retransmits: 12, Up: true, Discovering: true,
 					Decisions: bond.Decisions{DelaySignals: 21, LossSignals: 22, DiscoveryCongested: 23, DiscoveryPlateau: 24,
-						CapacityRemeasured: 25, CapacityDecays: 26, Pulses: 27, PulseWins: 28, PulseLosses: 29, Rediscoveries: 30},
+						CapacityRemeasured: 25, CapacityDecays: 26, Pulses: 27, PulseWins: 28, PulseLosses: 29, Rediscoveries: 30, StallSignals: 31},
 				}},
 			},
 		}},
@@ -675,7 +675,7 @@ func TestBuildSnapshotLanesMirrorTransport(t *testing.T) {
 		"inFlightBytes": float64(5000), "windowBytes": float64(30000), "sentBytes": float64(11), "ackedBytes": float64(10), "repairs": float64(12),
 		"delaySignals": float64(21), "lossSignals": float64(22), "discoveryCongested": float64(23), "discoveryPlateau": float64(24),
 		"capacityRemeasured": float64(25), "capacityDecays": float64(26), "pulses": float64(27), "pulseWins": float64(28),
-		"pulseLosses": float64(29), "rediscoveries": float64(30),
+		"pulseLosses": float64(29), "rediscoveries": float64(30), "stallSignals": float64(31),
 	}
 	if len(got.Lanes) != 1 || !reflect.DeepEqual(got.Lanes[0], wantLane) {
 		t.Errorf("lanes = %v\nwant   [%v]", got.Lanes, wantLane)

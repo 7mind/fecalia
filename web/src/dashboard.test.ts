@@ -50,6 +50,7 @@ function lane(overrides: Partial<LaneSnapshot> = {}): LaneSnapshot {
     repairs: 12,
     delaySignals: 21,
     lossSignals: 22,
+    stallSignals: 31,
     discoveryCongested: 23,
     discoveryPlateau: 24,
     capacityRemeasured: 25,
@@ -256,7 +257,7 @@ describe('mountDashboard', () => {
     expect(cards[0].querySelector('[data-testid="lane-queue"]')!.textContent).toBe('37.0ms of 30.0ms');
     const cells = (root: Element): string => Array.from(root.querySelectorAll('td'), (td) => td.textContent!.trim()).join(' ');
     const decisions = cells(cards[0].querySelector('[data-testid="lane-decisions"]')!);
-    expect(decisions).toContain('delay 21 · loss 22');
+    expect(decisions).toContain('delay 21 · loss 22 · stall 31');
     expect(decisions).toContain('27 · won 28 · lost 29');
     expect(decisions).toContain('remeasured 25 · decayed 26');
     expect(decisions).toContain('ended by congestion 23 · plateau 24 · restarted 30');

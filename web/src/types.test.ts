@@ -236,7 +236,7 @@ describe('MonitorSnapshot wire fixtures (T218)', () => {
           "rttSeconds": 0.06, "queueDelaySeconds": 0.037, "thresholdSeconds": 0.03,
           "inFlightBytes": 5000, "windowBytes": 30000, "sentBytes": 11, "ackedBytes": 10, "repairs": 12,
           "delaySignals": 21, "lossSignals": 22, "discoveryCongested": 23, "discoveryPlateau": 24,
-          "capacityRemeasured": 25, "capacityDecays": 26, "pulses": 27, "pulseWins": 28, "pulseLosses": 29, "rediscoveries": 30 }
+          "capacityRemeasured": 25, "capacityDecays": 26, "pulses": 27, "pulseWins": 28, "pulseLosses": 29, "rediscoveries": 30, "stallSignals": 31 }
       ],
       "transport": [
         { "peer": "hub", "queueDrops": 9, "admissionDrops": 1, "aqmDrops": 2, "interactiveDrops": 3, "interactiveQueued": 4, "expired": 5, "duplicates": 6, "coalescedAcks": 7 }
@@ -252,7 +252,7 @@ describe('MonitorSnapshot wire fixtures (T218)', () => {
       rttSeconds: 0.06, queueDelaySeconds: 0.037, thresholdSeconds: 0.03,
       inFlightBytes: 5000, windowBytes: 30000, sentBytes: 11, ackedBytes: 10, repairs: 12,
       delaySignals: 21, lossSignals: 22, discoveryCongested: 23, discoveryPlateau: 24,
-      capacityRemeasured: 25, capacityDecays: 26, pulses: 27, pulseWins: 28, pulseLosses: 29, rediscoveries: 30,
+      capacityRemeasured: 25, capacityDecays: 26, pulses: 27, pulseWins: 28, pulseLosses: 29, rediscoveries: 30, stallSignals: 31,
     };
     expect(snapshot.lanes).toEqual([expected]);
     const queue: TransportSnapshot = { peer: 'hub', queueDrops: 9, admissionDrops: 1, aqmDrops: 2, interactiveDrops: 3, interactiveQueued: 4, expired: 5, duplicates: 6, coalescedAcks: 7 };
