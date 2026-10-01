@@ -133,53 +133,10 @@ func newDoHResolver(rawURL string, roots *x509.CertPool, bootstrapIP string) (*D
 }
 
 // Lookup implements Resolver. It queries A and AAAA for host and merges the
-// results; a family that answers NXDOMAIN is tolerated as long as the other
-// family answers. Any other per-family error (transport failure, non-200,
-// malformed response) fails the whole lookup. An empty final addr set — both
-// families NXDOMAIN, or a NOERROR/zero-answer (NODATA) response for both —
-// is also an error (NXDomainError or NoDataError respectively), never a
-// silent ([], nil).
+// results (see lookupBothFamilies). A per-family transport failure, non-200
+// or malformed response fails the whole lookup.
 func (d *DoHResolver) Lookup(ctx context.Context, host string) ([]netip.Addr, time.Duration, bool, error) {
-	var (
-		addrs    []netip.Addr
-		minTTL   time.Duration
-		haveTTL  bool
-		nxdomain error
-	)
-
-	for _, qtype := range [...]dnsmessage.Type{dnsmessage.TypeA, dnsmessage.TypeAAAA} {
-		famAddrs, famMinTTL, famHaveTTL, err := d.queryFamily(ctx, host, qtype)
-		if err != nil {
-			var nx *NXDomainError
-			if errors.As(err, &nx) {
-				nxdomain = err
-				continue
-			}
-			return nil, 0, false, err
-		}
-
-		addrs = append(addrs, famAddrs...)
-		if famHaveTTL && (!haveTTL || famMinTTL < minTTL) {
-			minTTL = famMinTTL
-			haveTTL = true
-		}
-	}
-
-	// An empty FINAL addr set is a failure, not a success: it covers both a
-	// double-NXDOMAIN (below) and a NOERROR/zero-answer response (NODATA, or
-	// a CNAME with no A/AAAA target) from one or both families. Returning
-	// (nil, nil) here would diverge from SystemResolver, which surfaces a
-	// no-such-host error from net.Resolver.LookupNetIP in the same
-	// situation — callers must not see the two Resolver implementations
-	// behave differently behind the same seam.
-	if len(addrs) == 0 {
-		if nxdomain != nil {
-			return nil, 0, false, nxdomain
-		}
-		return nil, 0, false, &NoDataError{Endpoint: d.url, Host: host}
-	}
-
-	return addrs, minTTL, haveTTL, nil
+	return lookupBothFamilies(ctx, d.url, host, d.queryFamily)
 }
 
 // queryFamily runs a single A or AAAA query over DoH.

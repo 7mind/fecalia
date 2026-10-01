@@ -1,6 +1,8 @@
 package dnsresolve
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"net/netip"
 	"strings"
@@ -77,6 +79,59 @@ func parseAnswer(endpoint string, body []byte, host string, qtype dnsmessage.Typ
 			minTTL = ttl
 			haveTTL = true
 		}
+	}
+
+	return addrs, minTTL, haveTTL, nil
+}
+
+// familyQuery runs a single A or AAAA query for host over one encrypted
+// transport, returning the answer addresses, their minimum TTL and whether a
+// TTL was present.
+type familyQuery func(ctx context.Context, host string, qtype dnsmessage.Type) ([]netip.Addr, time.Duration, bool, error)
+
+// lookupBothFamilies queries A and AAAA for host through query and merges the
+// results; a family that answers NXDOMAIN is tolerated as long as the other
+// family answers. Any other per-family error fails the whole lookup.
+//
+// An empty FINAL addr set is a failure, not a success: it covers both a
+// double-NXDOMAIN and a NOERROR/zero-answer response (NODATA, or a CNAME with
+// no A/AAAA target) from one or both families — NXDomainError or NoDataError
+// respectively, never a silent ([], nil). Returning (nil, nil) would diverge
+// from SystemResolver, which surfaces a no-such-host error from
+// net.Resolver.LookupNetIP in the same situation — callers must not see the
+// Resolver implementations behave differently behind the same seam. endpoint
+// names the resolver in NoDataError.
+func lookupBothFamilies(ctx context.Context, endpoint, host string, query familyQuery) ([]netip.Addr, time.Duration, bool, error) {
+	var (
+		addrs    []netip.Addr
+		minTTL   time.Duration
+		haveTTL  bool
+		nxdomain error
+	)
+
+	for _, qtype := range [...]dnsmessage.Type{dnsmessage.TypeA, dnsmessage.TypeAAAA} {
+		famAddrs, famMinTTL, famHaveTTL, err := query(ctx, host, qtype)
+		if err != nil {
+			var nx *NXDomainError
+			if errors.As(err, &nx) {
+				nxdomain = err
+				continue
+			}
+			return nil, 0, false, err
+		}
+
+		addrs = append(addrs, famAddrs...)
+		if famHaveTTL && (!haveTTL || famMinTTL < minTTL) {
+			minTTL = famMinTTL
+			haveTTL = true
+		}
+	}
+
+	if len(addrs) == 0 {
+		if nxdomain != nil {
+			return nil, 0, false, nxdomain
+		}
+		return nil, 0, false, &NoDataError{Endpoint: endpoint, Host: host}
 	}
 
 	return addrs, minTTL, haveTTL, nil

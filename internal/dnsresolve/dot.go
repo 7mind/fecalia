@@ -95,47 +95,10 @@ func newDoTResolver(addr, serverName string, roots *x509.CertPool) (*DoTResolver
 }
 
 // Lookup implements Resolver. It queries A and AAAA for host and merges the
-// results; a family that answers NXDOMAIN is tolerated as long as the other
-// family answers. Any other per-family error (dial/TLS failure, timeout,
-// truncated frame, malformed response) fails the whole lookup. An empty
-// final addr set — both families NXDOMAIN, or a NOERROR/zero-answer
-// (NODATA) response for both — is also an error (NXDomainError or
-// NoDataError respectively), never a silent ([], nil). Matches DoHResolver's
-// error taxonomy and empty-result handling exactly.
+// results (see lookupBothFamilies). A per-family dial/TLS failure, timeout,
+// truncated frame or malformed response fails the whole lookup.
 func (d *DoTResolver) Lookup(ctx context.Context, host string) ([]netip.Addr, time.Duration, bool, error) {
-	var (
-		addrs    []netip.Addr
-		minTTL   time.Duration
-		haveTTL  bool
-		nxdomain error
-	)
-
-	for _, qtype := range [...]dnsmessage.Type{dnsmessage.TypeA, dnsmessage.TypeAAAA} {
-		famAddrs, famMinTTL, famHaveTTL, err := d.queryFamily(ctx, host, qtype)
-		if err != nil {
-			var nx *NXDomainError
-			if errors.As(err, &nx) {
-				nxdomain = err
-				continue
-			}
-			return nil, 0, false, err
-		}
-
-		addrs = append(addrs, famAddrs...)
-		if famHaveTTL && (!haveTTL || famMinTTL < minTTL) {
-			minTTL = famMinTTL
-			haveTTL = true
-		}
-	}
-
-	if len(addrs) == 0 {
-		if nxdomain != nil {
-			return nil, 0, false, nxdomain
-		}
-		return nil, 0, false, &NoDataError{Endpoint: d.addr, Host: host}
-	}
-
-	return addrs, minTTL, haveTTL, nil
+	return lookupBothFamilies(ctx, d.addr, host, d.queryFamily)
 }
 
 // queryFamily runs a single A or AAAA query over one fresh DoT connection:
