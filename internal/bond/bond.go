@@ -54,19 +54,20 @@ const (
 	minimumRTO            = 60 * time.Millisecond
 	// maxWander bounds what passes for a path's own latency wander; a larger
 	// delay on a lightly loaded lane is somebody's queue.
-	maxWander          = 3 * targetQueue
-	lossConfirmation   = 2 // timeouts without confirmation before a datagram counts as lost
-	repairConfirmation = 8 // tenths of the base round trip a repair needs to be confirmed
-	feedbackHorizon    = 2 * time.Second
-	deliveryInterval   = 50 * time.Millisecond
-	baselineInterval   = 10 * time.Second
-	baselineDrain      = 200 * time.Millisecond
-	baselineStagger    = 500 * time.Millisecond
-	maxPackets         = 8192
-	smallPacket        = 384
-	redundancyRate     = 64000.0
-	redundancyShare    = 0.2
-	maxDatagram        = 9000
+	maxWander           = 3 * targetQueue
+	lossConfirmation    = 2 // timeouts without confirmation before a datagram counts as lost
+	repairConfirmation  = 8 // tenths of the base round trip a repair needs to be confirmed
+	feedbackHorizon     = 2 * time.Second
+	deliveryInterval    = 50 * time.Millisecond
+	baselineInterval    = 10 * time.Second
+	baselineDrain       = 200 * time.Millisecond
+	baselineStagger     = 500 * time.Millisecond
+	maxPackets          = 8192
+	smallPacketHeadroom = 1024 // of maxPackets, kept from bulk for the small classes
+	smallPacket         = 384
+	redundancyRate      = 64000.0
+	redundancyShare     = 0.2
+	maxDatagram         = 9000
 	// fullDatagramWireBytes is an ordinary full-size datagram on the wire.
 	fullDatagramWireBytes = 1500
 	wireOverhead          = Overhead + 28 // data frame, IPv4 and UDP headers
@@ -408,15 +409,23 @@ func (t *Transport) Enqueue(payload []byte, metadata PacketMetadata, now time.Ti
 	if len(payload) == 0 || len(payload) > maxDatagram {
 		return errors.New("bond: invalid datagram length")
 	}
-	if t.queued()+len(t.pending) >= maxPackets {
+	class := classify(len(payload), metadata)
+	// Bulk stops short of the bound: a flood that holds the count there must
+	// not have every small datagram refused behind it
+	// (`TestBulkFloodDoesNotRefuseVoice`).
+	limit := maxPackets
+	if class == classBulk {
+		limit -= smallPacketHeadroom
+	}
+	if t.queued()+len(t.pending) >= limit {
 		t.drops++
 		t.admissionDrops++
-		if len(payload) <= smallPacket {
+		if class != classBulk {
 			t.interactiveDrops++
 		}
 		return nil
 	}
-	p := &packet{flow: metadata.Flow, ack: metadata.ACK, class: classify(len(payload), metadata), payload: append([]byte(nil), payload...), created: now}
+	p := &packet{flow: metadata.Flow, ack: metadata.ACK, class: class, payload: append([]byte(nil), payload...), created: now}
 	// Each bulk datagram keeps the residence bound in force when it arrived, so
 	// the end of discovery does not discard its backlog at once.
 	p.queueDeadline = now.Add(t.bulkQueueAge(now))
