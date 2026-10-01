@@ -143,7 +143,7 @@ func (m *Multipath) reconcileDeferred() {
 		// below) warns again. This is keyed to the LISTEN outcome, not the promote
 		// outcome, so it clears unconditionally here — round 3 / CRITICISM 2.
 		dp.warnedUnresolvable = false
-		if err := m.promoteDeferredLocked(dp, c, &retirement); err != nil {
+		if err := m.promoteDeferredLocked(dp, c, dev, &retirement); err != nil {
 			// The bind succeeded but promotion did not (a prober fan-out desync, or a
 			// codec build error): close the fresh socket and keep the path deferred so the
 			// next tick retries cleanly, rather than leaking the socket or half-admitting.
@@ -192,14 +192,17 @@ func (m *Multipath) reconcileDeferred() {
 func (m *Multipath) promoteDeferredLocked(
 	dp deferredPath,
 	c *net.UDPConn,
+	dev string,
 	retirement *socketGenerationRetirement,
 ) (retErr error) {
 	// Large SO_RCVBUF, best-effort (kernel-capped, needs no privilege) — as in Open/AddPath.
 	_ = c.SetReadBuffer(socketRecvBuffer)
 	shared := &sharedPathState{
-		name: dp.def.Name,
-		src:  dp.def.SourceAddr,
-		conn: c,
+		name:        dp.def.Name,
+		src:         dp.def.SourceAddr,
+		conn:        c,
+		bindMode:    dp.def.Bind,
+		boundDevice: dev,
 	}
 	promoted := false
 	defer func() {

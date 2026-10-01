@@ -473,7 +473,7 @@ func TestGenerationRollbackStages(t *testing.T) {
 		}
 		var retirement socketGenerationRetirement
 		m.mu.Lock()
-		err = m.promoteDeferredLocked(m.deferred[0], conn, &retirement)
+		err = m.promoteDeferredLocked(m.deferred[0], conn, "", &retirement)
 		m.mu.Unlock()
 		if err == nil {
 			t.Fatal("promoteDeferredLocked succeeded although a bound peer has no prober for the path")
