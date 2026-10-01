@@ -1,0 +1,55 @@
+#!/usr/bin/env python3
+"""One WAN, cold tunnel: a call in both directions, then a TCP transfer beside it."""
+
+import argparse
+import concurrent.futures
+import json
+import time
+from pathlib import Path
+
+from benchmark import apply_profile, profile_from, provision
+from lab import GUESTS, Lab
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("binary", type=Path)
+    parser.add_argument("--profile", type=Path, default=Path(__file__).with_name("profiles") / "basic.json")
+    parser.add_argument("--dead-lane", type=int, choices=(1, 2), default=1, help="the WAN that loses every packet from the start")
+    parser.add_argument("--seconds", type=int, default=20)
+    parser.add_argument("--reverse", action="store_true", help="transfer from the hub to the edge")
+    args = parser.parse_args()
+    lab = Lab()
+    lab.acquire()
+    profile = profile_from(args.profile)
+    apply_profile(lab, profile)
+    for guest in GUESTS:
+        lab.impair(guest, args.dead_lane, **{**profile[guest][str(args.dead_lane)], "loss": 100})
+    provision(lab, args.binary)
+    for guest in GUESTS:
+        address = "10.77.0.1" if guest == "hub" else "10.77.0.2"
+        lab.put(guest, Path(__file__).with_name("voice.py"), "/root/voice.py")
+        lab.execute(guest, f"nohup python3 /root/voice.py server {address} > /root/voice-server.log 2>&1 < /dev/null & echo $! > /root/voice.pid")
+    lab.execute("hub", "iperf3 -s -1 -D -B 10.77.0.1")
+    try:
+        with concurrent.futures.ThreadPoolExecutor() as pool:
+            voices = {guest: pool.submit(lab.execute, guest, f"python3 /root/voice.py client 10.77.0.{2 if guest == 'hub' else 1} --seconds {args.seconds + 6}", capture_output=True) for guest in GUESTS}
+            time.sleep(3)
+            tcp = json.loads(lab.execute("edge", f"iperf3 -c 10.77.0.1 -t {args.seconds} -J {'-R' if args.reverse else ''}", capture_output=True).stdout)
+            result = {"tcp_mbit_s": tcp["end"]["sum_received"]["bits_per_second"] / 1e6}
+            for guest, future in voices.items():
+                report = json.loads(future.result().stdout)
+                result[guest] = {key: value for key, value in report.items() if key != "samples"}
+    finally:
+        for guest in GUESTS:
+            lab.execute(guest, "if test -f /root/voice.pid; then kill $(cat /root/voice.pid) 2>/dev/null || true; rm /root/voice.pid; fi")
+    print(json.dumps(result), flush=True)
+    live = 3 - args.dead_lane
+    capacity = profile["hub" if args.reverse else "edge"][str(live)]["rate"]
+    assert result["tcp_mbit_s"] >= 0.5 * capacity, f"TCP beside a call requires >=50% of the {capacity} Mbit/s WAN"
+    for guest in GUESTS:
+        assert result[guest]["loss_percent"] < 1, f"{guest} voice loss requires <1%"
+
+
+if __name__ == "__main__":
+    main()
