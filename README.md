@@ -179,8 +179,9 @@ edge + concentrator (+ standby) from scratch, follow the operator-facing
   (WARN-and-allow — it never blocks startup).
 - **Monitoring UI**: set `[monitor].listen = "127.0.0.1:9101"` for a
   live-updating dashboard (per-peer throughput/loss sparklines, pushed over
-  a `/ws` WebSocket every 1s). It has no panel for the transport's per-lane
-  state; read `wanbond_adaptive_*` from `/metrics` for that. The compact dashboard automatically follows the
+  a `/ws` WebSocket every 1s). A lanes panel shows what the transport is
+  doing on each path: target, sent, the capacity it has demonstrated, queue
+  delay against the lane's threshold, and what its control concluded. The compact dashboard automatically follows the
   system light/dark theme, shows overall WG-session status in the top bar,
   and places each peer's session and handshake age beside its name.
   The exit-selection control offers `auto` and

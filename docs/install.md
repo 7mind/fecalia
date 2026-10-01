@@ -1417,8 +1417,20 @@ listen = "127.0.0.1:9101"
   the truncated WireGuard public-key
   fingerprint, and the ordered hub-endpoint failover list with the active
   entry highlighted — all of these are shown **on ANY binding**, loopback or
-  token'd non-loopback alike. It has no panel for the transport's per-lane
-  state; read `wanbond_adaptive_*` from `/metrics` (§3) for that.
+  token'd non-loopback alike. So is the **Transport lanes** panel: one card
+  per lane (a local path paired with one of the peer's, `5g #0`) with its
+  state — `PROBING` while it discovers its capacity, `HOLD` once it holds a
+  target below a demonstrated capacity, `DOWN` — its target, what it sent
+  and what was delivered, the capacity estimate (`unknown` until the lane
+  has one), the queue delay against the threshold above which the lane is
+  taken to queue, and under *Control decisions* the counts of delay and loss
+  signals, probes won and lost, and estimate re-measures and decays. A lane
+  whose target sits far below what the link carries, with a small capacity
+  and probes that are all lost, is being held down by its own estimate, not
+  by the link. **Transport queue** shows the peer's drops, expiries and
+  received duplicates. `wanbond monitor` prints the same as `LANES` and
+  `TRANSPORT QUEUE`. The same values are on `/metrics` as `wanbond_adaptive_*`
+  (§3).
   The compact layout automatically follows your system's light/dark preference,
   including changes while the page is open. The top bar shows overall WG-session
   status and live-update health. Each peer heading includes its session status

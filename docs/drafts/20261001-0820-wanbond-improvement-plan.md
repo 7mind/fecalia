@@ -117,8 +117,10 @@ adaptive transport and became visible when it was the only one left.
   and real-host failover tests measured it through the removed schedulers' log
   record; they now bound liveness detection only, and flow survival. The lab's
   continuity gates are the remaining measurement.
-- **The monitor UI and TUI show no lane state.** The `wanbond_adaptive_*`
-  series exist on `/metrics` only, and have no test in `internal/metrics`.
+- **The monitor UI and TUI showed no lane state**, and the control's
+  decisions were not exported at all. Both are added on branch
+  `lane-observability`: capacity estimate, threshold and decision counters
+  per lane on `/metrics`, in `wanbond monitor` and on the dashboard.
 - **Four netns tests (`test/e2e`) fail on the worker VM for the baseline
   `db465b3` and for the cleanup tree alike**, each run alone as root on
   `llm-ubuntu-0` (Ubuntu, kernel 6.8), with the same message in both trees:

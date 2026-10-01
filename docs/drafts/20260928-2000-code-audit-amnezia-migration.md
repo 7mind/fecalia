@@ -62,7 +62,8 @@ conservation or FEC should remain supported features.
    - `device.newHubFailover` (unused constructor; production uses
      `newHubFailoverFromSpecs`);
    - the DoH/DoT answer-aggregation duplication;
-   - the monitor UI has no panel for adaptive lane state.
+   - the monitor UI had no panel for adaptive lane state (added on branch
+     `lane-observability`, 2026-10-01).
 5. **Then migrate the engine.** Evaluate the pinned AmneziaWG v3 candidate below
    after resolving which local patches survive cleanup. Upgrade the engine
    with current wire settings first, prove mixed-version operation, and treat
