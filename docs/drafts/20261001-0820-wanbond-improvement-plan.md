@@ -348,3 +348,30 @@ kept, the threshold at 29 ms at most, mean queue delay 16 ms.
   probes** (about 20 a second each way, the real-time class): 874 on the
   uplink lane and 835 duplicates at the concentrator in one run. Repair and
   duplicate counts are comparable only between runs of the same tool.
+
+## After the deployment of `2d2bd24` (2026-10-01, 22:29)
+
+Operator's `wbtest` (Speedtest on the satellite link, on the mobile link,
+then through the bond), twice:
+
+| Run | Mobile alone, down / up, Mbit/s (latency, ms) | Bond, down / up, Mbit/s (latency, ms) |
+|---|---|---|
+| lanes cold, 30 s after the restart | 18.7 / 6.2 (109 / 555) | 1.2 / 5.9 (66 / 65) |
+| two minutes later | 18.9 / 7.2 (96 / 920) | 22.9 / 5.3 (161 / 62) |
+
+- **The threshold bound holds.** The uplink lane's threshold read 100 ms
+  after the direct test where it read 722; the bond's loaded upload latency
+  was 65 and 62 ms where it was 764, at 5.3-5.9 Mbit/s where it was 3.7.
+  Upstream the bond carries 74-94% of the mobile link alone at a ninth to a
+  fifteenth of its loaded latency.
+- **A cold lane can end its first discovery low and stay there.** In the
+  first run the concentrator's mobile lane held about 90 kB/s through the
+  whole download (inferred from the edge's 1661 released datagrams in fifteen
+  seconds; the concentrator was not captured during it). Probes below about
+  170 kB/s were never counted won. Fixed on branch `cold-probes`
+  (`TestProbeWinsCountOnASlowLane`); the first discovery still ends at the
+  first delay signal once the lane limits the sender, so a low first
+  estimate remains possible and now recovers in seconds.
+- **In the second run the bond's download exceeded the mobile link alone**
+  (22.9 against 18.9 Mbit/s) at 161 ms of loaded latency against 96: the
+  mobile link was slow that minute, and the comparison is not a ceiling.

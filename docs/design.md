@@ -519,8 +519,12 @@ a queue as before, since the backlog only shrinks
 
 Discovery that ends while the sender, not the lane, is the limit has measured
 the sender. A return to discovery that ends so keeps the estimate the lane
-had; a first discovery has none, so its target gives way to the delay and
-discovery goes on (`TestSenderLimitedDiscoveryKeepsTheEstimate`). Taken for
+had; a first discovery has none, so its target gives way to the delay by a
+tenth and discovery goes on (`TestSenderLimitedDiscoveryKeepsTheEstimate`).
+A probe's win waits for thirty more datagrams only on a path that showed
+material loss within the last minute; elsewhere the next probe began before
+they were sent, and a lane below about 170 kB/s rose by a twentieth per
+probe without ever returning to discovery (`TestProbeWinsCountOnASlowLane`). Taken for
 capacity, the first datagrams of an upload left the production uplink lane,
 which had demonstrated 1.16 MB/s a minute earlier, at the 16 kB/s floor
 (2026-10-01).
