@@ -5,14 +5,12 @@ This runbook provisions a fresh wanbond deployment **from scratch**: one
 VPS terminating the tunnel), and — optionally — a **standby concentrator** for
 hub failover. Follow it top to bottom; each step is a concrete command.
 
-It does **not** restate the config-key catalogue or the pacing-tuning
-procedure. Those live in [docs/install.md](install.md):
+It does **not** restate the config-key catalogue. That lives in
+[docs/install.md](install.md):
 
-- the annotated **Edge config** / **Concentrator config** blocks and the
-  optional `[fec]` / `[scheduler]` blocks — [install.md §3 *Write the config
-  file*](install.md);
-- **§3a *Tuning per-link bandwidth and pacing*** — the full measure-and-enter
-  procedure for `link_bandwidth` / `link_rtt` — [install.md §3a](install.md);
+- the annotated **Edge config** / **Concentrator config** blocks, the
+  `[scheduler]` block and the note on upgrading from a build with the removed
+  transports — [install.md §3 *Write the config file*](install.md);
 - **§4 systemd units**, **§5 Firewall**, **§6 Observability** — [install.md
   §4–6](install.md);
 - the **NetworkManager unmanaged-devices drop-in** and the **`tun_persist` /
@@ -183,13 +181,11 @@ systemd-networkd `.network` file, and `enable --now` — the exact steps are
 > `wanbond-addressing@.service` oneshot for hosts with no `systemd-networkd`
 > `.network` file watching `wanbond0` (same section).
 
-> **Optional planes**, all off unless their block is present, all documented in
+> **Optional blocks**, off unless present, documented in
 > [install.md §3](install.md): `[amnezia]` (DPI obfuscation, all-or-nothing),
-> `[fec]` (Reed-Solomon forward error correction), `[scheduler]` (weighted
-> aggregation, and pacing — available under either policy, including the
-> default active-backup — see step 5). A peer `mode = "default-route"` is a
-> further edge-only opt-in for full-tunnel client-LAN routing — see
-> [install.md §9](install.md).
+> `[dns]`, `[liveness]`. The transport needs no configuration. A peer
+> `mode = "default-route"` is a further edge-only opt-in for full-tunnel
+> client-LAN routing — see [install.md §9](install.md).
 
 ## 3. Add a standby concentrator (hub failover)
 
@@ -235,8 +231,9 @@ Two configuration facts make it work:
 
 On HUB LOSS the edge advances to the next endpoint, repoints every path's
 remote at it, and re-handshakes a **fresh** session — there is **no hub-to-hub
-state handoff**; the standby starts clean and the edge re-baselines its receive
-resequencer to the standby's first frame. End-of-list policy is **wrap**
+state handoff**; the standby starts clean, and the edge's transport starts a
+new epoch with it (lanes are re-learned from its hellos and the receive
+resequencer restarts at sequence 1). End-of-list policy is **wrap**
 (round-robin), so a hub that recovers earlier in the list is retried and
 settled on within one cycle.
 
@@ -312,105 +309,7 @@ for the edge side (install.md §9.4). Omitting this on either node lets
 forwarded TCP connections emit segments that fragment or hit a PMTUD black
 hole once wrapped by the tunnel.
 
-## 5. Pacing (optional — ships DISABLED, opt-in)
-
-Per-path send-pacing bounds bufferbloat under sustained load by sizing each
-uplink's exact-byte shaper from its bandwidth-delay product. It is **off by default**;
-enabling it is a deliberate opt-in and requires **operator-measured** initial
-link figures. Active-backup then auto-tunes its live target; weighted remains
-fixed. Pacing is **policy-independent**
-(defect D65): it works identically, with the same keys, under the **default
-`active-backup` policy** — most single/priority-uplink deployments never set
-`[scheduler] policy` at all — and under `policy = "weighted"`. If your uplink is
-bufferbloat-prone (e.g. Starlink's last-mile buffer, the case D65 was measured
-on), declare `link_bandwidth` + `link_rtt` on **every** `[[paths]]` block and
-turn on `pacing_enabled = true` even though you never touch `policy`.
-
-Do **not** re-derive the procedure here — follow
-[install.md §3a *Tuning per-link bandwidth and pacing*](install.md) end to end.
-In summary:
-
-- Measure each uplink's idle RTT and usable bandwidth (§3a Steps 1–2).
-- Enter `link_bandwidth` / `link_rtt` on **every** `[[paths]]` block (all-or-none;
-  a partial declaration is rejected at load) — §3a Step 3, e.g. for a Starlink
-  primary + 5G backup:
-
-  ```toml
-  [[paths]]
-  name           = "starlink"
-  source_addr    = "192.168.1.10"
-  link_bandwidth = "50Mbit"      # measured usable bandwidth
-  # link_bandwidth_limit = "80Mbit" # optional active-backup hard ceiling
-  link_rtt       = "21ms"        # measured idle RTT
-
-  [[paths]]
-  name           = "5g"
-  source_addr    = "192.168.2.10"
-  link_bandwidth = "10Mbit"
-  link_rtt       = "45ms"
-  ```
-
-- Turn it on under `[scheduler]` and reload — §3a Step 4. Under the **default**
-  active-backup policy (no need to set `policy`):
-
-  ```toml
-  [scheduler]
-  # policy defaults to "active-backup"; no need to set it
-  pacing_enabled = true          # OFF by default; sizes exact-byte shaping from the links above
-  ```
-
-  Under weighted, each path's live byte shaper uses fixed
-  `R=link_bandwidth/8` and `B=ceil(R*link_rtt)`. Under active-backup those
-  values seed the controller, which retargets R and B from live feedback and
-  may grow above the seed unless `link_bandwidth_limit` caps it. `Lmax` comes
-  from the path MTU/address family. Config requires `B>=Lmax`, derives
-  `C=Lmax`, retained priority `P`, one owned recovery group `Fgroup`, and the
-  memory bound `Mtotal=B+C+P+Fgroup+Lmax`. Active-backup also retains
-  per-path frame-domain compatibility values. Weighted uses the slowest
-  declared link only for its shared offered-frame aggregation reference; that
-  reference does not admit production traffic. To opt into weighted
-  aggregation, set `policy = "weighted"` alongside `pacing_enabled = true`.
-
-- One engine batch selects one path, then each input buffer is classified,
-  framed, and admitted in order. Aggregate batches larger than `B` stream
-  through cancellable pre-copy backpressure; saturation raises admission waits,
-  not ordinary drops. DATA/PARITY, inner control, recovery tranches, and
-  authenticated PROBE/echo use one serialized writer. Generated priority
-  reserves `P` before generation; ordinary probes coalesce, PMTU waits
-  cancellably, and echo overflow fails without blocking receive.
-
-- A partial writer failure reports the accepted/emitted prefix, accounts the
-  reserved failed suffix as generic or `EMSGSIZE` error bytes, and does not
-  encode the engine batch's unstarted suffix. Close/remove stops admission,
-  retires queued work, waits for the serialized writer, and only then closes
-  the socket; a replacement socket/shaper generation starts empty.
-
-- Verify the loaded RTT stays close to the idle RTT under sustained load — §3a
-  Step 5. (A declared bandwidth with `pacing_enabled = false` is inert.)
-
-- Under active-backup pacing, Linux also bounds each complete pre-TUN GSO
-  container to at most 20 ms at the current controller ingress target. The
-  matching per-peer engine backlog is `B+C`: one configured path-shaper BDP
-  plus that complete batch, so the gate does not interrupt an established
-  ACK-clocked flight. Confirm
-  `wanbond_tun_aqm_actual_gso_max_{size_bytes,segments}` matches its target,
-  `wanbond_tun_aqm_actual_fresh=1`, engine retained bytes never exceed the
-  admission limit, and engine oversize batches remain zero. The engine waits
-  on a whole batch; it never splits or drops one after the TUN read. Under
-  shaped FEC, the retained reservation transfers to the owner and releases only
-  on terminal batch completion, not on the earlier ownership acknowledgement.
-  The byte-bounded `bfifo` window is
-  `L=ceil(peerCount*(B+C)/20)*20` bytes. With complete-batch service time
-  `T<=20ms`, aggregate ingress `R`, current MTU `Mcur`, and exact installed HTB
-  burst `G`, let `A=ceil(R*T)+G`, `H=ceil(A/Mcur)`, and `J=ceil(A/20)`.
-  The TUN ptr ring has `J+1` slots; the final slot is the native Linux TUN
-  guard. Verify target/actual byte-limit, burst, and ring metrics,
-  `actual_ring_pending`, and `ring_size_deferred`; use `tc -j -s` when
-  comparing `wanbond_tun_aqm_drops_total`. Conditional on the `T<=20ms`
-  reader-service precondition, value the transient handoff as
-  `(H+1)*Mmax`; an arbitrarily stalled TUN reader lies outside the invariant.
-
-## 6. Monitoring and health checks
+## 5. Monitoring and health checks
 
 Each daemon serves Prometheus metrics on the **loopback-only** `[metrics].listen`
 address ([install.md §6](install.md)); a non-loopback bind is refused. Scrape it
@@ -422,69 +321,55 @@ curl -s http://127.0.0.1:9090/metrics
 
 ### Series to watch
 
-Exact exported series (labels/help verbatim from `internal/metrics/metrics.go`).
+Exported series (from `internal/metrics/metrics.go` and `internal/metrics/adaptive.go`).
 Every per-path series carries a `path="<name>"` label matching the `[[paths]]`
 `name`:
 
 | Series                                          | Meaning / what to watch |
 |-------------------------------------------------|-------------------------|
 | `wanbond_path_up{path}`                         | Per-path liveness, `1`=up `0`=down. **Primary health signal.** |
-| `wanbond_path_throughput_bits_per_second{path}` | Current per-path throughput; confirms traffic is striping. |
+| `wanbond_path_throughput_bits_per_second{path}` | Current per-path throughput (send + receive, outer bytes); shows which paths carry traffic. |
 | `wanbond_path_loss_ratio{path}`                 | Probe loss fraction `[0,1]`; rising loss precedes a path drop. |
-| `wanbond_path_rtt_seconds{path}`                | Smoothed RTT; a jump signals congestion/bufferbloat. |
+| `wanbond_path_rtt_seconds{path}`                | Smoothed probe RTT; a jump signals a queue in the path. |
 | `wanbond_path_jitter_seconds{path}`             | Smoothed RTT deviation. |
 | `wanbond_path_mtu{path}`                        | Per-path discovered outer path MTU (bytes): the operator-configured `mtu` on a pinned path, else the largest padded probe that still echoes. |
 | `wanbond_tun_mtu`                               | Current `wanbond0` link (TUN) MTU (bytes): the min inner MTU across UP paths. Sized at boot and re-derived at runtime as path liveness/PMTU changes (a WARN log accompanies each live change). |
 | `wanbond_path_tx_bytes_total{path}` / `wanbond_path_rx_bytes_total{path}` | Per-path byte counters. |
-| `wanbond_path_shaper_queue_data_bytes{path}` / `wanbond_path_shaper_queue_control_bytes{path}` / `wanbond_path_shaper_queue_bytes{path}` / `wanbond_path_shaper_in_flight_bytes{path}` | Live reserved DATA, reserved inner-control, total reserved (including pending-copy placeholders), and writer-in-flight bytes. Verify DATA≤B, control≤C, total≤Q. |
-| `wanbond_path_shaper_scheduled_delay_seconds{path}` | Current virtual serialization delay. Sustained growth toward the local bound indicates queued shaped work. |
-| `wanbond_path_shaper_rate_bytes_per_second{path}` / `wanbond_path_shaper_data_budget_bytes{path}` / `wanbond_path_shaper_control_reserve_bytes{path}` / `wanbond_path_shaper_queue_budget_bytes{path}` / `wanbond_path_shaper_max_datagram_bytes{path}` | Configured `R`, `B`, `C`, `Q`, and `Lmax` actually owned by the live generation. |
-| `wanbond_path_shaper_priority_debt_bytes{path}` / `wanbond_path_shaper_priority_rate_bytes_per_second{path}` / `wanbond_path_shaper_priority_burst_bytes{path}` / `wanbond_path_shaper_priority_delay_bound_seconds{path}` | Current `P0`, configured `Rp`/`Pburst`, and derived `Dp=(P0+Pburst)/(R-Rp)`. |
-| `wanbond_path_shaper_accepted_bytes_total{path}` / `wanbond_path_shaper_emitted_bytes_total{path}` / `wanbond_path_shaper_outer_priority_bytes_total{path}` | Bytes reserved by the shaper across DATA/PARITY and inner control, successful shaped writer bytes, and successful direct outer-priority bytes. Compare emitted DATA/parity with the FEC byte counters below. |
-| `wanbond_path_shaper_admission_waits_total{path}` / `wanbond_path_shaper_admission_wait_seconds_total{path}` / `wanbond_path_shaper_admission_canceled_datagrams_total{path}` | Backpressure events, cumulative wait time, and only the never-reserved suffix returned by context cancellation/deadline. A full B/Q raises waits, not write errors. |
-| `wanbond_path_shaper_async_write_errors_total{path}` / `wanbond_path_shaper_async_write_error_bytes_total{path}` / `wanbond_path_shaper_async_write_emsgsize_errors_total{path}` / `wanbond_path_shaper_async_write_emsgsize_bytes_total{path}` | Asynchronous generic and `EMSGSIZE` writer outcomes, split by actual writer calls and affected reserved bytes. |
-| `wanbond_fec_recovered_packets_total`           | DATA packets reconstructed by FEC (masked loss). |
-| `wanbond_fec_unrecoverable_packets_total`       | DATA lost beyond FEC repair — **should stay near-flat**. |
-| `wanbond_fec_residual_loss_ratio`               | Post-recovery connection loss `[0,1]`; compare to your `target_residual`. |
-| `wanbond_fec_repair_packets_total` / `wanbond_fec_data_packets_total` | Parity vs data counts — the overhead ratio (FEC only). |
-| `wanbond_resequencer_released_frames_total`     | Frames released for delivery by the receive resequencer. |
-| `wanbond_resequencer_dropped_duplicate_frames_total` / `wanbond_resequencer_dropped_stale_frames_total` / `wanbond_resequencer_dropped_suspect_frames_total` | Frames dropped as duplicate / already-past-release-point / not-yet-corroborated. |
-| `wanbond_resequencer_skipped_seqs_total`        | Sequence numbers skipped (lost) by window-advance or timeout — **total seqs treated as lost, by whatever mechanism** (its meaning is unchanged by the D93 hold model). |
-| `wanbond_resequencer_hol_holds_total` / `wanbond_resequencer_hol_hold_seconds_total` | Head-of-line gaps that armed a hold / cumulative seconds those gaps spent held before a skip, single-path immediate release, or fill — the count and total time are the denominator and numerator of the mean hold. |
-| `wanbond_resequencer_immediate_releases_total` | Head-of-line gaps released via the D93 **single-delivering-path fast path** (~0 hold), counted DISTINCTLY from timeout skips. |
-| `wanbond_resequencer_resyncs_total` / `wanbond_resequencer_rebaselines_total` | Release-point re-pins after a corroborated discontinuity / forced re-baselines (e.g. hub failover). |
+| `wanbond_path_probe_send_errors_total{path}` / `wanbond_path_socket_write_errors_total{path}` | Unexpected write failures of locally originated PROBE frames / refused writes of the transport's datagrams. Should stay flat. |
+| `wanbond_adaptive_up{peer,lane}`                | Transport lane eligibility: `1` = current authenticated lease and acknowledgements not stalled. A lane is `(local path id << 8) \| remote path id`. |
+| `wanbond_adaptive_target_rate_bytes_per_second{peer,lane}` / `wanbond_adaptive_send_rate_bytes_per_second{peer,lane}` / `wanbond_adaptive_delivery_rate_bytes_per_second{peer,lane}` | Pacing target, measured send rate and measured delivery per lane (bytes/s); the target's floor is 16 kB/s. |
+| `wanbond_adaptive_queue_delay_seconds{peer,lane}` / `wanbond_adaptive_rtt_seconds{peer,lane}` | Forward queue delay above its observed minimum / acknowledgement RTT per lane. |
+| `wanbond_adaptive_repair_packets_total{peer,lane}` | Additional copies sent on the lane: repairs and small-packet replication. |
+| `wanbond_adaptive_queue_drops_total{peer}` / `wanbond_adaptive_expired_packets_total{peer}` | Datagrams dropped in the transport's queue (bound, residence time or CoDel) / datagrams whose repair lifetime expired unconfirmed — loss the inner protocol sees. |
+| `wanbond_resequencer_released_frames_total`     | Bulk datagrams released for delivery by the receive resequencer. |
+| `wanbond_resequencer_dropped_duplicate_frames_total` / `wanbond_resequencer_dropped_stale_frames_total` / `wanbond_resequencer_dropped_suspect_frames_total` | Datagrams dropped as duplicate / already-past-release-point / not-yet-corroborated. |
+| `wanbond_resequencer_skipped_seqs_total`        | Sequence numbers skipped (given up) by window-advance or hold expiry. |
+| `wanbond_resequencer_hol_holds_total` / `wanbond_resequencer_hol_hold_seconds_total` | Head-of-line gaps that armed a hold / cumulative seconds those gaps spent held — the denominator and numerator of the mean hold. |
+| `wanbond_resequencer_gap_fills_total` / `wanbond_resequencer_deadline_wakeups_total` | Holds that ended because the gap was filled / holds evaluated at or after their deadline. |
+| `wanbond_resequencer_resyncs_total` / `wanbond_resequencer_rebaselines_total` | Release-point re-pins after a corroborated discontinuity / re-baselines on a new peer epoch (peer restart, hub failover, Bind reopen). |
 | `wanbond_session_established`                    | WG session liveness, `1`=a handshake has completed and is still fresh, `0`=still converging **or** wedged. **Distinguishes "converging" from "wedged".** |
 | `wanbond_session_last_handshake_seconds`         | Age of the peer's most recent completed WG handshake (`0` when none has completed). |
 | `wanbond_peer_session_established{peer}`         | **Per-peer** WG session liveness (T256): the SAME `established` verdict as `wanbond_session_established`, but attributed to ONE specific bound peer rather than "some session is live" — the proof of session health a warm-standby promotion decision needs for a SPECIFIC candidate concentrator. |
 
-> **Resequencer head-of-line reading (D93/T314).** The hold behind a gap is no
-> longer uniformly 250 ms. Non-FEC operation uses an RTT-adaptive per-gap hold
-> (clamped to `[10 ms, 250 ms]`) and collapses to a near-zero **immediate
-> release** whenever only one path is delivering. FEC suppresses that zero-hold
-> path; with an exact acknowledged recovery contract and fresh matching
-> active-backup RTT/path evidence it instead uses
-> `W=min(250ms,A+clamp(max(SRTT+4*RTTVAR),10ms,250ms))`, where active-backup contributes
-> only its current DATA carrier; an idle Up backup does not inflate `H`. Every
-> uncertain or weighted
-> case retains 250 ms. Read the two skip-adjacent counters together: rising
-> `immediate_releases_total` alongside `skipped_seqs_total` means the D93
-> head-of-line amplifier is **disarmed** (a non-FEC single delivering path),
-> whereas `skipped_seqs_total` climbing while
-> `immediate_releases_total` stays flat is a **genuine timeout head-of-line stall**
-> or an FEC recovery window. `hol_hold_seconds_total / hol_holds_total` is the
-> mean time gaps are held; under FEC it combines fast `W` and conservative
-> 250 ms holds, while `immediate_releases_total` remains flat.
+> **Resequencer head-of-line reading.** Only bulk is resequenced; small
+> datagrams bypass the resequencer. A gap at the release point is held until
+> the missing datagram arrives (a repair, or a straggler on a slower lane) or
+> 250 ms pass, the sender's repair lifetime; then it is skipped.
+> `hol_hold_seconds_total / hol_holds_total` is the mean time gaps are held.
+> `gap_fills_total` rising with `hol_holds_total` means repairs arrive in time;
+> `skipped_seqs_total` rising means datagrams were given up and the inner
+> protocol saw the loss.
 >
 > **Multi-peer labels (G4/G28).** Any node bound to 2+ peers — a concentrator
 > serving multiple edges or a multi-exit edge with warm-standby concentrators —
-> labels every path/resequencer/FEC series above and
+> labels every path and resequencer series above and
 > `wanbond_peer_session_established` with `peer="<name>"`, the configured
 > `[[wireguard.peers]]` `name`, for EVERY bound peer including the first-configured
 > one (`device.Up` plumbs its configured name into the bind via
 > `bind.Multipath.SetPrimaryPeerName`; see `internal/metrics/metrics.go`'s package
 > doc for the back-compat rule, D58). A single-peer edge/hub/concentrator carries
-> **no** `peer` label at all — the exposition above is unchanged from
-> pre-multi-peer wanbond.
+> **no** `peer` label at all on those series. The `wanbond_adaptive_*` series
+> always carry `peer` (empty for a single peer) and `lane`.
 
 > **Session vs paths.** `wanbond_session_established` is the WG-session signal the
 > per-path gauges cannot give you: a path can be `up` (probes reflect) while the
@@ -498,10 +383,6 @@ Every per-path series carries a `path="<name>"` label matching the `[[paths]]`
 > 180s validity window (rekey + edge keepalive refresh it), so a value that climbs
 > toward 180s and drops `wanbond_session_established` to `0` is the wedged signal.
 >
-> The FEC series are emitted only when an `[fec]` block is configured.
-> Every `wanbond_path_shaper_*` series is emitted only for a path with pacing
-> enabled. The set is absent, rather than zero-valued, when pacing is off; a
-> Close/Open or remove/re-add starts a new zero-valued generation.
 
 ### Basic health check
 
@@ -522,59 +403,55 @@ that traffic is actually flowing on more than one path:
 
 ```sh
 ping -c 3 10.77.0.1                         # from the edge: inner tunnel up
-# then confirm >1 path is carrying bytes (aggregation engaged under load):
+# then confirm >1 path is carrying bytes under load:
 curl -s http://127.0.0.1:9090/metrics | grep '^wanbond_path_tx_bytes_total'
 ```
 
-## 7. Pilot exit criterion (non-blocking)
+## 6. Pilot exit criterion (non-blocking)
 
 The gate for proceeding to a **supervised pilot** is deliberately **non-blocking**
 on any long soak (Q19). Two measurements are **sufficient** to enter the pilot:
 
 1. **Netns functional/counter gate (W2).** The privileged fixture exercises
-   path selection, bounded queue/counter invariants, FEC, and failover —
+   bonding, bounded queue/counter invariants and failover —
    `go test -tags e2e -run TestFixtureImpairment ./test/e2e`. It is CPU/PPS-bound:
    its throughput and RTT output is report-only and cannot establish real-link
-   pacing or bufferbloat thresholds.
+   throughput or bufferbloat thresholds.
 2. **Report-only real-link smoke / baseline (W4).** `just p0-baseline` brings the
    tunnel up over the real internet between the two standing hosts and records the
    aggregation ratio, loaded-vs-idle RTT, and link/hub-failover recovery gaps — see
    [manual-checklist.md §P0 automated real-link baseline](manual-checklist.md#p0--automated-real-link-baseline-realhosts-tier).
 
-Together these two are **enough to proceed to a supervised pilot.** The legacy
+Together these two are **enough to proceed to a supervised pilot.** The
 `just p0-baseline` numbers are **INFORMATIONAL (report-only)** — no Mbit/s or millisecond threshold is
 a hard pass/fail gate; a human reads them and makes the go/no-go call. A non-zero
 exit from `just p0-baseline` means the run itself could not complete (a host was
 unreachable or the tunnel never came up), **not** that a performance number missed a
 target.
 
-That report-only smoke is distinct from the current-shaper D112/D108 closure
-gate. The synchronized RPi4-to-o3 T304 procedure in
-[manual-checklist.md §D65](manual-checklist.md#d65--pacing-field-validation-bufferbloat-control)
-uses predeclared paired-cycle thresholds for rate, loss, goodput, RTT,
-retransmits, exact-byte reconciliation, and restoration.
 
 The **longer soak runs DURING the supervised pilot, not as a pre-gate.** The
 reference short soak (`TestRealSoakShort`, ~2.5 min across a WG rekey — see the
 appendix) only confirms the tunnel survives a rekey; sustained multi-hour/multi-day
 soak is an **in-pilot** observation, gated on the live `wanbond_path_up` /
-`wanbond_fec_unrecoverable_packets_total` health checks in [§6](#6-monitoring-and-health-checks),
+`wanbond_session_established` health checks in [§5](#5-monitoring-and-health-checks),
 never a blocker for entering the pilot.
 
 ## Appendix — reference figures measured on the test hosts
 
-These historical pre-T299 numbers were **measured on this project's validation hosts** (edge
+These numbers were **measured on this project's validation hosts** (edge
 `llm-ubuntu-0`, amd64, NAT'd behind a home router ↔ public aarch64
-concentrator `o3.7mind.io`) during pilot-readiness validation. They came from
-the retired frame-token policer and do not validate the current exact-byte
-shaper. They are **illustrative, not guarantees** — your links will differ.
-Measure your own per §5 (pacing) and the §6 health checks above.
+concentrator `o3.7mind.io`) during pilot-readiness validation, with the
+since-removed pacing of the static transports. They are a historical record
+and do not describe the current transport; they are **illustrative, not
+guarantees** — your links will differ. Use the §5 health checks above and the
+[lab results](../test/vm/README.md) for the current transport.
 
 | Metric (measured on test hosts)          | Value      |
 |------------------------------------------|------------|
 | Idle tunnel RTT                          | ~29 ms     |
-| Loaded RTT (pacing on)                   | ~50 ms     |
-| Bufferbloat Δ (loaded − idle, pacing on) | ~21 ms     |
+| Loaded RTT (removed pacing on)           | ~50 ms     |
+| Bufferbloat Δ (loaded − idle, removed pacing on) | ~21 ms |
 | Per-path (LINK) failover — traffic resume| ~1.4 s     |
 | Hub (concentrator) failover — resume via standby | ~2.1 s |
 | Soak across a WG rekey                   | 2.5 min, tunnel stayed up |

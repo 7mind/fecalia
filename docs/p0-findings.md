@@ -1,5 +1,7 @@
 # P0 findings — the seven pitfall areas for bonding over amneziawg-go
 
+> **Note (2026-10-01):** historical record of the P0 spike against engine `v1.0.4`. The pass-through Bind and the scheduler-side pacing discussed in §7 were since replaced or removed, and the engine window in §6 is no longer 8128 messages; the current system (engine v3, the adaptive transport as the only transport) is described in [design.md](design.md).
+
 This document records what the P0 spike established about the embedded
 amneziawg-go engine (fork of `golang.zx2c4.com/wireguard-go`, pinned at
 `v1.0.4` in `go.mod`) and the constraints it places on the later multipath

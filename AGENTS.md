@@ -78,27 +78,29 @@ short:
    small-packet class is the documented exception to whole-stream ordering: it
    is authenticated and deduplicated, then delivered immediately; inner replay
    validation is never bypassed.
-4. Inner fail-closed; **PROBE/CONTROL are PSK-HMAC authenticated** with anti-replay
-   checks. PROBE freshness is monotonic; adaptive data and ACKs use bounded
-   sequence windows. Legacy DATA/PARITY are unauthenticated **by design** (DoS-grade
-   risk accepted). Adaptive data uses authenticated CONTROL and rejects legacy
-   DATA/PARITY.
+4. Inner fail-closed; **every outer frame (PROBE, CONTROL) is PSK-HMAC
+   authenticated** with anti-replay checks. PROBE freshness is monotonic; the
+   transport's data and ACKs travel in CONTROL and use bounded sequence
+   windows. Frame kinds 1 and 2 (the removed unauthenticated DATA/PARITY) decode
+   as `frame.ErrMalformed` and must not be reassigned.
 5. Engine `conn` coupling is concentrated in **`internal/bind/bind.go`** (the
-   `Bind`/`Endpoint`/`ReceiveFunc` aliases and the completion/metadata
-   contracts). `internal/bind/multipath.go` and `internal/device/tunaqm.go` use
-   only `conn` constants and sentinel errors (`IdealBatchSize`,
-   `ErrBindAlreadyOpen`, `ErrWrongEndpointType`). Route any new `conn`
-   dependency through `bind.go`. `internal/device` also uses patched `device`
-   APIs (`OutboundStats`, outbound admission), so an engine swap must port or
-   retire those as well.
+   `Bind`/`Endpoint`/`ReceiveFunc` aliases and the `BindPacketSender`
+   flow-metadata contract). `internal/bind/multipath.go` uses only `conn`
+   constants and sentinel errors (`IdealBatchSize`, `ErrBindAlreadyOpen`,
+   `ErrWrongEndpointType`). Route any new `conn` dependency through `bind.go`.
+   `internal/device` also uses the patched `device` API `OutboundStats`, so an
+   engine swap must port or retire that as well.
 6. Amnezia config is **all-or-nothing per device**. The v3 engine keeps message
    headers, paddings and junk parameters per `Device` (the v1.0.4 globals were
    upstream #155), so concurrent engines must remain race-free and
    configuration-isolated. Keep the all-or-nothing config validation, the
    multi-device race regression and `device/protocol_state_test.go`.
-7. On **any `klauspost/reedsolomon` (or amneziawg-go) version bump**, re-verify
-   `TestKlauspostParityPrefixStableInvariant` (`internal/fec`) before landing —
-   a flipped default matrix silently corrupts every reconstructed payload.
+7. **The adaptive transport (`internal/bond`) is the only transport.** A
+   datagram reaches a peer only over a lane established by an authenticated
+   hello exchange (the hello rides in PROBE/echo payloads), and both ends must
+   run it. `bond.Overhead` (101 bytes) is the full per-datagram cost of a data
+   frame; `bind.InnerMTU`, `config.outerPathOverheadBytes` (161) and the TUN
+   MTU derive from it and must change together.
 
 ## Testing discipline
 
@@ -108,7 +110,7 @@ short:
   on the unfixed code proves nothing (e.g. a goroutine-leak fix needs a
   `goleak`/`NumGoroutine` gate, not a bare `-count` run).
 - **The netns fixture is CPU/PPS-bound.** It validates *functional* bonding,
-  failover, FEC recovery, and DPI — **not** absolute throughput or bufferbloat.
+  failover, loss repair, and DPI — **not** absolute throughput or bufferbloat.
   Do not assert link-throughput numbers from it; use counter ratios / functional
   checks. Real throughput belongs to the real-host tier / manual checklist.
 - **Hardware-validate** changes that touch the netns fixture or real-host
@@ -125,7 +127,7 @@ short:
 - **Fail fast at boundaries** (config load, external input); no silent fallbacks
   for internal logic.
 - **No new dependencies** without a clear reason; prefer the standard library and
-  the already-vendored `amneziawg-go` / `klauspost/reedsolomon`.
+  the already-vendored `amneziawg-go`.
 - Keep new comments minimal and only for the non-obvious; don't delete correct
   existing comments.
 

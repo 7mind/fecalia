@@ -1,12 +1,12 @@
 # P1 MTU accounting and MSS-clamping guidance (T12)
 
-The multipath Bind (`internal/bind`, T12) wraps every opaque WireGuard datagram
-in an outer DATA frame before it leaves a per-path socket. That outer frame is
-pure overhead the P0 pass-through Bind did not add, so the tunnel MTU must shrink
-to keep a full-size inner packet from fragmenting on the wire. This document
-records the arithmetic (the source of truth is `internal/bind/mtu.go`, pinned by
-`TestInnerMTUFixture`) and the MSS-clamping the operator must apply so TCP stays
-inside the budget.
+The transport (`internal/bond`, driven by `internal/bind`) wraps every opaque
+WireGuard datagram in an authenticated data frame before it leaves a per-path
+socket. That frame is pure overhead, so the tunnel MTU must shrink to keep a
+full-size inner packet from fragmenting on the wire. This document records the
+arithmetic (the source of truth is `internal/bind/mtu.go` with
+`bond.Overhead` from `internal/bond/wire.go`, pinned by `TestInnerMTUFixture`)
+and the MSS-clamping the operator must apply so TCP stays inside the budget.
 
 ## Why fragmentation must be avoided
 
@@ -26,30 +26,32 @@ inside the budget.
 A tunnelled inner packet is wrapped in four nested layers before the wire:
 
 ```
-[ outer IP | outer UDP | outer DATA frame | WG transport | inner IP payload ]
-  \_______ 28 (IPv4) _______/ \___ 40 ___/ \____ 32 ____/ \___ inner MTU ___/
+[ outer IP | outer UDP | transport data frame | WG transport | inner IP payload ]
+  \_______ 28 (IPv4) _______/ \______ 101 ______/ \____ 32 ____/ \___ inner MTU ___/
 ```
 
 | Layer | Bytes | Constant |
 | ----- | ----- | -------- |
 | Outer IPv4 header | 20 | `IPv4UDPOverhead` (with UDP) |
 | Outer UDP header | 8 | " |
-| Outer DATA frame | **40** | `frame.DataOverhead` |
+| Transport data frame | **101** | `bond.Overhead` |
 | WireGuard transport | **32** | `WGTransportOverhead` |
 | Amnezia junk prefix (obfuscation only) | **`max(s1, s2)`** | `config.Amnezia.MaxJunkPrefix()` |
 
-The DATA-frame overhead of **40 bytes** decomposes as: XChaCha20 nonce (24) +
-kind discriminant (1) + outer-seq (8) + path-id (1) + fec-group (4) + fec-index
-(1, T24) + flags (1). DATA frames are unauthenticated (the inner WireGuard layer
-authenticates the real payload), so they carry **no** MAC tag — the 40-byte
-figure is exact. `TestDataOverheadMatchesEncoding` pins it to the real encoded
-length so the MTU budget can never silently drift from the codec.
+The data-frame overhead of **101 bytes** (`bond.Overhead`) decomposes as:
 
-With FEC enabled (T24), the inner MTU is reduced by a further
-`FECParityMTUPenalty` (5 bytes) so a full-size PARITY frame — which carries
-more framing than a DATA frame — also fits the path MTU rather than
-fragmenting; see `bind.InnerMTU`'s `fecEnabled` parameter and
-`internal/bind/mtu.go`.
+- **50** — the authenticated CONTROL envelope (`frame.ControlOverhead`):
+  XChaCha20 nonce (24) + kind (1) + control type (1) + seq (8) + truncated
+  HMAC-SHA256 tag (16);
+- **19** — the lane header: version (1) + boot id (8) + open generation (8) +
+  lane id (2);
+- **32** — the data fields: destination boot id (8) + destination generation
+  (8) + datagram sequence (8) + delivery order (8).
+
+Every frame carries the MAC; there is no unauthenticated frame kind and no
+smaller data frame. `config.outerPathOverheadBytes` (161 = 28 + 101 + 32)
+mirrors the IPv4 budget for config validation and is held to it by
+`TestPathMTUOverheadMatchesConfigMirror`.
 
 The WireGuard transport overhead of **32 bytes** is the 16-byte data-message
 header (message type + reserved + receiver index + counter) plus the 16-byte
@@ -63,7 +65,7 @@ Poly1305 tag.
 > and the **dynamic** per-path PMTU discovery
 > (`telemetry.PMTUDiscovery.UsablePathMTU`) subtracts it from the discovered outer
 > PMTU. So an amnezia deployment is sized for the true obfuscated data-frame
-> envelope with no manual adjustment; the largest junked DATA packet still fits the
+> envelope with no manual adjustment; the largest junked datagram still fits the
 > path MTU. With obfuscation off (`s1 == s2 == 0`) the reserve is 0 and the derived
 > MTU is byte-identical to plain WireGuard. The `jc`/`jmin`/`jmax` knobs size
 > SEPARATE junk *packets*, not a per-datagram prefix, so they do not enter this
@@ -71,16 +73,16 @@ Poly1305 tag.
 
 ## Computed inner MTU
 
-For the default 1500-byte IPv4 path MTU, FEC off:
+For the default 1500-byte IPv4 path MTU:
 
 ```
-inner MTU = 1500 − 28 (IP+UDP) − 40 (DATA frame) − 32 (WG) = 1400 bytes
+inner MTU = 1500 − 28 (IP+UDP) − 101 (data frame) − 32 (WG) = 1339 bytes
 ```
 
-`internal/bind.InnerMTU(1500, false) == 1400`, asserted by `TestInnerMTUFixture`.
-With FEC enabled the same path MTU yields `InnerMTU(1500, true) == 1395` (a
-further 5-byte `FECParityMTUPenalty`). An IPv6 underlay costs 20 more header
-bytes → `InnerMTU6(1500, false) == 1380`.
+`bind.InnerMTU(1500) == 1339`. An IPv6 underlay costs 20 more header bytes:
+`bind.InnerMTU6(1500) == 1319`. The daemon's sizing — `device.tunMTU` at boot
+and the runtime resizer — calls `InnerMTU`, the IPv4 budget, for every path;
+`InnerMTU6` has no caller outside tests.
 
 ## Per-path MTU and min-across-paths TUN sizing (T200, T205, D85)
 
@@ -99,15 +101,13 @@ mtu  = 1400   # a PPPoE/CGNAT/cellular uplink with a smaller underlay MTU
 ```
 
 `internal/device.tunMTU` computes the TUN's MTU as the **minimum**, across all
-configured paths, of each path's inner MTU (`bind.InnerMTU(pathMTU,
-fec.Enabled)`) — since the single virtual `wanbond0` interface carries one MTU
-for the whole bond, a full-size inner packet must fit whichever path the
-scheduler happens to send it over. Concretely, for a two-path config with `mtu
-= 1500` and `mtu = 1400` and FEC off: `InnerMTU(1500, false) = 1400` and
-`InnerMTU(1400, false) = 1300`, so the TUN is sized to **1300**, not 1400 — see
-`TestTunMTUMinAcrossPaths`. A path that omits `mtu` (or sets it to 0)
-contributes `InnerMTU(bind.DefaultPathMTU, fec.Enabled)` to that minimum, so an
-all-default config reproduces pre-T200 sizing exactly. `validate()` separately
+configured paths, of each path's inner MTU (`bind.InnerMTU(pathMTU)`) — since
+the single virtual `wanbond0` interface carries one MTU for the whole bond, a
+full-size inner packet must fit whichever lane the transport sends it over.
+Concretely, for a two-path config with `mtu = 1500` and `mtu = 1400`:
+`InnerMTU(1500) = 1339` and `InnerMTU(1400) = 1239`, so the TUN is sized to
+**1239**, not 1339 — see `TestTunMTUMinAcrossPaths`. A path that omits `mtu`
+(or sets it to 0) contributes `InnerMTU(bind.DefaultPathMTU)` to that minimum. `validate()` separately
 rejects a declared per-path `mtu` whose OWN derived inner MTU would fall below
 `minInnerMTU` (576), independent of what any other path contributes to the
 bond-wide minimum.
@@ -128,9 +128,8 @@ constraint lifts, with **no operator `mtu` knob required**.
 Search candidates and the reported result use outer-IP MTU units for both
 families. The UDP payload generated for a candidate subtracts the validated
 path socket's family-specific IP+UDP cost: 28 bytes for IPv4 or 48 for IPv6.
-Thus a 1500-byte candidate emits 1472 UDP bytes on IPv4 and 1452 on IPv6,
-matching the corresponding exact-byte shaper `Lmax`; the family conversion does
-not change the binary search's unit domain.
+Thus a 1500-byte candidate emits 1472 UDP bytes on IPv4 and 1452 on IPv6; the
+family conversion does not change the binary search's unit domain.
 
 - **Pinned override.** A path with an explicit `mtu` is PINNED: discovery never
   probes it and its configured value is authoritative — the static knob and
@@ -158,7 +157,7 @@ not change the binary search's unit domain.
   dropping ~30 % of packets) a size *above* the reliably-carried MTU still
   echoes on the ~70 % of probes that pass, so a lone echo accepted it and the
   search converged tens of bytes too high (field: inner 1331 vs a reliable
-  ~1268–1300) — full-MTU DATA then black-holed (TCP 0 bytes rx). Requiring N
+  ~1268–1300) — full-MTU datagrams then black-holed (TCP 0 bytes rx). Requiring N
   consecutive successes rejects such an intermittently-echoing size, so the
   search settles at/below the size that echoes *reliably*. A failing candidate
   now costs three unanswered probes and three control probes instead of one
@@ -168,24 +167,21 @@ not change the binary search's unit domain.
   socket path that deterministically drops every 3rd *oversize* outer datagram
   (nft `ip length > T` + `numgen inc mod 3`), the N-consecutive search converges
   at/below the reliably-carried threshold `T`, never running away to the ceiling.
-- **Shared probe cadence and pacing accounting (T300).** A discovery goroutine
-  queues one padded request per `(peer,path)` and waits for the next eligible
-  200 ms local probe slot; that padded frame substitutes for the ordinary
-  liveness probe instead of adding a second local producer. The following slot
-  is always ordinary before another PMTU attempt, so immediate consecutive
-  search failures cannot starve liveness. The default three confirmations
-  therefore occupy three PMTU slots separated by ordinary slots (at least five
-  slots from the first attempt through the third), while a peer-requested
-  reactive echo attempts non-blocking priority admission immediately. PMTU
-  reserves the exact padded length before sequence allocation, timestamping, and
-  echo registration in the selected slot, so admission and cadence waits
-  contribute neither to measured RTT nor the echo deadline. A successful writer
-  completion increments wire bytes. An unexpected failure preserves its
-  transport error and increments the probe-send-error counter; `EMSGSIZE` maps
-  internally through `ErrProbeTooLarge` to the search's benign `echoed=false`
-  verdict without counting as an unexpected send failure. This keeps built-in
-  discovery within the pacing `Pburst`/`Rp` envelope rather than treating PMTU
-  traffic as overload.
+- **Shared probe cadence (T300).** A discovery goroutine queues one padded
+  request per `(peer,path)` and waits for the next eligible 200 ms local probe
+  slot; that padded frame substitutes for the ordinary liveness probe instead
+  of adding a second local producer. The following slot is always ordinary
+  before another PMTU attempt, so immediate consecutive search failures cannot
+  starve liveness. The default three confirmations therefore occupy three PMTU
+  slots separated by ordinary slots (at least five slots from the first
+  attempt through the third), while a peer-requested reactive echo is written
+  immediately. Sequence allocation, timestamping and echo registration happen
+  in the selected slot, so the cadence wait contributes neither to measured
+  RTT nor to the echo deadline. A successful write counts towards the path's
+  wire bytes. An unexpected failure preserves its transport error and
+  increments the probe-send-error counter; `EMSGSIZE` maps internally through
+  `ErrProbeTooLarge` to the search's benign `echoed=false` verdict without
+  counting as an unexpected send failure.
 - **Optional safety margin.** `SafetyMargin` (bytes, default **0**) is
   subtracted from the *reported* path MTU (`PathMTU` / `PathMTUOrZero` and the
   usable envelope that composes on them) as an extra cushion below the
@@ -216,8 +212,8 @@ clamp the TCP MSS of those SYNs to the tunnel's inner MTU minus the inner IP+TCP
 headers:
 
 ```
-MSS = inner MTU − 40 (IPv4: 20 IP + 20 TCP) = 1400 − 40 = 1360 bytes
-      inner MTU − 60 (IPv6: 40 IP + 20 TCP) = 1380 − 60 = 1320 bytes
+MSS = inner MTU − 40 (inner IPv4: 20 IP + 20 TCP) = 1339 − 40 = 1299 bytes
+      inner MTU − 60 (inner IPv6: 40 IP + 20 TCP) = 1339 − 60 = 1279 bytes
 ```
 
 Two DISJOINT netfilter chains carry this clamp, split by ownership — a given SYN
@@ -273,7 +269,7 @@ ip6tables -t mangle -A FORWARD -o wanbond0 -p tcp --tcp-flags SYN,RST SYN \
 
 # Or pin an explicit MSS if a fixed lower path MTU is known:
 iptables  -t mangle -A FORWARD -o wanbond0 -p tcp --tcp-flags SYN,RST SYN \
-          -j TCPMSS --set-mss 1360
+          -j TCPMSS --set-mss 1299
 ```
 
 `--clamp-mss-to-pmtu` is preferred in both chains: it derives the MSS from the
@@ -284,8 +280,8 @@ for locally originated traffic, on the sender honouring the TUN MTU.
 
 ## What T12 verifies
 
-- `TestInnerMTUFixture` / `TestDataOverheadMatchesEncoding` — the arithmetic and
-  its coupling to the codec.
+- `TestInnerMTUFixture` / `TestPathMTUOverheadMatchesConfigMirror` — the
+  arithmetic and its mirror in config validation.
 - The e2e `TestMultipathNoFragmentation` fixture sends a max-inner-MTU payload
   with DF set and asserts, from a packet capture on the edge egress, that no
   outer datagram is IP-fragmented and that the inner packet fits the computed

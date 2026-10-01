@@ -1,5 +1,7 @@
 # P0 findings checkpoint — gate on P1-P5 (Q8)
 
+> **Note (2026-10-01):** historical record. The components this gate planned — the active-backup and weighted schedulers, send pacing, fixed and adaptive FEC — were built and since removed; the adaptive transport ([design.md](design.md)) is the only transport.
+
 This is the explicit P0→P1 gate mandated by Q8. It reviews `docs/p0-findings.md`
 (the seven conn.Bind pitfall areas, measured and source-cited during the P0
 spike) against every planned P1-P5 task and records, for each design assumption,

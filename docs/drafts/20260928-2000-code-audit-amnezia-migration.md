@@ -23,17 +23,46 @@ conservation or FEC should remain supported features.
    recovery; small packets may receive budgeted replication. The intermediate
    candidate `af2d54c` is being deployed by the operator. Its measured gains and
    remaining failures are recorded in [the VM results](../../test/vm/README.md#intermediate-correction--2026-09-28-623d36f).
-3. **Next cleanup decision: supported modes.** Once the retained transport
+3. **Decided and removed on 2026-10-01 (branch `cleanup`, not yet merged):
+   supported modes.** Once the retained transport
    meets the supported envelope, decide explicitly whether static weighted
    scheduling, legacy active-backup/data thrift and Reed–Solomon FEC are to be
    retired. Remove each retired feature together with its exclusive knobs,
    metrics, examples, dependencies and tests. Preserve shared path health,
    authenticated demux, replay protection, ordering and lifecycle contracts.
-4. **Simplify the remaining code.** Extract shared path membership from the
+   *Status 2026-10-01:* the operator decided to retire every legacy policy
+   ([improvement plan](20261001-0820-wanbond-improvement-plan.md)). Commit
+   `82968ec` on `cleanup` removed them from the non-test code; the adaptive
+   transport is the only transport. The table under *What to retire* records
+   what went and what remains. Tests, e2e sources, the web UI and documentation
+   are adapted on the same branch. `klauspost/reedsolomon` is still listed in
+   `go.mod`: `go mod tidy` was not run in that change.
+4. **Partly done on 2026-10-01 (branch `cleanup`, not yet merged): simplify the
+   remaining code.** Extract shared path membership from the
    legacy scheduler; reduce competing transport/control owners; deduplicate DNS
    result aggregation and repeated recovery documentation. Preserve behavioral
    assertions when consolidating tests. Do not count file splitting as cleanup
    or polish a legacy controller immediately before deleting it.
+   *Status 2026-10-01:* done — the scheduler package is gone and path
+   membership lives in the bind (`device.buildProbers` hands the probers to
+   `bind.NewMultipath`); the bind has one transport owner per peer
+   (`bind/adaptive.go`); the recovery documentation went with the feature.
+   Open, not removed in that change:
+   - *removed 2026-10-01 (branch `cleanup-dead`):* the resequencer modes that
+     were unreachable in production — the unpinning rebaseline and the
+     low-anchor rebaseline with their pending-source and pending-low gates,
+     and the single-path immediate release with its path-key ingest and its
+     `wanbond_resequencer_immediate_releases_total` series. The resequencer
+     has one ingest method (`Observe`) and one rebaseline (`RebaselineAt`).
+     Removed with them: the connection-scoped loss estimator and the
+     loss-sample count of `telemetry.Estimate`, the admission variant of the
+     PMTU echo-await probe, `frame.UnpaddedProbeOnWire`, and the write-only
+     `openGeneration` of a path socket;
+   - `telemetry.ControlGuard` (no production caller);
+   - `device.newHubFailover` (unused constructor; production uses
+     `newHubFailoverFromSpecs`);
+   - the DoH/DoT answer-aggregation duplication;
+   - the monitor UI has no panel for adaptive lane state.
 5. **Then migrate the engine.** Evaluate the pinned AmneziaWG v3 candidate below
    after resolving which local patches survive cleanup. Upgrade the engine
    with current wire settings first, prove mixed-version operation, and treat
@@ -102,18 +131,21 @@ The three inspected Nix configurations (`pi-mo`, `raspi5l`, `o2`) request
 not prove all users or deployments have migrated. `active-backup` remains the
 application default; `weighted` remains accepted configuration.
 
-| Candidate | Evidence and removal conditions |
-| --- | --- |
-| `weighted` policy | Static-capacity aggregation gate and frame pacer remain callable. Retire after adaptive meets the supported load/outage envelope. Remove its config knobs, metrics, examples and policy-specific tests together. |
-| Legacy `active-backup` transport | Still implements priority failover/data thrift, which adaptive saturation does not promise. If metered-link conservation remains a requirement, specify and implement it in the retained transport before removal. Keep the current binary/config as a rollback artifact. |
-| `adaptivefec`, `fec`, `bind/fec*.go` | Adaptive explicitly rejects FEC. Good retirement candidates if Reed–Solomon recovery is no longer a supported mode. Remove `reedsolomon` and exclusive transitive dependencies only after import-graph verification. |
-| Legacy recovery-contract protocol and data-loss feedback | Supports the old FEC/shaper plane. Adaptive has its own authenticated ACK/repair protocol. Remove old negotiation and observability with the old plane, retaining anti-replay/session fencing and the outer CONTROL envelope. |
-| `congestion`, `shaper`, TUN AQM and engine admission patches | `startTUNAQM` enables only paced active-backup with per-path shapers. Adaptive uses its own controller. Persistent TUN interfaces can retain old kernel qdiscs across upgrades: migration cleanup and its real-kernel test must precede deletion. Engine accounting is still called by metrics even under adaptive. |
-| Legacy DATA/PARITY codec | Adaptive rejects these receive kinds. Retirement reduces parser/security surface, but is an explicit wire-compatibility break. Reject incompatible peers visibly; preserve PROBE/CONTROL authentication, challenge response and replay checks. |
-| `sched` package | **Cannot delete wholesale now.** Adaptive constructs `ActiveBackup` with pacing off and reuses scheduler membership/health plumbing. Extract a small path registry before removing selection/pacing implementations. |
-| `reseq` package | **Keep bulk ordering.** Adaptive uses it before WireGuard replay validation. Remove only legacy contract/FEC machinery after preserving restart, loss-gap, ordering and bounded-hold contracts. |
-| Routing, DNS, PMTU/MSS, peer lifecycle, exit selection | Shared operational behavior. No evidence that these are junk. Keep coverage for multi-peer demux, NAT rebinding, failover and startup/shutdown. |
-| Monitor, TUI, Prometheus projections | Some repeated field mapping is boundary code, not automatically duplication. Retire obsolete FEC/recovery fields with the feature; avoid a generic reflection serializer. Add adaptive-specific status where needed. |
+*Status 2026-10-01:* on branch `cleanup` (not yet merged) `adaptive` is the
+default and the only accepted policy; the third column records each candidate.
+
+| Candidate | Evidence and removal conditions | Status 2026-10-01 (branch `cleanup`, not yet merged) |
+| --- | --- | --- |
+| `weighted` policy | Static-capacity aggregation gate and frame pacer remain callable. Retire after adaptive meets the supported load/outage envelope. Remove its config knobs, metrics, examples and policy-specific tests together. | Removed with its config knobs and metrics; the keys are now load errors. |
+| Legacy `active-backup` transport | Still implements priority failover/data thrift, which adaptive saturation does not promise. If metered-link conservation remains a requirement, specify and implement it in the retained transport before removal. Keep the current binary/config as a rollback artifact. | Removed. Metered-link conservation was not carried into the retained transport. |
+| `adaptivefec`, `fec`, `bind/fec*.go` | Adaptive explicitly rejects FEC. Good retirement candidates if Reed–Solomon recovery is no longer a supported mode. Remove `reedsolomon` and exclusive transitive dependencies only after import-graph verification. | Removed, with the `[fec]` table. Remains: the `klauspost/reedsolomon` requirement in `go.mod`. |
+| Legacy recovery-contract protocol and data-loss feedback | Supports the old FEC/shaper plane. Adaptive has its own authenticated ACK/repair protocol. Remove old negotiation and observability with the old plane, retaining anti-replay/session fencing and the outer CONTROL envelope. | Removed (`bind/recovery_contract.go`, the telemetry codecs, their metrics). Session fencing and the CONTROL envelope are retained. |
+| `congestion`, `shaper`, TUN AQM and engine admission patches | `startTUNAQM` enables only paced active-backup with per-path shapers. Adaptive uses its own controller. Persistent TUN interfaces can retain old kernel qdiscs across upgrades: migration cleanup and its real-kernel test must precede deletion. Engine accounting is still called by metrics even under adaptive. | Removed, including the engine's outbound admission. Retained on purpose: the startup removal of the old qdisc (`device/tunshaper_linux.go`) and the engine's `OutboundStats`. |
+| Legacy DATA/PARITY codec | Adaptive rejects these receive kinds. Retirement reduces parser/security surface, but is an explicit wire-compatibility break. Reject incompatible peers visibly; preserve PROBE/CONTROL authentication, challenge response and replay checks. | Removed. Kinds 1 and 2 decode as `frame.ErrMalformed`; every remaining frame kind is authenticated. A peer on a removed policy is not reported: its frames are dropped. |
+| `sched` package | **Cannot delete wholesale now.** Adaptive constructs `ActiveBackup` with pacing off and reuses scheduler membership/health plumbing. Extract a small path registry before removing selection/pacing implementations. | Removed wholesale; probers are built by `device.buildProbers` and owned by the bind. |
+| `reseq` package | **Keep bulk ordering.** Adaptive uses it before WireGuard replay validation. Remove only legacy contract/FEC machinery after preserving restart, loss-gap, ordering and bounded-hold contracts. | Kept; the contract/FEC machinery is removed. The unpinning and low-anchor rebaselines, the pending-low/pending-source gates and the single-path immediate release, none of which was reachable in production, were removed on 2026-10-01 (branch `cleanup-dead`). |
+| Routing, DNS, PMTU/MSS, peer lifecycle, exit selection | Shared operational behavior. No evidence that these are junk. Keep coverage for multi-peer demux, NAT rebinding, failover and startup/shutdown. | Kept. Remains: the DoH/DoT answer-aggregation duplication, `telemetry.ControlGuard` (no production caller) and `device.newHubFailover` (unused constructor). |
+| Monitor, TUI, Prometheus projections | Some repeated field mapping is boundary code, not automatically duplication. Retire obsolete FEC/recovery fields with the feature; avoid a generic reflection serializer. Add adaptive-specific status where needed. | FEC, recovery, aggregation and shaper fields and metric families removed. Remains: the monitor UI has no panel for adaptive lane state. |
 
 The dedicated legacy-heavy files/packages above contain **10,593 non-test Go
 lines**, including the entire shared `sched` package and TUN AQM. This is an

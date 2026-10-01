@@ -85,3 +85,54 @@ Measured on 2026-09-30/10-01, edge `pi` behind a satellite and a mobile link:
 - `o2` refuses the measurement key; nothing is known about its build or lanes.
 - The satellite plan's 0.5/0.5 Mbit/s cap: confirm it is the plan and not a
   fault.
+
+## Found during the cleanup (2026-10-01)
+
+None of these was introduced by the removal; each was already true of the
+adaptive transport and became visible when it was the only one left.
+
+- **A handshake initiation issued before the hello completes is dropped.**
+  Observed in `internal/device` (`TestFirstResolveInstallsEndpointAndInitiatesHandshake`):
+  the initiation queued at endpoint install is counted as a queue drop
+  (`QueueDrops` 1) and the handshake completes about 5.3 s later, on the
+  engine's `RekeyTimeout` retry. The cause — the transport's 100 ms queue age
+  expiring before the first hello at the 200 ms probe interval — is inferred
+  from the code, not traced. At startup `startFirstPathUpHandshake` and
+  `startPeerRestartHandshake` re-initiate. A failover between two endpoints of
+  one concentrator process has neither trigger; whether it then waits 5 s is
+  not reproduced. Reproduce in the lab before changing anything.
+- **Reorder hold is 250 ms, not the 300 ms the transport asks for.**
+  `bind/adaptive.go` requests `adaptiveReorderHold` (300 ms);
+  `Resequencer.SetHoldBound` clamps to the construction timeout (250 ms).
+  Decide which number is intended and make the two agree.
+- **An IPv6 underlay path is sized with the IPv4 budget.** `bind.InnerMTU6` has
+  no caller; `device.tunMTU` and the runtime resizer use `InnerMTU` for every
+  path, so by arithmetic a full-size datagram exceeds an IPv6 path's MTU by 20
+  bytes. Not tested at runtime; production paths are IPv4.
+- **A path that is dead in one direction stays schedulable.** From reading
+  `bind/multipath.go` and `bond/bond.go`: a lane's lease is refreshed by the
+  peer's inbound probes regardless of this end's liveness verdict, so the lane
+  is used until its acknowledgements stall. Not executed.
+- **No end-to-end test bounds how fast traffic leaves a dead lane.** The netns
+  and real-host failover tests measured it through the removed schedulers' log
+  record; they now bound liveness detection only, and flow survival. The lab's
+  continuity gates are the remaining measurement.
+- **The monitor UI and TUI show no lane state.** The `wanbond_adaptive_*`
+  series exist on `/metrics` only, and have no test in `internal/metrics`.
+- **Four netns tests (`test/e2e`) fail on the worker VM for the baseline
+  `db465b3` and for the cleanup tree alike**, each run alone as root on
+  `llm-ubuntu-0` (Ubuntu, kernel 6.8), with the same message in both trees:
+  `TestDNSHubResolveAndReroute` (the edge does not repoint to the renumbered
+  concentrator within 15 s), `TestMultiPeerConcentratorIsolation`
+  (`per-peer-metrics…`: edge A's iperf3 after its restart gets "Network is
+  unreachable"), `TestE2ELossyPathPMTUConvergence` (wanbond0 stays at the
+  1500-path size on the deterministic-loss path), `TestOneSidedRestartRecovery`
+  (`ip addr add` on the persistent TUN: "Address already assigned"). Whether
+  each is a product defect, a test defect or the host is not established. The
+  rest of the tier passes on the cleanup tree when a test is run alone; in one
+  whole-suite run three more failed from state left by earlier tests (a
+  leftover `wanbond0`, a loopback bind refused).
+- **The real-host tier (`test/realhosts`) was adapted but not run.**
+- **`TestOneSidedRestartRecovery` still describes mechanisms that are gone**
+  (a 2048-frame resequencer window, the low-anchor rebaseline); it cannot be
+  judged until its fixture defect above is fixed.

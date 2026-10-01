@@ -1,10 +1,10 @@
 # wanbond
 
 **wanbond** bonds two (or more) unreliable, heterogeneous WAN uplinks — e.g. a
-low-latency-but-jittery Starlink link and a stable-but-metered 4G/5G link — into
-a single resilient, DPI-resistant WireGuard tunnel for general IP traffic, with
-adaptive forward error correction (FEC) that masks per-path loss without
-duplicating every packet.
+low-latency-but-jittery Starlink link and a stable 4G/5G link — into a single
+DPI-resistant WireGuard tunnel for general IP traffic. It uses every uplink
+under load, repairs loss by bounded retransmission, and keeps small real-time
+datagrams ahead of bulk.
 
 It is a single self-contained Go binary that runs on both ends of the tunnel:
 
@@ -18,25 +18,22 @@ The same binary serves both roles; the role is chosen from the config file.
 
 ## What it gives you
 
-Available behaviors, selected by policy:
-
 1. **Transparent failover** — a TCP flow survives a WAN dying mid-session, with
-   no reset (WireGuard's roaming + our per-path liveness/failover).
-2. **Data-thrift** — a metered link stays ~idle until it is actually needed.
-3. **On-demand aggregation** — under load, traffic stripes across both links.
-4. **FEC loss-masking** — Reed-Solomon parity reconstructs lost frames instead
-   of retransmitting.
-5. **Adaptive FEC** — redundancy tracks measured loss on the path(s) that
-   **actually carry data**. For one stable active-backup carrier, authenticated
-   receiver feedback counts native, parity-reconstructed, and final missing
-   DATA exactly once, so clean priority probes cannot mask ordinary DATA loss;
-   the controller conservatively combines that pre-recovery signal with the
-   carrier's probe loss. Weighted striping retains its weight-weighted probe
-   mix, and a lossy but data-idle standby never inflates parity. The controller
-   targets a residual loss SLA rather than fixed overhead: parity engages as
-   soon as measured loss would miss the SLA, while one estimator-quantum blip
-   or an early probe spike measured over too few samples stays at zero overhead.
-6. **DPI resistance** — the outer wire is unidentifiable high-entropy UDP: no
+   no reset: the WireGuard engine sees one stable endpoint per peer, and the
+   transport stops using a lane whose acknowledgements stall or whose
+   authenticated hello lapses, and repairs its outstanding datagrams over
+   another lane.
+2. **Aggregation** — under load, traffic is sent over every usable lane, each
+   paced at the capacity the transport measured for it. No bandwidth figures
+   are configured.
+3. **Bounded loss repair** — a datagram not confirmed within the repair timer
+   is sent again, preferably over another lane, at most four times and within
+   250 ms; nothing is retransmitted after that.
+4. **Priority for small datagrams** — encrypted datagrams of at most 384 bytes
+   are served ahead of bulk; those that are not TCP (voice, DNS) go first, to
+   the lane with the lowest latency, and may be copied onto a second lane
+   within a rate budget.
+5. **DPI resistance** — the outer wire is unidentifiable high-entropy UDP: no
    WireGuard fingerprint, no magic bytes (nDPI/Suricata do not classify it as
    VPN/WireGuard).
 
@@ -44,8 +41,8 @@ Available behaviors, selected by policy:
 
 wanbond embeds a locally patched [amneziawg-go](https://github.com/amnezia-vpn/amneziawg-go)
 WireGuard engine (TUN, Noise handshake, AEAD, rekey, roaming, keepalive) and puts
-**all** bonding logic — multipath scheduling, an obfuscated outer frame codec,
-Reed-Solomon FEC, a receive resequencer, and per-path telemetry — into a custom
+**all** bonding logic — the multipath transport, an obfuscated and authenticated
+outer frame codec, a receive resequencer, and per-path telemetry — into a custom
 `conn.Bind` that lives *beneath* the engine and operates only on opaque, already-
 encrypted WireGuard datagrams. The engine sees one stable virtual endpoint per
 peer; the Bind privately fans traffic out across the real per-path UDP sockets
@@ -54,24 +51,27 @@ owning peer from PROBE frames authenticated under that peer's own PSK. For the
 full picture and the exact list of what we built on top of amneziawg-go, read
 **[docs/design.md](docs/design.md)**.
 
-### Adaptive bidirectional bonding
+### The transport
 
-Set `[scheduler] policy = "adaptive"` on **both ends**, with `[fec] enabled = false`.
-This policy learns each authenticated return path, including multiple edge WANs
-behind one concentrator socket. It measures delivery and forward queue delay,
-paces each direction independently, and uses every available path under load.
-Static bandwidth hints are not required. Legacy policies keep their defaults.
-Idle feedback, including lost empty keepalives, does not lower the pacing target.
-Loaded feedback uses a minimum
+There is one transport (`internal/bond`), and both ends must run it; there is
+nothing to select. `[scheduler] policy = "adaptive"` is accepted and is the
+default. A build that still runs a removed policy (`active-backup`, `weighted`)
+cannot exchange tunnel data with this one — see the
+[upgrade note](docs/install.md#upgrading-from-a-build-with-the-removed-transports).
+
+The transport learns each authenticated return path, including multiple edge
+WANs behind one concentrator socket. It measures delivery and forward queue
+delay, paces each direction independently, and uses every available path under
+load. Idle feedback, including lost empty keepalives, does not lower the pacing
+target. Loaded feedback uses a minimum
 over each control interval, with a jitter allowance learned while the lane is
 idle, to separate propagation variation from sustained queueing. The queue
 allowance excludes return-path jitter; the window uses unloaded RTT history.
-The congestion window and repair timer also account for RTT variation. Loss
+The in-flight window and repair timer also account for RTT variation. Loss
 response caps pacing near measured delivery with headroom for jitter; metrics
 distinguish the pacing target from actual send and delivery rates. The repair
 timer also measures full delivery-confirmation time so reordered packets do not
-trigger premature retries. Linux startup requires `tc`
-and removes the old wanbond HTB/bfifo cap when that shaper is no longer enabled.
+trigger premature retries.
 Small-packet duplication follows learned capacity, capped at 20% of the aggregate
 pacing target and 64 kB/s; the second lane reserves capacity for the copies. Bulk receive batching reduces return ACK traffic and
 flushes immediately for interactive packets.
@@ -93,9 +93,13 @@ local to the sender and does not change the wire protocol. Bulk datagrams remain
 [transport design](docs/design.md#adaptive-transport--internalbond) and
 [autonomous VM lab](test/vm/README.md).
 
-The adaptive policy remains experimental: the mobile and radio profiles have
-unmet throughput gates. VM improvements have not yet established production
-performance; recorded failures and measurements are in the lab report.
+Throughput and continuity targets are not all met: the recorded measurements
+and failures are in the [lab report](test/vm/README.md), the open items in the
+[improvement plan](docs/drafts/20261001-0820-wanbond-improvement-plan.md).
+
+On Linux the daemon needs `tc` (iproute2) at startup: it inspects the queue
+discipline of `wanbond0` and removes the HTB/`bfifo` rate cap an older build
+may have left on a persistent interface.
 
 ## Quick start
 
@@ -120,6 +124,7 @@ edge + concentrator (+ standby) from scratch, follow the operator-facing
 
    ```toml
    role = "edge"                    # or "concentrator"
+   psk  = "…"                       # outer control/probe PSK (not the WG PSK)
 
    [[paths]]
    name        = "starlink"
@@ -132,12 +137,10 @@ edge + concentrator (+ standby) from scratch, follow the operator-facing
    private_key = "…"
    [[wireguard.peers]]
    public_key  = "…"
-   endpoint    = "concentrator.example:51820"   # edge only; concentrator learns edges
+   endpoint    = "203.0.113.7:51820"   # edge only; concentrator learns edges
    allowed_ips = ["10.10.0.0/24"]
 
-   psk = "…"                        # outer control/probe PSK (not the WG PSK)
-
-   # optional: [amnezia] (obfuscation, all-or-nothing), [fec], [scheduler], [dns], [liveness], [metrics], [monitor], [log]
+   # optional: [amnezia] (obfuscation, all-or-nothing), [dns], [liveness], [metrics], [monitor], [log]
    ```
 
 3. Install the systemd unit for the role
@@ -150,92 +153,34 @@ edge + concentrator (+ standby) from scratch, follow the operator-facing
 ## Operating it
 
 - **Live reload**: `systemctl reload wanbond-…` (SIGHUP) re-reads the config and
-  adds/removes paths without tearing the tunnel down. With pacing+FEC enabled,
-  path-service changes use an authenticated peer recovery contract: DATA and
-  inner control wait behind a 250 ms bounded transition while PROBEs remain
-  live, then fast recovery resumes only after an exact ACK; legacy peers fall
-  back conservatively without resetting OuterSeq or FEC GroupID. Same-name
-  pacing/FEC scalar changes remain restart-required: reload warns and leaves the
-  running service unchanged. A daemon restart establishes a new authenticated
-  SessionID; any engine-driven Close/Open within one process advertises a new
-  ContractID while preserving that process's sequence spaces.
-  On a stable active-backup FEC receive path, that exact ACK also authorizes a
-  shorter head-of-line recovery window
-  `W=min(250ms,A+clamp(max(SRTT+4*RTTVAR),10ms,250ms))`. The receiver uses it only
-  while the ACK's composite path/source and the current DATA carrier's
-  authenticated RTT sample remain fresh for at least 250 ms; missing, stale,
-  changed, weighted, or otherwise uncertain evidence keeps the 250 ms fallback.
-  Service-contract, session, membership, source-roam, rebaseline,
-  resequencer-replacement, and teardown transitions advance one
-  receiver/topology generation before clearing evidence, so a delayed ACK
-  completion or recovery-window publication from an older generation cannot
-  restore the shorter hold. During a same-service lease renewal, each venue
-  keeps its prior ACK-completed window and original expiry until that venue's
-  replacement ACK completes; a standby ACK therefore cannot revoke active
-  evidence, and a failed renewal cannot extend it. The authority
-  carries that generation with its exact transition time and wakes the receive
-  drainer through a coalescing notification. A conservative gap therefore
-  remains bounded by `transitionAt+250ms`, including when the later explicit
-  publication stalls; observation after that bound expires it immediately.
-  An ordinary/bootstrap probe without a recovery ACK revokes any admitted or
-  acknowledged recovery evidence once. When no such evidence exists, repeating
-  those probes is idempotent and cannot move an already armed 250 ms deadline.
-  Within one unchanged
-  topology, ACK-venue and authenticated RTT/liveness changes receive ordered
-  publication revisions only after their exact inputs are revalidated; an older
-  refresh cannot erase a newer venue or restore a smaller RTT headroom. Each gap
-  keeps the evidence snapshot and deadline it armed with, so same-topology
-  updates affect only future gaps.
+  adds/removes paths without tearing the tunnel down, and rebinds the
+  `[metrics]`/`[monitor]` endpoints. Every other change (keys, PSK, `[amnezia]`,
+  `[dns]`, `[liveness]`, `tun_persist`, bind mode, a changed address on an
+  existing path) is logged as ignored until restart; the running configuration
+  is kept.
 - **Metrics**: set `[metrics].listen = "127.0.0.1:9090"` (loopback only — a
-  non-loopback bind is refused) and scrape `/metrics` for per-path loss, FEC
-  recovery, throughput, probed RTT/liveness,
-  `wanbond_path_probe_send_errors_total` (unexpected locally-originated ordinary
-  and PMTU PROBE socket write failures; expected PMTU `EMSGSIZE` too-large
-  verdicts are excluded; PMTU failures return to discovery, while ordinary
-  failures are counted then discarded so other paths continue, D96), exact-byte shaper
-  queue/backpressure, byte, priority-debt/bound, configuration, and asynchronous
-  write-error series (`wanbond_path_shaper_*`) plus underlying
-  `wanbond_path_socket_write_errors_total` (shaped/direct DATA, PARITY, and
-  inner-control socket failures; generated outer PROBE and reflected-echo
-  failures are excluded), active-backup closed-loop target/actual wire-rate,
-  delivered-capacity, base-RTT/queue-delay, authenticated-loss freshness,
-  installed-rate acknowledgment, retarget count/pending state, and
-  carrier-epoch series (`wanbond_path_congestion_*`), exact Linux TUN-AQM
-  rate/queue/GSO target/readback/freshness/epoch, live backlog/drop, and
-  non-dropping shrink-deferral series
-  (`wanbond_tun_aqm_*`), engine-side TUN/send batch histograms, outbound
-  queue/active-send gauges, and exact-byte admission limit/retention/wait
-  counters (`wanbond_engine_*`), WG-session establishment
-  (`wanbond_session_established`, plus a per-peer
-  `wanbond_peer_session_established{peer}` in multi-peer mode, T256; every peer,
-  including the first configured one, carries its configured `peer` label, while
-  a true single-peer exposition omits the label), receive-resequencer head-of-line holds vs
-  single-path immediate releases (`wanbond_resequencer_hol_hold_seconds_total` /
-  `wanbond_resequencer_immediate_releases_total`, D93), and — under
-  `scheduler.policy = "weighted"`
-  — a static `wanbond_weighted_capacity_sane` gauge that flags an unverifiable
-  `link_bandwidth` declaration (see [docs/install.md
-  §6b](docs/install.md#6b-weighted-policy-capacity-sanity-check-t144)) plus the
-  aggregation-gate quartet `wanbond_aggregation_engaged` /
-  `wanbond_offered_load_fps` / `wanbond_aggregation_{engage,disengage}_threshold_fps`
-  (per-peer gauges showing whether data-thrift striping is engaged, the smoothed
-  offered load driving it, and the static engage/disengage thresholds; absent
-  under `active-backup`). Independent of policy, a static
-  `wanbond_liveness_budget_sane` gauge flags a `[liveness]` `down_after` /
-  per-path `ride_through` widened past the 3s transparent-failover recovery
-  deadline (WARN-and-allow — it never blocks startup). When `[fec] enabled =
-  true, adaptive = true`, four per-peer gauges expose the adaptive controller's
-  live decision — `wanbond_fec_adaptive_parity` (current target parity M),
-  `wanbond_fec_smoothed_loss` (its EWMA loss estimate),
-  `wanbond_fec_eligible_path_loss` (the selected controller input — the maximum
-  of fresh authenticated pre-recovery DATA loss and probe loss for one stable
-  active-backup carrier, or the weight-weighted probe mix under striping), and
-  `wanbond_fec_eligible_paths` (the count of those data paths; 0 while learned
-  DATA feedback is stale or identity-mismatched and the controller holds) —
-  absent entirely for a fixed-ratio or FEC-off peer.
+  non-loopback bind is refused) and scrape `/metrics` for:
+  per-path probed liveness, RTT, jitter and loss, byte counters, throughput and
+  discovered MTU (`wanbond_path_*`), including
+  `wanbond_path_probe_send_errors_total` (unexpected write failures of locally
+  originated PROBE frames; an expected PMTU `EMSGSIZE` verdict is excluded) and
+  `wanbond_path_socket_write_errors_total` (the transport's datagram writes the
+  socket refused); per-lane transport state — pacing target, send and delivery
+  rate, round trips, queue delay, window, repairs, discovery and eligibility —
+  and per-peer queue drops and expired repairs (`wanbond_adaptive_*`);
+  receive-resequencer releases, drops, skips and head-of-line holds
+  (`wanbond_resequencer_*`); engine-side TUN/send batch histograms and outbound
+  queue gauges (`wanbond_engine_*`); WG-session establishment
+  (`wanbond_session_established`, plus `wanbond_peer_session_established`,
+  labelled `peer` once two or more peers are bound; a single-peer exposition
+  omits the label); the current TUN MTU (`wanbond_tun_mtu`); and a static
+  `wanbond_liveness_budget_sane` gauge that flags a `[liveness]` `down_after` /
+  per-path `ride_through` widened past the 3 s recovery deadline
+  (WARN-and-allow — it never blocks startup).
 - **Monitoring UI**: set `[monitor].listen = "127.0.0.1:9101"` for a
-  live-updating dashboard (per-peer throughput/loss/FEC sparklines, pushed over
-  a `/ws` WebSocket every 1s). The compact dashboard automatically follows the
+  live-updating dashboard (per-peer throughput/loss sparklines, pushed over
+  a `/ws` WebSocket every 1s). It has no panel for the transport's per-lane
+  state; read `wanbond_adaptive_*` from `/metrics` for that. The compact dashboard automatically follows the
   system light/dark theme, shows overall WG-session status in the top bar,
   and places each peer's session and handshake age beside its name.
   The exit-selection control offers `auto` and
@@ -260,8 +205,7 @@ edge + concentrator (+ standby) from scratch, follow the operator-facing
   §6c](docs/install.md#6c-monitoring-ui-monitor)). Beyond per-peer traffic/
   quality, the dashboard shows: the daemon's effective **role** (edge/
   concentrator), **version**, and process **uptime**; per-path **bind mode**
-  (`source`/`device`/`auto`) plus the resolved **bound device**, and the
-  operator-declared **link bandwidth/RTT**; the truncated WireGuard
+  (`source`/`device`/`auto`) plus the resolved **bound device**; the truncated WireGuard
   public-key **fingerprint** (never the full key — read-only identity
   disambiguation only); and, on any binding, an ordered **hub-endpoint
   failover list** with the active entry highlighted against its standbys.
@@ -290,97 +234,7 @@ edge + concentrator (+ standby) from scratch, follow the operator-facing
   `POST /api/exit` as the dashboard's exit selector, so it needs
   `[monitor].listen` enabled. The override is runtime-only; a restart restores
   the config's top-level `exit`.
-- **Logs**: structured, to stderr → `journalctl -u wanbond-…`; watch for the
-  one-shot `"scheduler aggregation change"` record on every engage/disengage
-  flip. With pacing enabled, encoded DATA and FEC parity now backpressure in a
-  bounded exact-byte shaper instead of producing scheduler-shedding records.
-- **Pacing on/off is a real tradeoff, not just a knob**: pacing applies bounded
-  sender backpressure at a live outer target. Under
-  active-backup, Linux owns a small `wanbond0` HTB+byte-bounded-`bfifo` qdisc and adapts
-  both the path shaper and TUN ingress rate from successfully emitted outer
-  bytes, probe queue delay qualified by the probe RTTVAR and sustained for one
-  elapsed second, measured encapsulation expansion, and fresh authenticated
-  DATA loss; this prevents the
-  embedded engine's 1,024-container peer queue from hiding congestion from AQM.
-  `link_bandwidth` supplies the measured seed and optional
-  `link_bandwidth_limit` supplies an operator ceiling.
-  After any rate change, another controller decision waits for exact kernel
-  readback and a one-second-or-one-SRTT settling interval. The ingress target
-  starts with 5% service headroom and decreases independently of the outer
-  capacity target only when engine-admission wait occupies at least half a
-  loaded interval. Ptr-ring occupancy remains diagnostic and does not reduce
-  headroom. The first loaded local-pressure decrease may preempt an
-  unrelated outer retarget, but another decrease waits for its own exact
-  ingress readback and one-second-or-one-SRTT settlement. Three loaded, clean,
-  settled intervals recover it additively. Mutable `bfifo` limits change in
-  place, preserving the live queue
-  and counters; a limit shrink waits while byte backlog exceeds the new limit,
-  and GSO shrink waits for an empty TUN backlog. During a combined shrink, the
-  daemon reconciles and reads back the smaller GSO under the old engine
-  admission limit. While GSO shrink waits, admission remains at its installed
-  value and both deferred gauges stay set; the installed
-  aggregate leaf remains unchanged (preserving one old atomic quantum per
-  peer), and the normalized HTB burst remains at least the installed link GSO
-  maximum. Ordering follows the maximum GSO byte size, not segment-count
-  direction: a larger byte quantum grows leaf/burst first even if the segment
-  count falls. After drain, a smaller byte quantum installs first; the daemon
-  re-reads qdisc occupancy and shrinks the leaf and burst only if it remains
-  empty. A post-GSO-write arrival keeps both at their old values for a later
-  reconciliation. Only after exact smaller-GSO readback may engine admission
-  shrink. If peer-retained bytes do not yet fit, the old downstream capacity
-  envelope is restored and the admission shrink remains deferred until they
-  drain. Repeated exact readbacks of
-  the unchanged target retain the first acknowledgment time, so reconciliation
-  cannot perpetually restart that settling interval. The plaintext byte leaf
-  is independent of the outer/engine admission window: it admits the greater
-  of 20 ms of aggregate inner traffic or one complete GSO quantum per peer.
-  Its persistent service bound is therefore the greater of 20 ms or the
-  aggregate atomic-GSO window divided by the ingress rate. Engine admission
-  separately retains its per-peer BDP plus one complete batch. For the bounded
-  transient byte handoff
-  `A=ceil(R*T)+G`, the derived ptr ring holds `ceil(A/20)+1` packet slots:
-  minimum packetization of the handoff plus one native Linux guard slot.
-  While the interface remains live, `ceil(A/20)+1` is a minimum: the installed
-  ring capacity is the high-water mark of the observed interface baseline,
-  later larger readbacks, and derived requirements. The daemon writes only to
-  grow an undersized ring and never shrinks it until interface recreation,
-  eliminating the read/apply arrival race without requesting speculative
-  capacity.
-  The HTB burst covers the GSO byte bound and avoids iproute2's lossy text-size
-  rendering so readback remains exact. Full-MTU handoff within that interval
-  incurs no native link/qdisc drop; overload beyond the finite byte leaf may
-  tail-drop there and remains observable. An arbitrary reader stall lies
-  outside the invariant. This cross-layer transition runs only when
-  active-backup pacing and per-path shaping activate TUN AQM.
-  `TestP1Failover` omits `[scheduler]`, defaults pacing off, and therefore
-  cannot exercise or validate this transition. Shaped FEC
-  retains the same engine admission reservation until
-  its owner batch terminally emits or fails, so ownership admission cannot
-  duplicate that backlog behind the gate. Ring occupancy uses a non-consuming
-  zero-time fd poll that does not contend with the engine's blocking TUN read,
-  so an idle concentrator can complete startup reconciliation. Admission
-  growth installs and reads back downstream ring/`bfifo` capacity before exposing
-  the larger engine window. Shrink first reconciles and reads back the smaller
-  GSO/AQM envelope while retaining the old engine window; a deferred GSO shrink
-  blocks the admission change. Once GSO matches, the daemon attempts admission
-  shrink; if retained bytes defer it, the desired rate and epoch still
-  reconcile while downstream capacity returns to the prior safe superset until
-  the admission change succeeds.
-  The 20 ms complete-batch budget applies whenever it admits at least one
-  maximum WireGuard datagram. Below that rate, atomicity keeps one datagram
-  admissible and the conservative service bound becomes its wire size divided
-  by the per-peer ingress rate; a local-pressure retarget therefore continues
-  to reconcile instead of retaining a stale higher rate.
-  Weighted scheduling retains fixed per-path shaping because no single
-  authenticated carrier record represents simultaneous striping. Leaving pacing off maximizes
-  offered throughput but risks bufferbloat-driven liveness flaps under
-  sustained overload. The published throughput/RTT numbers predate T299's
-  exact-byte shaper and must be rerun on real hardware — see
-  [docs/design.md §Send-side scheduler](docs/design.md) for that historical
-  evidence, the three-tier `ClassControl`/`frame.KindProbe`/`ClassData`
-  priority model, why inner-tunnel traffic (e.g. inner ICMP) can never get its
-  own priority lane, and the full operability runbook tying every signal
-  above together.
+- **Logs**: structured, to stderr → `journalctl -u wanbond-…`.
 
 ## Testing
 
@@ -389,57 +243,29 @@ HTB/netem WANs, with capacity calibration, bidirectional TCP, voice-like UDP,
 capacity changes and temporary outages. Guest disks and per-candidate results
 are retained for comparison without production deployments.
 
-### Recovery contract and observability notation
-
-The recovery path uses one notation across config, metrics, and the monitor:
-`D=250ms`, dispatch grace `G=10ms`, lease lifetime `F=1200ms`, memory terms
-`B/C/P/Fgroup/Lio/Mtotal`, rate terms `R/Rp/I`, sender service `Sdevice`,
-receiver headroom `H=clamp(max(SRTT+4*RTTVAR),10ms,D)` over qualified fresh DATA
-carriers only, hold `W=min(D,A+H)`, and
-completion bound `Ecompletion`. `SessionID` identifies a process epoch,
-`ContractID` rotates a service offer within that epoch, and `OuterSeq` remains
-continuous across same-process rotation. An exact authenticated `ACK` enables
-the shorter hold only when `A+H<D`; absence, staleness, saturation, a
-transition, or incompatible peers reports `W=D` with a bounded conservative
-fallback reason. FEC geometry comes from authenticated contract/config
-state—there is no zero-parity inference. A pacing-off single-owner FEC socket
-enforces the same absolute `A=I=10ms` recovery cut directly and can therefore
-offer finite service; shared multi-peer sockets remain disabled.
-
-Prometheus and the monitor expose staging, decisions/deadlines, bounded
-contract event/status/reason signals independently for outbound sender and
-inbound receiver directions, recovery-window inputs, recovery cuts,
-retained-memory high-water marks, and resequencer arm/wake/fill counters.
-Prometheus uses the bounded `direction={sender,receiver}` label; monitor JSON
-nests the same values under `recovery.sender` and `recovery.receiver`.
-
-Three tiers (see [docs/design.md §Testing](docs/design.md) and
-[docs/manual-checklist.md](docs/manual-checklist.md)):
+Three tiers (see [docs/manual-checklist.md](docs/manual-checklist.md)):
 
 | Tier | Command | What it covers |
 |------|---------|----------------|
-| frontend + unit / property | `just test` (TypeScript typecheck/Vitest + root and patched `amneziawg-go/device` tests) | monitor wire/UI contract, codec, FEC math, adaptive control law, anti-replay, schedulers, config |
-| netns e2e | `just e2e` (`sudo -E go test -tags e2e ./test/e2e/...`) | two-netns tunnel bring-up, bonding, failover, FEC recovery, DPI audit (P0–P5) |
-| netns e2e (device) | `sudo -E go test -tags e2e ./internal/device/` | the permanent D96 adaptive-FEC regressions against the real daemon under netem loss: single-path parity ramp (T266) + two-path active/standby anti-phase (T275); self-isolating (each re-execs into a fresh netns) |
+| frontend + unit / property | `just test` (TypeScript typecheck/Vitest + root and patched `amneziawg-go/device` tests) | monitor wire/UI contract, codec, transport control law and delivery contract, anti-replay, resequencer, config |
+| netns e2e | `just e2e` (`sudo -E go test -tags e2e ./test/e2e/...`) | two-netns tunnel bring-up, bonding, failover, DPI audit |
+| netns e2e (device) | `sudo -E go test -tags e2e ./internal/device/` | privileged device-layer checks against a real kernel, e.g. the startup removal of an obsolete TUN shaper |
 | real-host e2e | `just realhosts` (`-tags realhosts`) | two real machines over the internet (NAT edge + public concentrator); report-only |
 
 > **Important fixture limitation:** the netns fixture is CPU/PPS-bound, so it
-> validates *functional* bonding/FEC/failover/DPI but **cannot** measure
-> real-link throughput aggregation or bufferbloat. Those must be measured on real
-> uplinks (manual-checklist §P0) before a production rollout.
+> validates *functional* bonding/failover/DPI but **cannot** measure
+> real-link throughput aggregation or bufferbloat. Those are measured in the
+> KVM lab and on real uplinks before a production rollout.
 
 ## Repository layout
 
 ```
 cmd/wanbond/            entry point; role selection; SIGHUP reload
-internal/bind/          the custom conn.Bind — multipath fan-out/coalesce, the amnezia boundary
-internal/frame/         outer bonding frame codec (obfuscation + optional HMAC)
-internal/sched/         send-side scheduler (active-backup, weighted, pacing)
-internal/shaper/        serialized per-(peer,path) exact-byte shaping and recovery cuts
-internal/telemetry/     per-path PROBE/liveness, RTT/loss/jitter
+internal/bind/          the custom conn.Bind — per-path sockets, peer demux, probes, the amnezia boundary
+internal/bond/          the transport: lanes, capacity discovery, pacing, traffic classes, repair, ACKs
+internal/frame/         outer frame codec (obfuscation + HMAC authentication)
+internal/telemetry/     per-path PROBE/liveness, RTT/loss/jitter, PMTU discovery
 internal/reseq/         receive resequencer (bounded-window reorder)
-internal/fec/           Reed-Solomon FEC encoder/decoder
-internal/adaptivefec/   closed-loop parity controller (target-residual SLA)
 internal/config/        TOML load + fail-fast validation
 internal/dnsresolve/    DNS resolution seam (Resolver interface, system + DoH + DoT impls, test fake)
 internal/device/        tunnel lifecycle (Up/Down/Reload), metrics wiring
@@ -448,192 +274,35 @@ internal/monitor/       monitoring-UI endpoint, read-only except authenticated P
 internal/wireaudit/     requirement-6 DPI wire-format audit tooling
 internal/log/           structured logging wrapper
 web/                    monitoring-UI frontend (Vite + TypeScript), built into internal/monitor/dist
-third_party/amneziawg-go AmneziaWG engine v3.1.20260828 + local patches: send completion, flow metadata, outbound admission/observability, S4 read rebase (#169), test vet fix (#157), 131008-message anti-replay window
-test/e2e/               -tags e2e netns fixture (P0–P5)
+third_party/amneziawg-go AmneziaWG engine v3.1.20260828 + local patches: flow metadata, outbound observability, S4 read rebase (#169), test vet fix (#157), 131008-message anti-replay window
+test/e2e/               -tags e2e netns fixture
 test/realhosts/         -tags realhosts real-machine tier
+test/vm/                KVM lab: real daemons over shaped WANs
 docs/                   design, install, findings, manual checklist
 ```
 
 ## Status & limitations
 
-The P0–P5 build is functionally complete, reviewed, and hardened. Known,
-deliberate boundaries you must plan around:
+Known, deliberate boundaries you must plan around:
 
-- **Adaptive requires both ends to opt in.** Its data/ACK protocol differs from
-  legacy DATA/PARITY; mixed-policy peers cannot carry tunnel data. It has
-  mandatory pacing and cannot compose with legacy FEC or `link_bandwidth_limit`.
-  It spends both uplinks under load and replicates some small traffic. Local
-  simulation validates recorded profiles, not every RF link or packet rate.
-
-- **Receiver DATA-loss feedback covers exactly one stable active-backup
-  carrier.** It rides a separate feedback-only authenticated PROBE, is bound to
-  the peer session, recovery ContractID, carrier path/generation, and monotonic
-  report ID, and expires after two probe intervals. Recovery OFFERs and ACKs
-  remain top-level legacy `WBRC` payloads, so a peer that parses `WBRC` directly
-  can still negotiate recovery in either direction with a feedback-capable
-  peer. When both probes share a cadence, feedback carries the lower probe
-  sequence and `WBRC` the higher one, preserving the legacy peer's recovery
-  evidence under ordered or reordered delivery. Stale, replayed, wrong-peer, or
-  path-transition evidence cannot drive parity: only an accepted native DATA
-  frame starts a carrier epoch, and final/recovered outcomes from before that
-  sequence do not enter the new carrier's interval.
-  A lower-loss same-epoch report cannot erase a still-fresh higher-loss report;
-  the retained maximum keeps its original expiry, so cadence phase cannot hide
-  loss or extend evidence indefinitely. While a lease renewal remains pending,
-  both the still-valid acknowledged ContractID and pending renewal ContractID
-  can authenticate feedback; old-lease expiry removes the former. After capability adoption,
-  missing current evidence holds the existing controller state. Peers that never
-  send DATA feedback retain probe-loss adaptation.
-  Weighted multi-carrier scheduling deliberately retains its existing weighted
-  probe-loss signal because one carrier record cannot represent simultaneous
-  distribution shares.
-- **Pacing is off by default (opt-in)** — enable it under `[scheduler]`
-  (`pacing_enabled = true`) and supply a measured per-link
-  `link_bandwidth` seed plus `link_rtt` (bandwidth-delay product). Pre-T299 pacing was
-  measured on the report-only real-link tier; those measurements do not validate
-  T299's replacement shaper, and the CPU/PPS-bound netns fixture cannot establish
-  absolute throughput or bufferbloat. Under active-backup, the outer exact-byte
-  shaper and early TUN AQM start conservatively, raise their targets above the
-  measured seed while clean loaded samples support growth, and reduce on queue
-  delay that remains beyond both the base-RTT allowance and four probe RTTVARs
-  for one continuous second, or once on the first fresh authenticated loss
-  report in an episode even when that report arrives after a later unloaded
-  byte interval. The loss response is immediate when the controller may
-  retarget; otherwise it remains pending through initialization, a counter
-  discontinuity, or target settlement. Adjacent above-threshold reports hold
-  the target; one second of fresh below-threshold evidence rearms the response.
-  Ingress-only expansion or headroom settlement does not interrupt that clean
-  dwell.
-  `link_bandwidth_limit` is the distinct
-  optional operator safety ceiling; omitting it leaves discovery uncapped.
-  Legacy active-backup frame-rate knobs likewise seed the controller from
-  `R=per_path_capacity_fps*1500` and infer RTT as `B/R`; they no longer impose
-  a permanent rate cap.
-  Weighted scheduling keeps `link_bandwidth` as its fixed shaping rate and does
-  not accept `link_bandwidth_limit`.
-  Pacing is **policy-independent** (defect D65): `pacing_enabled`,
-  `link_bandwidth`, and `link_rtt` are meaningful — and configured with the
-  SAME keys — under the **default `active-backup` policy** too, not only under
-  `policy = "weighted"`; see [docs/design.md §Send-side
-  scheduler](docs/design.md) for the per-path-vs-bottleneck sizing distinction.
-  Config load derives the initial exact-byte shaper envelope: wire seed `Rseed`,
-  maximum encoded datagram `Lmax`, DATA/PARITY budget `B>=Lmax`, inner-control
-  reserve `C=Lmax`, retained generated-priority reserve `P=Pburst`, one owned
-  FEC-group bound `Fgroup`, one writer-in-flight `Lio=Lmax`, and
-  `Mtotal=B+C+P+Fgroup+Lio`. It also derives generated-priority rate `Rp`, finite
-  receiver-observable recovery-cut bound `A=I`, and completion overrun
-  `Ecompletion` at the controller's minimum possible service rate. Active-backup
-  retargeting changes only future serialization/admission, recomputes
-  `B=ceil(Rtarget*link_rtt)`, and leaves already-admitted deadlines immutable;
-  a B shrink waits until retained DATA fits. It rejects
-  an envelope whose maximum probe+echo rate
-  consumes the whole link. Non-finite inputs and byte budgets that cannot fit
-  the platform's integer byte-count domain are rejected before conversion; `Q`
-  and `Mtotal` must fit `int`, and `Ecompletion` must fit `time.Duration`.
-  `A=I=10ms` must remain below the conservative 250 ms receiver fallback. A
-  sender-side queue prefix is excluded from `A`: it drains before the cut's
-  first DATA can make a receiver gap observable. At runtime each
-  `(peer,path)` owns one shaper. One engine `Send` selects one path. With FEC
-  off, each input is classified, framed, and admitted in order. With FEC on, a
-  per-peer owner stages one group until its size or exact deadline decision,
-  then frames its DATA/PARITY; no open-group DATA is writer-visible. Each
-  original `Send` publishes one owner command through the bounded mailbox,
-  irrespective of its offload-frame count. With pacing enabled, or on an
-  unshaped socket protected by an active exclusive direct-recovery contract,
-  `Send` returns once the owner has copied/admitted every caller buffer. Thus
-  successive serial sub-*K* engine calls can fill one group without waiting for
-  its later decision or wire service; the owner retains a separate terminal
-  completion for lifecycle and accounting. Uncontracted direct sends retain
-  synchronous terminal completion. The Bind advertises and accepts the vendored engine's 128-buffer
-  ideal batch, so a TUN-offloaded send reaches this path without an artificial
-  single-buffer interface limit.
-  Compatible shaped frames from one
-  decided group that naturally uses one exclusive path transfers ownership to
-  that path shaper as one recovery tranche. Mixed-path/shared-socket groups keep
-  the conservative receiver fallback. An exact successfully written ACK for
-  that service can shorten a stable active-backup receiver gap to `A` plus
-  the fresh active DATA-carrier SRTT plus four RTTVARs (10 ms floor, 250 ms cap);
-  this estimates the residual differential-delay tail after the successor
-  exposes the gap. Neither that estimate nor 250 ms bounds Internet differential
-  delay; 250 ms deterministically bounds receiver waiting and remains the
-  conservative operational fallback. Evidence uncertainty, path/source change,
-  rebaseline, or weighted scheduling uses the full 250 ms. A buffered gap's deadline starts when its first successor becomes
-  receiver-observable, even if an earlier gap still blocks it; a successor first
-  observed later retains its own remaining recovery time. Encoded DATA and
-  every decided FEC parity datagram
-  consume their exact byte length. A recovery cut orders the retained
-  lower-OuterSeq prefix and already-admitted priority, then the complete group
-  DATA+parity tranche, before later priority/groups. One absolute
-  `cutStart+10ms` socket deadline covers an already-blocked predecessor and
-  every tranche syscall. Install, clear, or writer failure terminates without
-  retry, assigns its originating cause to every already-accepted retired byte,
-  disables admission immediately, and retires that exact socket
-  generation from its peer path, scheduler view, and remote; a stale failure
-  cannot match a replacement generation. A causally interrupted in-flight
-  shaped syscall reports that published cause to the owner's terminal
-  completion while socket/error counters retain the actual syscall failure
-  class; a shaped caller already acknowledged at owned admission is not
-  retroactively failed. The shaper retains
-  at most `Mtotal`; saturation backpressures the sender
-  without discarding ordinary traffic. Per-path accepted, emitted,
-  shaper-error, and socket-error counters expose every terminal prefix. Live
-  queue gauges prove `DATA<=B`, `control<=C`, `priority<=P`, one
-  `Fgroup`, and total retained `<=Mtotal`; admission-wait
-  counters distinguish bounded backpressure from cancellation. Accepted bytes
-  linearize when queue capacity is reserved (including a pending-copy
-  placeholder), so accepted, emitted, generic-error, `EMSGSIZE`, queue, and
-  in-flight bytes reconcile at every live snapshot; both DATA/PARITY and inner
-  control contribute. The shaper series are absent when pacing is off and
-  restart from zero with each fresh shaper/socket generation.
-  `wanbond_path_tx_bytes_total`, FEC DATA/PARITY emitted counters, and the
-  peer's last-write timestamp advance only after the eventual socket write
-  succeeds, never at the earlier caller-ownership acknowledgement.
-  Runtime remove/rollback and Close atomically stop that generation's admission,
-  retire queued work, close its socket to interrupt blocked kernel I/O, then join
-  shaped and direct UDP writers without holding the bind lock. Re-add or Close/Open creates a fresh empty
-  shaper/socket generation; no old writer can cross into it. Per-peer
-  resequencer/FEC teardown cancels and joins the old FEC owner but retains the
-  shaper while the underlying path socket remains live. Inner
-  WireGuard handshake/cookie/keepalive frames use the `C=Lmax` reserve one
-  buffer at a time, but retain selected-path FIFO, outer sequencing, and FEC;
-  they never overtake lower DATA, and DATA cannot borrow `C`. Authenticated
-  outer PROBE/echo frames reserve `P` and use the same serialized writer.
-  Ordinary probes coalesce one cadence when `P` is full, PMTU admission waits
-  cancellably, and reactive echoes fail non-blockingly with a distinct overflow
-  counter, so none can bypass a recovery cut or block inbound dispatch.
-  A local padded PMTU probe substitutes in the next eligible local probe slot
-  instead of adding another producer at that cadence; the following slot is
-  always ordinary liveness before another PMTU attempt, while a peer-requested
-  reactive echo attempts non-blocking `P` admission immediately. PMTU reserves
-  `P` before sequence allocation, timestamping, and echo registration in the
-  selected slot, so admission and cadence waits do not inflate path RTT. Each
-  search candidate remains an outer-IP MTU; the generated
-  UDP payload subtracts the validated path family's header cost (28 bytes for IPv4,
-  48 for IPv6), matching that path's `Lmax` and exact debit. The configured
-  `Pburst=2*Lmax` therefore covers one maximum local probe (ordinary or PMTU) plus
-  one maximum echo. An unexpected PMTU writer failure preserves its error and
-  increments the probe-send-error counter; `EMSGSIZE` remains the expected
-  too-large verdict. Distinct
-  `probe_priority_coalesced`, `pmtu_admission_canceled`, and
-  `echo_priority_overflow` counters expose bounded-admission outcomes.
-  For existing priority debt `P0`, a coincident `Pburst`, and sustained
-  generated priority bounded by `Rp<R`, admission is bounded by
-  `Dp=(P0+Pburst)/(R-Rp)`, not `P0/R`; after admission, local egress adds at
-  most `Q/R+Lmax/R`, so call-to-receiver delivery is bounded by
-  `Dp+Q/R+Lmax/R` plus the active resequencer hold.
-  Priority arrivals in the half-open interval `[call, call+Dp)` update the
-  registered waiter's deadline under the shaper lock, even if that waiter does
-  not run until the former deadline; once the deadline matures, an exact-boundary
-  debit changes only future admission and cannot revoke the waiting call's
-  eligibility.
-  Sustained authenticated generated outer-priority traffic beyond the declared
-  `Rp`/`Pburst` model constitutes overload for the legacy shaper. Adaptive
-  CONTROL uses its separate transport budget.
+- **Both ends must run this transport.** Its data and acknowledgements travel
+  in authenticated CONTROL frames after a hello exchange; a build running a
+  removed policy sends frame kinds this build rejects, so the two cannot carry
+  tunnel data, although their probes may still report the paths up. Upgrade
+  both ends together and remove the retired configuration keys first
+  ([docs/install.md, upgrade note](docs/install.md#upgrading-from-a-build-with-the-removed-transports)).
+- **No metered-link conservation.** The transport has no notion of a preferred
+  or metered uplink: under load it sends on every usable lane, it copies some
+  small traffic onto a second lane, and every lane carries probes and
+  keepalives while idle.
+- **No forward error correction.** Loss is repaired by bounded retransmission
+  and, for small real-time datagrams, by replication; a datagram that is not
+  repaired within 250 ms is left to the inner protocol.
+- **Tested envelope.** Local simulation and the VM lab validate recorded
+  profiles, not every RF link or packet rate.
 - **Throughput aggregation and bufferbloat are not measured by the netns fixture**
   (it is CPU-bound) — the report-only real-link tier (`just p0-baseline`) measures
   them instead; validate on your own uplinks before a production rollout.
-- **CONTROL is policy-specific** — adaptive uses authenticated data and ACKs;
-  legacy policies ignore inbound CONTROL.
 - **Multi-concentrator hub-failover: built and validated** — an
   edge peer may declare an ORDERED `endpoints` list (active concentrator + ordered
   standbys); the single `endpoint` form still works unchanged (its one-element
@@ -654,8 +323,7 @@ deliberate boundaries you must plan around:
   selection does not persist). Config load enforces the multi-exit invariants —
   matching default-route sets across exit peers, a mandatory non-default inner
   `/32` per exit peer, non-overlapping non-default allowed_ips, distinct
-  per-peer endpoints, per-peer name/psk, one shared scheduler/FEC/reseq policy
-  block, and an `N × U` probe-fan-out budget (≤ 32 probers). `device.Up` brings
+  per-peer endpoints, per-peer name/psk, and an `N × U` probe-fan-out budget (≤ 32 probers). `device.Up` brings
   **all N peers up warm concurrently** (T251): each peer's configured endpoint is
   routed to ITS concentrator (distinct per-peer virtual endpoint + per-path
   remotes), every peer gets a persistent keepalive and a first-path-up handshake
@@ -685,14 +353,14 @@ deliberate boundaries you must plan around:
   See [docs/install.md §Multi-concentrator edge](docs/install.md).
 - **UDP only** — obfuscation defeats DPI *classification*, not a wholesale UDP
   block; there is no TCP/TLS fallback.
-- **DATA/PARITY frames are unauthenticated by design** (inner WireGuard
-  authenticates the real payload; a DoS-grade forgery risk is accepted). PROBE
-  and CONTROL are PSK-HMAC authenticated.
-- **Per-path `mtu` is declared but not yet sized into the tunnel** — an
-  optional per-path `mtu` config key lets an operator declare that path's real
-  outer underlay MTU (e.g. a cellular APN capped below 1500); it is validated
-  at config load (1280..9000, derived inner MTU `>= 576`) but not yet consumed
-  when sizing the TUN's inner MTU (see [docs/install.md §7](docs/install.md)).
+- **The outer wire is authenticated, not encrypted for confidentiality.** Every
+  outer frame (PROBE and CONTROL, which carries the transport's data and
+  acknowledgements) is PSK-HMAC authenticated; the payload's confidentiality
+  and integrity come from the inner WireGuard session.
+- **Per-path MTU** — a path that omits `mtu` is PMTU-discovered and `wanbond0`
+  is resized to the smallest inner MTU across the up paths; an explicit `mtu`
+  (1280..9000, derived inner MTU `>= 576`) pins the path. See
+  [docs/p1-mtu.md](docs/p1-mtu.md).
 
 See [docs/design.md §Security model](docs/design.md) and
 [docs/p0-findings.md](docs/p0-findings.md) for the reasoning behind each.

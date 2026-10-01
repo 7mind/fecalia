@@ -23,7 +23,7 @@ nix build
 python3 test/vm/lab.py up
 python3 test/vm/lab.py status
 python3 test/vm/calibrate.py
-python3 test/vm/benchmark.py result/bin/wanbond --policy adaptive
+python3 test/vm/benchmark.py result/bin/wanbond
 python3 test/vm/continuity.py result/bin/wanbond
 python3 test/vm/lab.py stop
 ```
@@ -131,15 +131,15 @@ and [blocking I/O loops](https://github.com/esnet/iperf/blob/3.20/src/net.c).
 
 ```sh
 python3 test/vm/calibrate.py --profile test/vm/profiles/fast.json
-python3 test/vm/benchmark.py result/bin/wanbond --policy adaptive \
+python3 test/vm/benchmark.py result/bin/wanbond \
   --profile test/vm/profiles/fast.json --warmup 15
-python3 test/vm/benchmark.py result/bin/wanbond --policy adaptive \
+python3 test/vm/benchmark.py result/bin/wanbond \
   --profile test/vm/profiles/asymmetric.json
-python3 test/vm/benchmark.py result/bin/wanbond --policy adaptive \
+python3 test/vm/benchmark.py result/bin/wanbond \
   --profile test/vm/profiles/jitter.json --idle-seconds 30
-python3 test/vm/benchmark.py result/bin/wanbond --policy adaptive \
+python3 test/vm/benchmark.py result/bin/wanbond \
   --profile test/vm/profiles/mobile.json --warmup 10
-python3 test/vm/benchmark.py result/bin/wanbond --policy adaptive \
+python3 test/vm/benchmark.py result/bin/wanbond \
   --profile test/vm/profiles/radio.json --idle-seconds 60 --warmup 10
 python3 test/vm/continuity.py result/bin/wanbond \
   --profile test/vm/profiles/radio.json
