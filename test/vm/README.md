@@ -62,6 +62,8 @@ TCP there while the radio profile did not move.
 | `profiles/radio.json` | Mobile capacities; Starlink 20±10 ms delay and 0.4% loss, LTE 40±30 ms delay, independently in each direction | Same throughput gates after 60 seconds idle; reproduces the collapse missed by milder jitter |
 | `profiles/gigaradio.json` | 300+300 Mbit/s in each direction with the radio profile's delay, jitter and loss; delay correlation 95% | Same throughput gates; a model of an upgraded Starlink beside 5G |
 | `profiles/gigasteady.json` with `wander.py` | 300+300 Mbit/s with steady netem delays that `wander.py`, run in each guest, moves as measured links' latency moves | Same throughput gates; the only scenario in which latency has memory |
+| `single_lane.py` | One WAN dead from the start; on a cold tunnel a call in both directions, then one TCP flow three seconds later | TCP reaches 50% of the live WAN's rate; each voice stream has <1% loss |
+| `flood.py` | A call in both directions while one side offers 400 Mbit/s of UDP to `profiles/fast.json` | Each voice stream has <1% loss |
 | `continuity.py` | Simultaneous TCP in both directions plus two 50 Hz, 160-byte UDP echo streams | TCP completes 65 seconds and meets the progress rule below; each UDP stream has <1% loss and meets the gap and latency rules below (`continuity_gates.py`) |
 
 Continuity accepts `--profile`, defaulting to `profiles/basic.json`. At 15
@@ -975,3 +977,49 @@ lanes, and the late confirmations time out. Production shows no such
 reordering (lane acknowledgements confirmed 98% of the bytes the edge sent
 and 88% of the bytes sent back, read-only metrics of 2026-09-30), so the lab
 figures under `wander.py` are a lower bound.
+
+## A call beside bulk: one lane, a flood, and the lane a call rides — 2026-10-01
+
+Three defects found while modelling a lane that queues below its mean rate.
+Each has a failing-first model test in `internal/bond` and, where the lab can
+show it, a scenario above. `main` here is `09b5d01`.
+
+**Bulk beside a call on the only lane.** `single_lane.py`, `profiles/basic.json`
+with WAN1 dead (one 6 Mbit/s WAN):
+
+| Build | TCP upload, Mbit/s | Voice round trip p99, ms | Voice loss |
+| --- | --- | --- | --- |
+| `main` | 0.0, 0.0, 0.0, 0.0 | 60-68 | 0% |
+| `2a13a88` and later | 4.02, 3.97, 4.03, 3.97 | 70-75 | 0% |
+
+The lane stayed in discovery with a target of 64-65 kB/s for the whole run.
+A lane that carries a real-time stream before its capacity is known has its
+target held near recent delivery; the call was more than half of that target,
+which made the lane a real-time lane and left bulk its minimum share.
+
+**The lane a call rides.** With that fixed, bulk discovers a lane that carries
+a call, and one call on a 0.5 Mbit/s lane is under the half that made a lane
+a real-time lane. Radio continuity, voice round trip with only the 40±30 ms
+WAN up, gate 181.6 ms: `2a13a88` alone failed 4 of 5 runs, `main` 3 of 5 in
+the same session. `48e8f19` keeps bulk off a lane below 1.2 Mbit/s that
+carries real-time originals while another lane can take it: 5 of 8 runs pass
+for it and for `main`, interleaved; radio TCP 63.8 and 74.4 Mbit/s down
+against 66.5 and 82.7; 300+300 TCP 94-119 up and 110-120 down against 107-174
+and 67-116; UDP 283-391 up and 207-383 down against 374-385 and 395-403 (every
+build of the day produced one such low UDP sample).
+
+**A call behind a flood.** `flood.py`, 400 Mbit/s of UDP offered to 32+96
+Mbit/s, each direction twice:
+
+| Build | Voice loss, hub / edge | Longest voice gap, ms | Flood delivered, Mbit/s |
+| --- | --- | --- | --- |
+| `main` | 61 / 61, 39 / 38, 36 / 35, 37 / 37 % | 810-990 | 40-95 |
+| with the admission headroom | 0.08 / 0, 0 / 0, 0 / 0, 0 / 0 % | 40-60 | 92-99 |
+
+The bound on queued and outstanding datagrams was one count for all classes;
+`wanbond_adaptive_interactive_queue_drops_total` counted 927-1591 refused
+small datagrams per run on `main` and 0-1 with the headroom.
+
+The continuity gates stay marginal for every build: over the day `db465b3`
+passed 10 of 15 runs and `main` 18 of 28, in interleaved series 10 of 14
+against 11 of 14.

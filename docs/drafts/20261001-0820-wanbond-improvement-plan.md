@@ -136,3 +136,19 @@ adaptive transport and became visible when it was the only one left.
 - **`TestOneSidedRestartRecovery` still describes mechanisms that are gone**
   (a 2048-frame resequencer window, the low-anchor rebaseline); it cannot be
   judged until its fixture defect above is fixed.
+
+## Found while modelling item 1 (2026-10-01)
+
+Fixed on branch `bulk-beside-voice`, each with a failing-first model test and
+lab figures in [the lab record](../../test/vm/README.md):
+
+- **Bulk received nothing beside a call on the only lane up**, from a cold
+  tunnel (lab: 0.0 Mbit/s of TCP for 20 seconds on a 6 Mbit/s WAN; 4.0 after).
+- **The lane a call rides was kept free of bulk only by that defect.** A lane
+  whose capacity was already known was shared, at 22-24 ms of serialization
+  per bulk datagram on a 0.5 Mbit/s lane. Production voice latency therefore
+  depended on whether the low-latency lane had carried bulk before the call.
+  The rule is explicit now.
+- **A bulk flood had voice refused at the tunnel's entrance** (lab: 35-61% of
+  the voice datagrams lost beside 400 Mbit/s of UDP offered to a 32+96 Mbit/s
+  bond; none after).

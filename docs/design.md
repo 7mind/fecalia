@@ -436,7 +436,11 @@ While any up lane is
 discovering, CoDel does not drop and a bulk datagram admitted then keeps a 1 s
 bound: that queue reflects the lane's own pacing, not path capacity, and small
 datagrams bypass it. Each datagram keeps the bound in force at admission. At
-most 8192 datagrams are queued or outstanding per peer. Bulk repair lifetime is 250 ms from
+most 8192 datagrams are queued or outstanding per peer; bulk is admitted up to
+1024 short of that, so a flood that holds the count at its limit does not have
+every small datagram refused behind it (`TestBulkFloodDoesNotRefuseVoice`; lab,
+a call beside 400 Mbit/s of UDP offered to a 32+96 Mbit/s bond: 35-61% of the
+voice datagrams lost with one shared limit, none with the headroom). Bulk repair lifetime is 250 ms from
 first transmission, when its receive-order sequence is assigned. Queue residence
 must not consume that repair window: a packet queued for 90 ms could otherwise
 expire before a 190 ms feedback timeout permits its first retry. Small packets
@@ -483,9 +487,24 @@ another lane has room, because one bulk datagram occupies a 0.4 Mbit/s lane for
 direction, which can be coalesced; bulk cannot. While bulk waits, that class is
 held to half of what real-time traffic leaves and bulk gets the rest: given
 everything, the ACK stream of a fast download left an upload nothing for ten
-seconds at a time (VM run `20260929-152215-continuity`). A lane on which
-real-time traffic has reserved more than half the capacity is the exception:
-bulk keeps only its guaranteed minimum there. Each class is held to its share
+seconds at a time (VM run `20260929-152215-continuity`). Bulk keeps only its
+guaranteed minimum on a real-time lane. While another up lane carries no
+real-time originals and can take the bulk, that is a lane with such originals
+on which one full datagram takes longer to send than the 10 ms of queue the
+lane is allowed, a lane below 1.2 Mbit/s: one call needs a third of a
+0.5 Mbit/s lane, and bulk in the rest put 22-24 ms of serialization ahead of a
+voice datagram for a third of a megabit of throughput
+(`TestBulkKeepsOffTheSlowLaneACallRides`: one-way p99 43 ms shared, 20 ms
+kept clean). With no other lane for bulk, it is a lane on which real-time
+traffic has reserved more than half the target. A lane whose capacity was
+never found is not a real-time lane by either rule: beside a real-time stream
+its target is held near recent delivery, by that target the stream alone took
+most of the lane, and bulk confined to its minimum could not raise delivery,
+so on the only lane up a transfer started beside a call received nothing for
+as long as the call lasted (`TestBulkBesideVoiceDiscoversTheOnlyLane`; lab,
+one 6 Mbit/s WAN: 0.0 Mbit/s of TCP in 20 seconds before, 4.0 after). Bulk
+discovers such a lane at the pace that bound allows, and the first congestion
+signal fixes its capacity. Each class is held to its share
 of the window by its own bytes in flight, and real-time datagrams within their
 reserved share are not blocked by the bytes of lower classes: on a slow lane
 one bulk datagram in flight is a third of the window. Small datagrams may borrow 5 ms of pacing, and bulk competing with
