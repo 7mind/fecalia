@@ -21,6 +21,34 @@ type varyingLane struct {
 	rateEvery time.Duration
 	delay     time.Duration
 	buffer    time.Duration
+	// stall, when set, is the mean time the lane serves nothing in the bulk
+	// direction, once in stallEvery on average; each stall and each interval
+	// between two is drawn uniformly within half to one and a half times its
+	// mean. What waited is then delivered in order. With stallRate set, the
+	// lane serves at that fraction of its rate for the time instead.
+	stall, stallEvery time.Duration
+	stallRate         float64
+}
+
+// stalls is a lane's schedule of stalls in the bulk direction.
+type stalls struct {
+	from, until time.Time
+}
+
+// at reports whether the given time falls into a stall, and when that ends.
+func (s *stalls) at(l varyingLane, random *rand.Rand, begin time.Time) (bool, time.Time) {
+	around := func(mean time.Duration) time.Duration {
+		return time.Duration((0.5 + random.Float64()) * float64(mean))
+	}
+	if s.from.IsZero() {
+		s.from = begin.Add(around(l.stallEvery))
+		s.until = s.from.Add(around(l.stall))
+	}
+	for !begin.Before(s.until) {
+		s.from = s.until.Add(around(l.stallEvery - l.stall))
+		s.until = s.from.Add(around(l.stall))
+	}
+	return !begin.Before(s.from), s.until
 }
 
 // mixedLoad offers one direction saturating bulk and both directions a 50 Hz
@@ -38,6 +66,8 @@ type mixedLoad struct {
 	acksPerSecond int
 	// observe, when set, receives the bulk sender's state once a second.
 	observe func(second int, state bond.Snapshot)
+	// seed varies what the lanes draw at random.
+	seed uint64
 }
 
 type mixedLoadOutcome struct {
@@ -48,13 +78,16 @@ type mixedLoadOutcome struct {
 	// percentile delay and longest interval between arrivals.
 	voiceDelivered, voiceSent int
 	voiceP99, voiceGap        time.Duration
+	// sender and receiver are the bulk sender's and its peer's state at the
+	// end of the run.
+	sender, receiver bond.Snapshot
 }
 
 func (m mixedLoad) run() mixedLoadOutcome {
 	duration := m.seconds * 1000
 	measured := duration / 2
 	start := time.Unix(100, 0)
-	random := rand.New(rand.NewPCG(7, 0))
+	random := rand.New(rand.NewPCG(7, m.seed))
 	peers := [2]*bond.Transport{bond.New(bond.Epoch{Boot: 1, Generation: 1}), bond.New(bond.Epoch{Boot: 2, Generation: 1})}
 	for side, p := range peers {
 		p.SetRemote(peers[1-side].Epoch(), true)
@@ -63,6 +96,7 @@ func (m mixedLoad) run() mixedLoadOutcome {
 	heap.Init(queue)
 	available := make([][2]time.Time, len(m.lanes))
 	current := make([][2]float64, len(m.lanes))
+	stalled := make([]stalls, len(m.lanes))
 	var outcome mixedLoadOutcome
 	var waits []time.Duration
 	var bulkBytes int
@@ -113,6 +147,9 @@ func (m mixedLoad) run() mixedLoadOutcome {
 		if m.observe != nil && tick%1000 == 999 {
 			m.observe(tick/1000, peers[0].Snapshot(now))
 		}
+		if tick == duration-1 {
+			outcome.sender, outcome.receiver = peers[0].Snapshot(now), peers[1].Snapshot(now)
+		}
 		for side, p := range peers {
 			for _, tx := range p.Poll(now) {
 				lane := int(tx.Path)
@@ -121,10 +158,18 @@ func (m mixedLoad) run() mixedLoadOutcome {
 				}
 				l := m.lanes[lane]
 				begin := maxTimeTest(now, available[lane][side])
+				rate := current[lane][side]
+				if side == 0 && l.stallEvery > 0 {
+					if stalled, until := stalled[lane].at(l, random, begin); stalled && l.stallRate == 0 {
+						begin = until
+					} else if stalled {
+						rate *= l.stallRate
+					}
+				}
 				if begin.Sub(now) > l.buffer {
 					continue
 				}
-				available[lane][side] = begin.Add(time.Duration(float64(len(tx.Frame.Payload)+78) / current[lane][side] * float64(time.Second)))
+				available[lane][side] = begin.Add(time.Duration(float64(len(tx.Frame.Payload)+78) / rate * float64(time.Second)))
 				heap.Push(queue, event{available[lane][side].Add(l.delay), 1 - side, tx.Path, tx.Frame})
 			}
 		}

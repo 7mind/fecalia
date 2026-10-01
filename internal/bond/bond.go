@@ -57,6 +57,7 @@ const (
 	// maxWander bounds what passes for a path's own latency wander; a larger
 	// delay on a lightly loaded lane is somebody's queue.
 	maxWander           = 3 * targetQueue
+	repairTail          = 3 // datagrams after one on its lane, fewer than which cannot show it missing
 	feedbackHorizon     = 2 * time.Second
 	deliveryInterval    = 50 * time.Millisecond
 	baselineInterval    = 10 * time.Second
@@ -171,6 +172,7 @@ type packet struct {
 	repairDeadline time.Time
 	lastSent       time.Time
 	lastPath       PathID
+	lastLaneSeq    uint64
 	attempts       int
 	acked          bool
 }
@@ -246,6 +248,7 @@ type lane struct {
 	confirmedWireBytes int
 	seq                uint64
 	ackRevision        uint64
+	receivedHigh       uint64 // the highest lane sequence the peer reported
 	ackReceipts        receiptWindow
 	ackedBytes         uint64
 	ackedElapsed       uint64
@@ -379,7 +382,7 @@ func (t *Transport) SetRemote(epoch Epoch, adopted bool) bool {
 		p.stalled = false
 		p.losses, p.lossMark, p.lossMarked = lossLedger{}, 0, false
 		p.reordering, p.newestConfirmed = peak{bucket: reorderMemory}, time.Time{}
-		p.ackRevision = 0
+		p.ackRevision, p.receivedHigh = 0, 0
 		p.ackReceipts = receiptWindow{}
 		p.ackedBytes, p.ackedElapsed = 0, 0
 		clear(p.transitBases[:])
@@ -476,6 +479,16 @@ func (p *lane) release(a attempt) {
 	if a.packet != nil {
 		p.classInflight[a.packet.class] -= a.bytes
 	}
+}
+
+// passed reports that the lane has shown the datagram's last transmission
+// missing: the peer received a later one, or too few followed it for that to
+// show. Until then the lane may only be late with it. While a lane delivers
+// nothing, everything in flight on it times out together; what is sent again
+// on the same lane waits behind the originals and arrives as a duplicate
+// (`TestSilentLaneIsNotSentRepairs`).
+func (p *lane) passed(d *packet) bool {
+	return p.receivedHigh > d.lastLaneSeq || p.seq-d.lastLaneSeq < repairTail
 }
 
 func (p *lane) up(now time.Time) bool { return !p.lease.IsZero() && now.Sub(p.lease) < pathLease }
@@ -678,7 +691,7 @@ func (t *Transport) transmit(p *packet, path *lane, now time.Time) Transmission 
 		path.retries++
 	}
 	p.attempts++
-	p.lastSent, p.lastPath = now, path.id
+	p.lastSent, p.lastPath, p.lastLaneSeq = now, path.id, path.seq
 	path.lastTransmit = now
 	path.lastPayload = now
 	t.pending[p.seq] = p
@@ -799,7 +812,7 @@ func (t *Transport) Poll(now time.Time) []Transmission {
 			continue
 		}
 		path := t.chooseLane(now, classBulk, size, p.lastPath, true)
-		if path == nil {
+		if path == nil && (previous == nil || previous.passed(p)) {
 			path = t.chooseLane(now, classBulk, size, 0, false)
 		}
 		if path != nil {
@@ -933,6 +946,7 @@ func (t *Transport) Receive(path PathID, f frame.Control, now time.Time) ([]Deli
 }
 
 func (t *Transport) ack(p *lane, a acknowledgement, now time.Time, fresh bool) {
+	p.receivedHigh = max(p.receivedHigh, a.high)
 	backlogged := t.queued() > 0 || p.inflight >= p.window()/2
 	var sample time.Duration
 	var physicalFeedback time.Duration
