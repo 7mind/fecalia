@@ -220,6 +220,7 @@ type lane struct {
 	control              control
 	peakDelivery         float64
 	recentDelivery       peak
+	sustained            sustainedDelivery
 	reordering           peak
 	newestConfirmed      time.Time
 	wander               time.Duration
@@ -402,6 +403,7 @@ func (t *Transport) SetRemote(epoch Epoch, adopted bool) bool {
 		p.idleForwardMean, p.idleForwardVariation = 0, 0
 		p.idleForwardKnown = false
 		p.feedbackAt = time.Time{}
+		p.sustained.marks = nil
 		// The peer restarted, not the path: the capacity estimate stands, and
 		// the probing state starts over. With the estimate gone and the lane
 		// out of discovery, the target grew unbounded until a signal stopped
@@ -424,7 +426,7 @@ func (t *Transport) Path(id, remoteID PathID, rtt time.Duration, now time.Time) 
 		if rtt <= 0 {
 			rtt = 50 * time.Millisecond
 		}
-		p = &lane{id: id, remoteID: remoteID, rate: initialRate, startup: true, discoveryGain: startupDeliveryGain, rtt: rtt, idleRTT: rtt, baseRTT: rtt, baseAt: now, attempts: make(map[uint64]attempt), reordering: peak{bucket: reorderMemory}}
+		p = &lane{id: id, remoteID: remoteID, rate: initialRate, startup: true, discoveryGain: startupDeliveryGain, rtt: rtt, idleRTT: rtt, baseRTT: rtt, baseAt: now, attempts: make(map[uint64]attempt), reordering: peak{bucket: reorderMemory}, sustained: sustainedDelivery{best: peak{bucket: sustainedMemory}}}
 		p.lastTransmit = now
 		p.nextBaseline = now.Add(baselineInterval + time.Duration((uint16(id)^uint16(id)>>8)&255)*baselineStagger)
 		t.paths = append(t.paths, p)
@@ -1138,6 +1140,7 @@ func (t *Transport) ack(p *lane, a acknowledgement, now time.Time, fresh bool) {
 		}
 		p.rateBytes, p.rateElapsed, p.feedbackAt = a.bytes, a.elapsed, now
 		p.rateSentBytes = p.sent
+		p.sustained.record(now, a.bytes, a.elapsed)
 	}
 	p.peakDelivery = math.Max(p.peakDelivery, p.deliveryRate)
 	p.ackedBytes, p.ackedElapsed = a.bytes, a.elapsed

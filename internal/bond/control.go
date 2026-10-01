@@ -87,6 +87,12 @@ func (p *lane) measuredDelivery() float64 {
 	return math.Max(p.deliveryRate, (p.deliverySample+p.previousDelivery)/2)
 }
 
+// demonstrated is the capacity the lane has shown: what it delivers now, or
+// what it kept up shortly before if that was more.
+func (p *lane) demonstrated(now time.Time) float64 {
+	return math.Max(p.measuredDelivery(), p.sustained.value(now))
+}
+
 // congestionThreshold is the queue delay above which the path is taken to be
 // queueing this lane's datagrams.
 //
@@ -162,9 +168,9 @@ func (s *stall) explains(now time.Time, delay, threshold time.Duration) bool {
 
 // stalledSignal answers a delay signal that follows a stall. The estimate
 // stands and discovery goes on: a lane that carries nothing for a while
-// delays whatever is sent, at any rate (`TestStallDoesNotEndDiscovery`). The
-// target gives way as it does while a probe's queue drains, so that the
-// backlog leaves.
+// delays whatever is sent, at any rate (`TestStallDoesNotEndDiscovery`,
+// `TestStalledLaneKeepsItsEstimate`). The target gives way as it does while a
+// probe's queue drains, so that the backlog leaves.
 func (p *lane) stalledSignal(now time.Time) {
 	c := &p.control
 	p.decisions.StallSignals++
@@ -287,7 +293,7 @@ func (p *lane) congested(now time.Time, lost, laneLimited bool) {
 		// trace 20260929-171122-radio-down-k1: 995 datagrams expired at once).
 		p.decisions.DiscoveryCongested++
 		p.startup = false
-		c.capacity, c.holdSignal, c.pulseWins, c.draining = p.measuredDelivery(), false, 0, true
+		c.capacity, c.holdSignal, c.pulseWins, c.draining = p.demonstrated(now), false, 0, true
 		c.drainBy = now.Add(p.drainTime(queued))
 		c.flushUntil = now.Add(min(maxFlush, flushQueues*queued))
 		p.schedulePulse(now)
@@ -326,19 +332,28 @@ func (p *lane) congested(now time.Time, lost, laneLimited bool) {
 		// for as long as it lasts, and no reduction of the target removes it.
 		// The two are told apart before the target is cut.
 		p.testFloor(now, p.signalDelay)
-	case p.rate < capacityDrop*c.capacity:
+	case p.rate < capacityDrop*c.capacity && (lost || p.sustained.value(now) < capacityDecay*c.capacity):
 		// Repeated cuts took the target well below the estimate: capacity
 		// fell. This measurement was taken below the new capacity, so test
 		// for more at once.
 		p.decisions.CapacityRemeasured++
 		c.capacity, c.pulseWins = p.measuredDelivery(), 0
+		if !lost {
+			c.capacity = p.demonstrated(now)
+		}
 		p.rate = math.Max(minimumRate, p.cut(lost))
 		c.drainBy = now.Add(p.drainTime(queued))
 		p.schedulePulse(now)
 		c.nextPulse = now
 	default:
 		p.decisions.CapacityDecays++
-		c.capacity *= capacityDecay
+		decayed := capacityDecay * c.capacity
+		if !lost {
+			// Delay does not lower the estimate below what the lane kept
+			// up shortly before.
+			decayed = math.Max(decayed, math.Min(c.capacity, p.sustained.value(now)))
+		}
+		c.capacity = decayed
 		if lost && p.saturating() {
 			// Material loss while sending the target: the path delivers no
 			// more than it did.
@@ -635,6 +650,43 @@ func (l *lossLedger) material(now time.Time) bool {
 	lost, sent, datagrams := l.lost(now)
 	return datagrams > 0 && lost >= startupLossEvents*sent/datagrams && lost >= startupLossRatio*sent
 }
+
+const (
+	sustainedSpan   = 500 * time.Millisecond
+	sustainedMemory = 500 * time.Millisecond // one of the peak's five buckets
+)
+
+// sustainedDelivery remembers the highest delivery a lane kept up over
+// sustainedSpan in the last few seconds, from the receiver's byte counts.
+//
+// Delivery measured over a control interval follows the path down and back
+// when it slows for a few hundred milliseconds. An estimate of capacity taken
+// from it at that moment is low by as much, and the target then holds below
+// it (`TestSlowdownDoesNotLowerTheEstimate`). What the lane kept up over a
+// longer span shortly before is still true of it; if its capacity did fall,
+// that memory lapses within three seconds.
+type sustainedDelivery struct {
+	marks []deliveryMark
+	best  peak
+}
+
+// deliveryMark is the receiver's count of bytes at its elapsed time.
+type deliveryMark struct {
+	bytes, elapsed uint64
+}
+
+func (d *sustainedDelivery) record(now time.Time, bytes, elapsed uint64) {
+	d.marks = append(d.marks, deliveryMark{bytes, elapsed})
+	// Keep one mark at least a span old to measure from.
+	for len(d.marks) > 1 && elapsed-d.marks[1].elapsed >= uint64(sustainedSpan) {
+		d.marks = d.marks[1:]
+	}
+	if oldest := d.marks[0]; elapsed-oldest.elapsed >= uint64(sustainedSpan) {
+		d.best.record(now, float64(bytes-oldest.bytes)/time.Duration(elapsed-oldest.elapsed).Seconds())
+	}
+}
+
+func (d *sustainedDelivery) value(now time.Time) float64 { return d.best.value(now) }
 
 const (
 	peakBucket  = 2 * time.Second

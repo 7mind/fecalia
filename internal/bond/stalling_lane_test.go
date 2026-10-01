@@ -90,3 +90,67 @@ func TestStallDoesNotEndDiscovery(t *testing.T) {
 		})
 	}
 }
+
+// stalledBulk runs saturating bulk over a call's lane and the given one for
+// each of four schedules of stalls, and reports per schedule the bulk
+// delivered in the measured half and the lowest estimate the lane held in it.
+func stalledBulk(lane varyingLane) (bulk, lowest []float64) {
+	for seed := uint64(0); seed < 4; seed++ {
+		var low float64
+		m := mixedLoad{lanes: []varyingLane{lowLatencyLane, lane}, offered: 8e6, seconds: 30, failed: -1, seed: seed}
+		m.observe = func(second int, s bond.Snapshot) {
+			// No estimate is reported while the lane discovers.
+			if c := s.Paths[1].Capacity; second >= 15 && c > 0 && (low == 0 || c < low) {
+				low = c
+			}
+		}
+		bulk, lowest = append(bulk, m.run().bulk), append(lowest, low)
+	}
+	return bulk, lowest
+}
+
+// A stall is not a fall in capacity: the lane carries afterwards what it
+// carried before. Its backlog delays what follows as a queue does, and read
+// as one it ended discovery, lost the probes it fell on and lowered the
+// estimate at every repeated signal. The model lane delivered 55% of what it
+// serves under 200 ms stalls and 49% under 300 ms.
+func TestStalledLaneKeepsItsEstimate(t *testing.T) {
+	for _, stall := range []time.Duration{100 * time.Millisecond, 200 * time.Millisecond, 300 * time.Millisecond} {
+		t.Run(stall.String(), func(t *testing.T) {
+			lane := stallingLane(stall)
+			bulk, lowest := stalledBulk(lane)
+			t.Logf("the lane serves %.0f B/s; bulk per schedule %.0f, lowest estimates %.0f", served(lane), bulk, lowest)
+			for seed := range bulk {
+				if lowest[seed] < 0.7*served(lane) {
+					t.Errorf("schedule %d: the estimate fell to %.0f B/s", seed, lowest[seed])
+				}
+				if bulk[seed] < 0.7*served(lane) {
+					t.Errorf("schedule %d: bulk received %.0f B/s", seed, bulk[seed])
+				}
+			}
+		})
+	}
+}
+
+// A path may also slow down for a few hundred milliseconds without going
+// silent. Delivery measured over a control interval follows it down, and an
+// estimate taken or lowered from that was low by as much. In production a
+// lane that had delivered 4.8-5.3 MB/s for a second and a half ended
+// discovery at 5.06 MB/s; delivery then sank to 3.0-3.4 MB/s for half a
+// second with queue delays of 72-184 ms, the estimate was measured anew at
+// 3.22 MB/s, and the 7 s transfer ended before it was back (2026-10-01:
+// 18-23 Mbit/s through the bond against 49-50 on the mobile link alone).
+func TestSlowdownDoesNotLowerTheEstimate(t *testing.T) {
+	lane := stallingLane(300 * time.Millisecond)
+	lane.stallRate = 0.5
+	bulk, lowest := stalledBulk(lane)
+	t.Logf("the lane serves %.0f B/s; bulk per schedule %.0f, lowest estimates %.0f", served(lane), bulk, lowest)
+	for seed := range bulk {
+		if lowest[seed] < 0.75*served(lane) {
+			t.Errorf("schedule %d: the estimate fell to %.0f B/s", seed, lowest[seed])
+		}
+		if bulk[seed] < 0.7*served(lane) {
+			t.Errorf("schedule %d: bulk received %.0f B/s", seed, bulk[seed])
+		}
+	}
+}
