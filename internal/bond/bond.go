@@ -73,6 +73,10 @@ const (
 	fullDatagramWireBytes = 1500
 	wireOverhead          = Overhead + 28 // data frame, IPv4 and UDP headers
 	transitSizeBucket     = 128
+	// stallSilence is how long the peer reports nothing new on a lane that
+	// holds datagrams before the lane counts as having stalled: twice the
+	// longest interval between acknowledgements.
+	stallSilence = 2 * maxACKInterval
 )
 
 type Transmission struct {
@@ -145,6 +149,9 @@ type Decisions struct {
 	// congestion signal, PulseLosses those that found the limit, and
 	// Rediscoveries the returns to discovery after consecutive wins.
 	Pulses, PulseWins, PulseLosses, Rediscoveries uint64
+	// StallSignals counts delay signals put down to a stall of the path: the
+	// lane delivered nothing for a while and then what it held.
+	StallSignals uint64
 }
 
 type Snapshot struct {
@@ -249,6 +256,8 @@ type lane struct {
 	seq                uint64
 	ackRevision        uint64
 	receivedHigh       uint64 // the highest lane sequence the peer reported
+	progressAt         time.Time
+	stall              stall
 	ackReceipts        receiptWindow
 	ackedBytes         uint64
 	ackedElapsed       uint64
@@ -383,6 +392,7 @@ func (t *Transport) SetRemote(epoch Epoch, adopted bool) bool {
 		p.losses, p.lossMark, p.lossMarked = lossLedger{}, 0, false
 		p.reordering, p.newestConfirmed = peak{bucket: reorderMemory}, time.Time{}
 		p.ackRevision, p.receivedHigh = 0, 0
+		p.progressAt, p.stall = time.Time{}, stall{}
 		p.ackReceipts = receiptWindow{}
 		p.ackedBytes, p.ackedElapsed = 0, 0
 		clear(p.transitBases[:])
@@ -946,7 +956,10 @@ func (t *Transport) Receive(path PathID, f frame.Control, now time.Time) ([]Deli
 }
 
 func (t *Transport) ack(p *lane, a acknowledgement, now time.Time, fresh bool) {
-	p.receivedHigh = max(p.receivedHigh, a.high)
+	silence, progressed := now.Sub(p.progressAt), a.high > p.receivedHigh
+	if progressed {
+		p.receivedHigh, p.progressAt = a.high, now
+	}
 	backlogged := t.queued() > 0 || p.inflight >= p.window()/2
 	var sample time.Duration
 	var physicalFeedback time.Duration
@@ -1072,6 +1085,9 @@ func (t *Transport) ack(p *lane, a acknowledgement, now time.Time, fresh bool) {
 		path.observeFeedbackRTT(feedbackSample)
 	}
 	p.newestConfirmed = newestConfirmed
+	if progressed && silence >= stallSilence && silence < pathLease && physicalFeedback >= silence {
+		p.stallEnded(now, silence)
+	}
 	if counted {
 		p.losses.record(now, a.high, through, a.bytes, p.lateBelow(a, highSent, now))
 	}
