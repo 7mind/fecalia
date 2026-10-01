@@ -131,6 +131,12 @@ func (p *lane) adjust(now time.Time, lost, delayed, sampled, laneLimited, realti
 	lost = lost && p.roundLossy && p.deliveryRate > 0
 	switch {
 	case lost || delayed:
+		if delayed {
+			p.decisions.DelaySignals++
+		}
+		if lost {
+			p.decisions.LossSignals++
+		}
 		p.congested(now, lost, laneLimited)
 	case sampled:
 		p.control.holdSignal, p.control.draining, p.control.flushUntil = false, false, time.Time{}
@@ -178,6 +184,7 @@ func (p *lane) congested(now time.Time, lost, laneLimited bool) {
 		// lane, and a reduced target would then drain nothing. A longer
 		// pause on a fast lane fills the tunnel queue beyond its bound (VM
 		// trace 20260929-171122-radio-down-k1: 995 datagrams expired at once).
+		p.decisions.DiscoveryCongested++
 		p.startup = false
 		c.capacity, c.holdSignal, c.pulseWins, c.draining = p.measuredDelivery(), false, 0, true
 		c.drainBy = now.Add(p.drainTime(queued))
@@ -191,6 +198,7 @@ func (p *lane) congested(now time.Time, lost, laneLimited bool) {
 		p.rate = math.Max(minimumRate, math.Max(p.cut(lost), capacityDrain*c.capacity))
 	case c.awaitingVerdict():
 		// The pulse found the limit: the estimate stands and its queue drains.
+		p.decisions.PulseLosses++
 		c.pulseWins, c.draining = 0, true
 		c.drainBy = now.Add(p.drainTime(queued))
 		p.rate = math.Max(minimumRate, capacityDrain*c.capacity)
@@ -206,11 +214,13 @@ func (p *lane) congested(now time.Time, lost, laneLimited bool) {
 		// Repeated cuts took the target well below the estimate: capacity
 		// fell. This measurement was taken below the new capacity, so test
 		// for more at once.
+		p.decisions.CapacityRemeasured++
 		c.capacity, c.pulseWins = p.measuredDelivery(), 0
 		p.rate = math.Max(minimumRate, p.cut(lost))
 		p.schedulePulse(now)
 		c.nextPulse = now
 	default:
+		p.decisions.CapacityDecays++
 		c.capacity *= capacityDecay
 		p.rate = math.Max(minimumRate, p.cut(lost))
 	}
@@ -232,8 +242,10 @@ func (p *lane) holdOrPulse(now time.Time, laneLimited bool) {
 		p.rate = limit
 	case c.awaitingVerdict() && now.Sub(c.verdictAt) < verdictExpiry:
 		// The pulse's feedback arrived without a congestion signal.
+		p.decisions.PulseWins++
 		c.capacity *= 1 + (pulseGain-1)*float64(int(1)<<c.pulseWins)
 		if c.pulseWins++; c.pulseWins >= pulseWinsToLeave {
+			p.decisions.Rediscoveries++
 			c.pulseWins = 0
 			p.schedulePulse(now)
 			p.startup, p.startupBest, p.startupFlatRounds, p.discoveryGain = true, 0, 0, rediscoveryGain
@@ -254,6 +266,7 @@ func (p *lane) holdOrPulse(now time.Time, laneLimited bool) {
 // pulse raises the target above the estimate for long enough to build a queue
 // the delay signal can detect if the estimate is the path's capacity.
 func (p *lane) pulse(now time.Time) {
+	p.decisions.Pulses++
 	c := &p.control
 	length := time.Duration(pulseQueueFactor / pulseExcess * float64(p.congestionThreshold()))
 	length = min(maxPulse, max(minPulse, length))
@@ -281,6 +294,7 @@ func (p *lane) discover(now time.Time, realtime, stream, laneLimited bool) {
 		} else if p.sendRate < startupPlateauSending*p.rate {
 			p.startupFlatRounds = 0
 		} else if p.startupFlatRounds++; p.startupFlatRounds >= startupPlateauRounds {
+			p.decisions.DiscoveryPlateau++
 			p.startup = false
 			p.control = control{capacity: p.startupBest}
 			p.schedulePulse(now)

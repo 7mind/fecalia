@@ -29,6 +29,7 @@ type adaptiveCollector struct {
 	interactiveDrops, interactiveQueued *prometheus.Desc
 	coalescedACKs                       *prometheus.Desc
 	admissionDrops, aqmDrops            *prometheus.Desc
+	duplicates                          *prometheus.Desc
 }
 
 func newAdaptiveCollector(source AdaptiveSource) *adaptiveCollector {
@@ -59,6 +60,18 @@ func newAdaptiveCollector(source AdaptiveSource) *adaptiveCollector {
 			}
 			return 0
 		}),
+		makeMetric("capacity_bytes_per_second", "Demonstrated capacity the target is held below; 0 while the lane has none.", prometheus.GaugeValue, func(p bond.PathStats) float64 { return p.Capacity }),
+		makeMetric("congestion_threshold_seconds", "Queue delay above which the lane is taken to queue.", prometheus.GaugeValue, func(p bond.PathStats) float64 { return p.Threshold.Seconds() }),
+		makeMetric("delay_signals_total", "Control intervals judged congested by queue delay.", prometheus.CounterValue, func(p bond.PathStats) float64 { return float64(p.Decisions.DelaySignals) }),
+		makeMetric("loss_signals_total", "Control intervals judged congested by material loss.", prometheus.CounterValue, func(p bond.PathStats) float64 { return float64(p.Decisions.LossSignals) }),
+		makeMetric("discovery_congestion_ends_total", "Discoveries ended by a congestion signal.", prometheus.CounterValue, func(p bond.PathStats) float64 { return float64(p.Decisions.DiscoveryCongested) }),
+		makeMetric("discovery_plateau_ends_total", "Discoveries ended by delivery that stopped growing at the pacing rate.", prometheus.CounterValue, func(p bond.PathStats) float64 { return float64(p.Decisions.DiscoveryPlateau) }),
+		makeMetric("capacity_remeasures_total", "Capacity estimates replaced by measured delivery after repeated cuts.", prometheus.CounterValue, func(p bond.PathStats) float64 { return float64(p.Decisions.CapacityRemeasured) }),
+		makeMetric("capacity_decays_total", "Reductions of a held capacity estimate by a congestion signal.", prometheus.CounterValue, func(p bond.PathStats) float64 { return float64(p.Decisions.CapacityDecays) }),
+		makeMetric("pulses_total", "Probes above the capacity estimate.", prometheus.CounterValue, func(p bond.PathStats) float64 { return float64(p.Decisions.Pulses) }),
+		makeMetric("pulse_wins_total", "Probes that drew no congestion signal and raised the estimate.", prometheus.CounterValue, func(p bond.PathStats) float64 { return float64(p.Decisions.PulseWins) }),
+		makeMetric("pulse_losses_total", "Probes that found the limit.", prometheus.CounterValue, func(p bond.PathStats) float64 { return float64(p.Decisions.PulseLosses) }),
+		makeMetric("rediscoveries_total", "Returns to discovery after consecutive probes without a congestion signal.", prometheus.CounterValue, func(p bond.PathStats) float64 { return float64(p.Decisions.Rediscoveries) }),
 		makeMetric("up", "Authenticated lane lease is current and data acknowledgements have not stalled.", prometheus.GaugeValue, func(p bond.PathStats) float64 {
 			if p.Up {
 				return 1
@@ -71,7 +84,8 @@ func newAdaptiveCollector(source AdaptiveSource) *adaptiveCollector {
 		interactiveDrops:  prometheus.NewDesc("wanbond_adaptive_interactive_queue_drops_total", "Small datagrams dropped by bounded queue admission or residence time; included in queue_drops_total.", []string{"peer"}, nil),
 		admissionDrops:    prometheus.NewDesc("wanbond_adaptive_admission_drops_total", "Datagrams refused because the queued and outstanding datagram limit was full; included in queue_drops_total.", []string{"peer"}, nil),
 		aqmDrops:          prometheus.NewDesc("wanbond_adaptive_aqm_drops_total", "Bulk datagrams dropped by the CoDel schedule; included in queue_drops_total. The remainder of queue_drops_total exceeded a residence bound.", []string{"peer"}, nil),
-		interactiveQueued: prometheus.NewDesc("wanbond_adaptive_interactive_queued_packets", "Small datagrams waiting for their first transmission.", []string{"peer"}, nil)}
+		interactiveQueued: prometheus.NewDesc("wanbond_adaptive_interactive_queued_packets", "Small datagrams waiting for their first transmission.", []string{"peer"}, nil),
+		duplicates:        prometheus.NewDesc("wanbond_adaptive_duplicate_packets_total", "Received datagrams that had arrived before: the peer's repairs and copies of datagrams it could not confirm in time.", []string{"peer"}, nil)}
 }
 
 func (c *adaptiveCollector) Describe(ch chan<- *prometheus.Desc) {
@@ -85,6 +99,7 @@ func (c *adaptiveCollector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.coalescedACKs
 	ch <- c.admissionDrops
 	ch <- c.aqmDrops
+	ch <- c.duplicates
 }
 
 func (c *adaptiveCollector) Collect(ch chan<- prometheus.Metric) {
@@ -101,5 +116,6 @@ func (c *adaptiveCollector) Collect(ch chan<- prometheus.Metric) {
 		ch <- prometheus.MustNewConstMetric(c.coalescedACKs, prometheus.CounterValue, float64(peer.State.CoalescedACKs), peer.Peer)
 		ch <- prometheus.MustNewConstMetric(c.admissionDrops, prometheus.CounterValue, float64(peer.State.AdmissionDrops), peer.Peer)
 		ch <- prometheus.MustNewConstMetric(c.aqmDrops, prometheus.CounterValue, float64(peer.State.AQMDrops), peer.Peer)
+		ch <- prometheus.MustNewConstMetric(c.duplicates, prometheus.CounterValue, float64(peer.State.Duplicates), peer.Peer)
 	}
 }

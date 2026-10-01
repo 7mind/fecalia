@@ -123,6 +123,27 @@ type PathStats struct {
 	InteractiveSent      uint64
 	Up                   bool
 	Discovering          bool
+	// Threshold is the queue delay above which the lane is taken to queue.
+	Threshold time.Duration
+	Decisions Decisions
+}
+
+// Decisions counts what the lane's control concluded, so that a rate held low
+// can be traced to its cause from outside.
+type Decisions struct {
+	// DelaySignals and LossSignals count control intervals judged congested
+	// by queue delay and by material loss; an interval may be both.
+	DelaySignals, LossSignals uint64
+	// DiscoveryCongested and DiscoveryPlateau count discoveries ended by a
+	// congestion signal and by delivery that stopped growing.
+	DiscoveryCongested, DiscoveryPlateau uint64
+	// CapacityRemeasured counts estimates replaced by measured delivery after
+	// repeated cuts; CapacityDecays the 3% reductions of a held estimate.
+	CapacityRemeasured, CapacityDecays uint64
+	// Pulses counts probes above the estimate, PulseWins those that drew no
+	// congestion signal, PulseLosses those that found the limit, and
+	// Rediscoveries the returns to discovery after consecutive wins.
+	Pulses, PulseWins, PulseLosses, Rediscoveries uint64
 }
 
 type Snapshot struct {
@@ -213,6 +234,7 @@ type lane struct {
 	copies               float64
 	guaranteed           [classes]bool
 	shared               bool
+	decisions            Decisions
 	// bulkElsewhere: another usable lane carries no real-time originals.
 	bulkElsewhere      bool
 	lastACK            time.Time
@@ -1165,6 +1187,8 @@ func (t *Transport) Snapshot(now time.Time) Snapshot {
 			InFlight: p.inflight, Window: p.window(), Sent: p.sent, ACKed: p.acked, Retransmits: p.retries, InteractiveSent: p.interactiveSent,
 			Up:          p.up(now) && !p.stalled,
 			Discovering: p.startup,
+			Threshold:   p.congestionThreshold(),
+			Decisions:   p.decisions,
 		})
 	}
 	return s
