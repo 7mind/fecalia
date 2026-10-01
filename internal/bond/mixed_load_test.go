@@ -167,3 +167,10 @@ func (m mixedLoad) run() mixedLoadOutcome {
 	}
 	return outcome
 }
+
+var (
+	// lowLatencyLane is the lane a call prefers: slow, steady and short.
+	lowLatencyLane = varyingLane{rate: 62500, delay: 14 * time.Millisecond, buffer: 100 * time.Millisecond}
+	// steadyLane carries 50 Mbit/s.
+	steadyLane = varyingLane{rate: 6.25e6, delay: 25 * time.Millisecond, buffer: 100 * time.Millisecond}
+)

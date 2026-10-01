@@ -212,42 +212,44 @@ type lane struct {
 	copies               float64
 	guaranteed           [classes]bool
 	shared               bool
-	lastACK              time.Time
-	ackGap               time.Duration
-	lastAdjust           time.Time
-	lostSinceAdjust      bool
-	inflight             int
-	classInflight        [classes]int
-	confirmedWireBytes   int
-	seq                  uint64
-	ackRevision          uint64
-	ackReceipts          receiptWindow
-	ackedBytes           uint64
-	ackedElapsed         uint64
-	feedbackAt           time.Time
-	rateBytes            uint64
-	rateSentBytes        uint64
-	rateElapsed          uint64
-	firstSent            time.Time
-	transitBases         [(maxDatagram+wireOverhead)/transitSizeBucket + 1]transitBaseline
-	intervalQueueDelay   time.Duration
-	delayJitter          time.Duration
-	intervalJitter       time.Duration
-	delayDifferences     int
-	intervalSamples      int
-	haveInterval         bool
-	queueDelay           time.Duration
-	nextBaseline         time.Time
-	drainUntil           time.Time
-	baselinePending      bool
-	stalled              bool
-	lastTransmit         time.Time
-	lastPayload          time.Time
-	attempts             map[uint64]attempt
-	sent                 uint64
-	interactiveSent      uint64
-	acked                uint64
-	retries              uint64
+	// bulkElsewhere: another usable lane carries no real-time originals.
+	bulkElsewhere      bool
+	lastACK            time.Time
+	ackGap             time.Duration
+	lastAdjust         time.Time
+	lostSinceAdjust    bool
+	inflight           int
+	classInflight      [classes]int
+	confirmedWireBytes int
+	seq                uint64
+	ackRevision        uint64
+	ackReceipts        receiptWindow
+	ackedBytes         uint64
+	ackedElapsed       uint64
+	feedbackAt         time.Time
+	rateBytes          uint64
+	rateSentBytes      uint64
+	rateElapsed        uint64
+	firstSent          time.Time
+	transitBases       [(maxDatagram+wireOverhead)/transitSizeBucket + 1]transitBaseline
+	intervalQueueDelay time.Duration
+	delayJitter        time.Duration
+	intervalJitter     time.Duration
+	delayDifferences   int
+	intervalSamples    int
+	haveInterval       bool
+	queueDelay         time.Duration
+	nextBaseline       time.Time
+	drainUntil         time.Time
+	baselinePending    bool
+	stalled            bool
+	lastTransmit       time.Time
+	lastPayload        time.Time
+	attempts           map[uint64]attempt
+	sent               uint64
+	interactiveSent    uint64
+	acked              uint64
+	retries            uint64
 }
 
 type receiver struct {

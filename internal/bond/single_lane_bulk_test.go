@@ -15,7 +15,8 @@ import (
 func TestBulkBesideVoiceDiscoversTheOnlyLane(t *testing.T) {
 	for name, rate := range map[string]float64{"5 Mbit/s": 625000, "50 Mbit/s": 6.25e6} {
 		t.Run(name, func(t *testing.T) {
-			lane := varyingLane{rate: rate, delay: 25 * time.Millisecond, buffer: 100 * time.Millisecond}
+			lane := steadyLane
+			lane.rate = rate
 			o := mixedLoad{lanes: []varyingLane{lane}, offered: 8e6, seconds: 30, failed: -1}.run()
 			t.Logf("bulk %.0f B/s of a %.0f B/s lane; voice %d/%d, one-way p99 %s", o.bulk, rate, o.voiceDelivered, o.voiceSent, o.voiceP99)
 			if o.bulk < 0.7*rate {

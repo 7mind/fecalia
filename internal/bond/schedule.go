@@ -129,7 +129,7 @@ func (t *Transport) reserve(now time.Time) {
 	lanes := make([]*lane, 0, len(t.paths))
 	bulkWaiting := len(t.queue) > 0
 	for _, p := range t.paths {
-		p.reserved, p.guaranteed, p.shared, p.copies = [classBulk]float64{}, [classes]bool{}, bulkWaiting, 0
+		p.reserved, p.guaranteed, p.shared, p.copies, p.bulkElsewhere = [classBulk]float64{}, [classes]bool{}, bulkWaiting, 0, false
 		if p.up(now) && !p.stalled {
 			lanes = append(lanes, p)
 		}
@@ -166,6 +166,15 @@ func (t *Transport) reserve(now time.Time) {
 		lanes[guarantor].guaranteed[c+1] = true
 		if c == classRealtime {
 			t.reserveCopies(now, lanes, free)
+			quiet := 0
+			for _, p := range lanes {
+				if p.reserved[classRealtime] == 0 {
+					quiet++
+				}
+			}
+			for _, p := range lanes {
+				p.bulkElsewhere = quiet > 0 && p.reserved[classRealtime] > 0
+			}
 		}
 	}
 }
@@ -207,15 +216,29 @@ func (p *lane) latency() time.Duration {
 	return p.idleRTT + jitterAllowanceFactor*p.idleRTTVariation
 }
 
-// realtimeLane reports that real-time datagrams need most of what the lane
-// carries. The target of a lane whose capacity was never found is not what it
-// carries: beside a real-time stream it is held near recent delivery, and
-// judged by it the stream alone made the lane a real-time lane, bulk kept its
-// minimum share, delivery could not grow and neither could the target
-// (`TestBulkBesideVoiceDiscoversTheOnlyLane`).
+// realtimeLane reports that bulk keeps off the lane, to its minimum share at
+// most, because real-time datagrams travel on it.
+//
+// A lane whose capacity was never found is not one: its target is not what it
+// carries. Beside a real-time stream that target is held near recent
+// delivery, and judged by it the stream alone took most of the lane, bulk
+// kept its minimum share, delivery could not grow and neither could the
+// target (`TestBulkBesideVoiceDiscoversTheOnlyLane`). Bulk discovers the lane
+// first, at the pace that bound allows.
+//
+// While another lane can take the bulk, it then holds for a lane on which one
+// full datagram ahead of a real-time one delays it by more than the queue the
+// lane is allowed: at 0.5 Mbit/s a bulk datagram is 24 ms of serialization,
+// for a third of a megabit of throughput.
+//
+// With no other lane for bulk, it holds only where real-time datagrams need
+// most of what the lane carries.
 func (p *lane) realtimeLane() bool {
 	if p.startup && p.control.capacity == 0 {
 		return false
+	}
+	if p.bulkElsewhere {
+		return fullDatagramWireBytes/p.rate*float64(time.Second) > float64(targetQueue)
 	}
 	return p.reserved[classRealtime] > realtimeLane*p.rate
 }
