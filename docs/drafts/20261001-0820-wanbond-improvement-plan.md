@@ -154,3 +154,116 @@ lab figures in [the lab record](../../test/vm/README.md):
 - **A bulk flood had voice refused at the tunnel's entrance** (lab: 35-61% of
   the voice datagrams lost beside 400 Mbit/s of UDP offered to a 32+96 Mbit/s
   bond; none after).
+
+## Field run of 2026-10-01 (`main` = `b46f1c2`)
+
+The first build with the lane control series. Edge `pi` behind the satellite
+and the mobile link, exit `raspi5l`. Captures: all series from both ends once
+a second (`prod-20261001-160301-field-obs1`, `…-180755-field-obs2`) and the
+transport series about 17 times a second (`prodfast-20261001-181131-obs3`,
+`…-182337-obs4`, `…-182539-obs5`), under `/srv/nvme/tmp/wanbond-awg3-20260929/`
+(local scratch, not portable).
+
+| Run | Method | Bond down / up, Mbit/s | Mobile link alone, same minutes |
+|---|---|---|---|
+| obs1, one minute after the restart | Speedtest | 24.2 / 1.5 | — |
+| obs2, two hours later | Speedtest | 23.6 / 4.0 | — |
+| obs3 | Speedtest | 24.7 / 4.9 | — |
+| obs4, obs5 | one TCP flow for 7-8 s, alternating | down 21.4, 18.2, 23.1; up 3.6, 4.6, 3.7, 3.9 | down 48.9, 49.9, 48.8; up 1.4, 6.4, 6.0, 5.6 |
+
+Measured the same way in the same minutes, the bond carries 43% of what the
+mobile link alone does downstream and about two thirds upstream (the first
+upload on the mobile link alone, 1.4 Mbit/s, is not explained).
+
+What the counters and the fast captures show:
+
+- **Nearly every repair is a duplicate.** In the obs1 download the
+  concentrator sent 1119 repairs and wrote 1647 datagrams off as unconfirmed;
+  the edge counted 1035 duplicates and its resequencer skipped 4 sequences.
+  The concentrator's path sent 51.10 MB and the edge's paths received 50.98.
+  The mobile lane took 21 loss signals, 4 reductions of its estimate and 3
+  ends of discovery in those 18 seconds.
+- **The mobile link stalls.** About once a second the bytes in flight on the
+  downlink lane double for 0.2-0.4 s, with queue delays of 65-180 ms, and the
+  lane then delivers as before. Repairs come in bursts of 319-354 within a
+  second at those moments. Whether the path is silent throughout a stall or
+  only slow is not resolved at 17 samples a second; both occur in the delivery
+  figures.
+- **The estimate is measured from delivery that a stall depressed.** In obs5
+  the lane delivered 4.8-5.3 MB/s for a second and a half, ended discovery at
+  5.06 MB/s, and 0.6 s later held an estimate of 3.22 MB/s, measured anew
+  while delivery was at 3.0-3.4 MB/s with 91-184 ms of queue delay. The 7 s
+  transfer ended before it was back. In obs3 a return to discovery after
+  three won probes ended 0.3 s later at 3.47 MB/s; the estimate before it was
+  4.64.
+- **The target of a silent lane is cut by three tenths per control interval**
+  (the rule for a lane whose datagrams time out with no acknowledgement
+  since): 6.17 to 4.32 to 3.02 MB/s within 60 ms in obs5 and 4.55 to 3.19 in
+  obs3, each by exactly 0.7 with no signal counted.
+- **A cold uplink lane stays low.** One minute after the restart the mobile
+  uplink ended its first discovery in the first second of the upload, at
+  0.26 MB/s, on one delay signal at the threshold (20 ms), while the sender
+  was still starting. Probes then raised and lowered it between 0.20 and
+  0.30 MB/s for the nine seconds of the upload. Two hours and several
+  transfers later it held 0.54-0.96 MB/s.
+- **Delay signals on the uplink do not depend on the rate**: 2.0 a second at
+  0.20-0.29 MB/s, 2.4 at 0.54-0.67, 3.4 at 0.60-0.97.
+- **The satellite lane carries no bulk during a Speedtest.** Its traffic was
+  small datagrams only (`interactive_sent_bytes` equal to `sent_bytes`), at a
+  third to a half of its target. Inferred, not observed: Speedtest's own UDP
+  loss probes are a real-time stream to the classifier, and the rule that
+  keeps bulk off a slow lane beside a call applies. The cost is at most
+  0.3 Mbit/s of the upload.
+- **The lane bitmap confirms 56-58% of the mobile lane's bytes** at
+  3-4.5 MB/s (`acked_bytes` against `sent_bytes`); the rest is confirmed by
+  the global receipt only. Item 5 is therefore relevant at 30-40 Mbit/s, not
+  only at 300.
+
+Branch `field-stalls` (on `b46f1c2`, not merged) answers the first three, and
+the fifth as far as the uplink's delay signals are stalls, which is not known.
+A model lane that serves nothing for 100-300 ms about once a second and loses
+nothing reproduces them (`internal/bond/stalling_lane_test.go`); the model's
+stalls are complete silences of one mean length, which the field's are not.
+None of it has run on a real link.
+
+| Model lane, 50 Mbit/s, share of what it serves delivered | no stalls | 100 ms | 200 ms | 300 ms | half rate for 300 ms |
+|---|---|---|---|---|---|
+| `b46f1c2` | 85% | 78% | 24% | 1% | 73% |
+| with `level-shift2` (loss from byte counts) | 85% | 76% | 55% | 49% | not run |
+| `field-stalls` | 85% | 84% | 81% | 80% | 76% |
+
+Means of eight schedules of stalls about once a second, the call on the other
+lane; under 200 ms stalls `b46f1c2` ranges from 2% to 64%.
+
+1. `level-shift2` is ported: its condition, a loss cut on a lane that lost
+   nothing, is met by the first finding. Item 3 above is done on the branch;
+   item 2 comes with it.
+2. A datagram is not sent again on the lane it was last sent on until the
+   peer has received a later one on that lane, or fewer than three followed
+   it.
+3. A lane that reported nothing new for 100 ms while it held datagrams, and
+   then confirmed them, stalled. Delay within what is left of that backlog is
+   not a congestion signal: discovery goes on, a probe is neither won nor
+   lost, the estimate stands, and the target gives way as it does while a
+   probe's queue drains.
+4. An estimate taken at the end of discovery, measured anew after repeated
+   cuts, or lowered by a delay signal does not go below the delivery the lane
+   kept up over half a second within the last two and a half.
+
+Not answered, and open:
+
+- The silent-lane cut itself (three tenths per interval) is unchanged.
+- In the model, a lane whose one direction stalls is not marked silent while
+  another lane delivers: its target was never cut through a 400 ms stall.
+  Inferred from the code, not traced: the receiver acknowledges on every lane
+  whenever any receipt is unreported, and those acknowledgements count as the
+  lane answering. This is the one-way-dead lane of the list above, seen now
+  in a run.
+- A lane whose estimate fell below what one full-size datagram needs in the
+  queue allowance (1.2 Mbit/s) while it carries a call keeps bulk off, and
+  nothing raises the estimate: probes need a sender the lane limits. In the
+  model this held a 50 Mbit/s lane at 57 kB/s for the rest of the run.
+- Slowdowns without silence gain little: 76% against 73% in the model.
+- Whether the delay signals on the uplink are stalls is not known.
+- Not run in the lab: the host was loaded (load average 18) when the branch
+  was ready, and the lab has no WAN that stalls.

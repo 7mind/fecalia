@@ -1097,3 +1097,19 @@ small datagrams per run on `main` and 0-1 with the headroom.
 The continuity gates stay marginal for every build: over the day `db465b3`
 passed 10 of 15 runs and `main` 18 of 28, in interleaved series 10 of 14
 against 11 of 14.
+
+## A link that stalls — 2026-10-01, not run here
+
+Branch `field-stalls` answers what the production mobile link showed on
+2026-10-01: stalls of 0.2-0.4 s about once a second, repairs that all arrive
+as duplicates, and estimates taken from delivery a stall depressed. The
+measurements and the model figures are in
+[the improvement plan](../../docs/drafts/20261001-0820-wanbond-improvement-plan.md#field-run-of-2026-10-01-main--b46f1c2).
+
+Nothing of it was measured in this lab. No profile has a WAN that stalls:
+netem delays, loses and limits, but serves continuously. A profile that
+holds a WAN's rate near zero for a drawn time at drawn intervals is the
+missing piece; the rate schedule of `profiles/cellular.json` on branch
+`queue-allowance` is the place to add it. The usual series on `radio` and
+`gigaradio` with the continuity gates, interleaved with `b46f1c2`, was also
+not run: the host's load average was 18.

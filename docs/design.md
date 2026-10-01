@@ -491,6 +491,40 @@ lane. The credit counter saturates at the transport's maximum bounded packet
 storage. A datagram larger than the window may depart when no bytes are in
 flight, so the startup limit cannot deadlock a supported larger MTU.
 
+A cellular link serves nothing for a few hundred milliseconds now and then
+and delivers afterwards what it held (production mobile link, 2026-10-01:
+about once a second the bytes in flight on the downlink lane doubled for
+0.2-0.4 s with queue delays of 65-180 ms, and the lane then delivered as
+before). What was sent meanwhile is late by up to the stall's length, at any
+rate. Read as a queue, that delay ended discovery with whatever the lane
+delivered at that moment, lost the probe it fell on and lowered the estimate
+at every repeated signal: one minute after a restart the mobile uplink ended
+its first discovery at 0.26 MB/s and carried 1.5 Mbit/s of a Speedtest
+upload, against 4.0-4.9 two hours later. A lane whose peer reported nothing
+new for 100 ms, twice the longest interval between acknowledgements, and then
+confirmed datagrams sent before that silence began, stalled. Its backlog is
+as long as the stall when it ends and leaves, at the draining target, in four
+times the stall's length, a second at most. A delay signal within what is
+left of it by then is put down to the stall
+(`wanbond_adaptive_stall_signals_total`): discovery goes on, a probe is
+neither won nor lost, the estimate stands, and the target gives way as it
+does while a probe's queue drains. Delay above what is left of the backlog is
+a queue as before, since the backlog only shrinks
+(`TestStallDoesNotEndDiscovery`, `TestStalledLaneKeepsItsEstimate`).
+
+A path may also slow down without going silent, and delivery, measured over a
+control interval and smoothed over a quarter of a second, follows it down. A
+lane therefore remembers the highest delivery it kept up over half a second
+within the last two and a half, from the receiver's byte counts. The end of
+discovery takes that when it is more than the delivery of the moment, a delay
+signal does not lower the estimate below it, and the estimate is measured
+anew only once that memory is below it too; if capacity did fall, the memory
+lapses within three seconds. Material loss lowers the estimate as before. In
+production the mobile lane ended discovery at 5.06 MB/s after delivering
+4.8-5.3 for a second and a half, and half a second later held an estimate of
+3.22 MB/s, measured while the path delivered 3.0-3.4
+(`TestSlowdownDoesNotLowerTheEstimate`).
+
 Small datagrams wait at most 100 ms before first transmission. Bulk datagrams
 use RFC 8289 CoDel at dequeue, so a burst or
 target reduction produces spaced congestion signals instead of a contiguous
@@ -536,7 +570,15 @@ the estimator initialization in [RFC 6298 §2.2](https://www.rfc-editor.org/rfc/
 This is a bounded datagram repair policy, not TCP's full retransmission timer.
 Physical attempt records expire after two seconds and release their in-flight
 bytes even when an RTT spike has raised the repair timer beyond that horizon.
-Repairs prefer a different healthy lane.
+Repairs prefer a different healthy lane. A repair returns to the lane of the
+datagram's last transmission only once the peer has reported a later datagram
+received on that lane, or when fewer than three followed it there, so that a
+loss at the end of a burst is still repaired. While a lane delivers nothing,
+everything in flight on it times out together, and what is sent again on it
+arrives as a duplicate behind the originals: in production the concentrator
+sent 1119 repairs in one 15 s download, 319-354 of them within a second at
+each stall of the mobile lane, and the edge counted 1035 duplicates while its
+resequencer skipped 4 sequences (2026-10-01; `TestSilentLaneIsNotSentRepairs`).
 
 **Traffic classes (`schedule.go`).** Datagrams of at most 384 encrypted bytes
 are small. Small datagrams that are not TCP form the real-time class (voice,

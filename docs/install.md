@@ -1423,8 +1423,8 @@ listen = "127.0.0.1:9101"
   target below a demonstrated capacity, `DOWN` — its target, what it sent
   and what was delivered, the capacity estimate (`unknown` until the lane
   has one), the queue delay against the threshold above which the lane is
-  taken to queue, and under *Control decisions* the counts of delay and loss
-  signals, probes won and lost, and estimate re-measures and decays. A lane
+  taken to queue, and under *Control decisions* the counts of delay, loss and
+  stall signals, probes won and lost, and estimate re-measures and decays. A lane
   whose target sits far below what the link carries, with a small capacity
   and probes that are all lost, is being held down by its own estimate, not
   by the link. **Transport queue** shows the peer's drops, expiries and

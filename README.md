@@ -74,7 +74,10 @@ holding below its capacity first pauses bulk on it briefly and measures the
 link's latency floor again, so a latency that moved to a higher level is not
 taken for a queue. Loss
 response caps pacing just below measured delivery, since a path that drops
-instead of queueing delivers its capacity while it drops the rest; metrics
+instead of queueing delivers its capacity while it drops the rest. A link that
+serves nothing for a moment and then delivers what it held is taken for
+stalled, not congested: its delay ends no discovery and lowers no estimate,
+and repairs are not sent into its silence. Metrics
 distinguish the pacing target from actual send and delivery rates. The repair
 timer also measures full delivery-confirmation time so reordered packets do not
 trigger premature retries.
