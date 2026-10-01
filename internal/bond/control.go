@@ -110,7 +110,11 @@ func (p *lane) congestionThreshold() time.Duration {
 	if p.wanderKnown {
 		threshold = max(threshold, p.wander+jitterAllowanceFactor*p.wanderVariation+targetQueue)
 	}
-	return threshold
+	// What an idle lane sees is the path's own only while nothing else loads
+	// the path: a transfer on the same link outside the tunnel queues the
+	// lane's keepalives behind it, and with that taken for jitter the lane
+	// then queued without a signal (`TestThresholdIsBounded`).
+	return min(threshold, maxThreshold)
 }
 
 // lightlyLoaded reports that the lane sends well below what it has shown it

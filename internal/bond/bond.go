@@ -57,7 +57,8 @@ const (
 	// maxWander bounds what passes for a path's own latency wander; a larger
 	// delay on a lightly loaded lane is somebody's queue.
 	maxWander           = 3 * targetQueue
-	repairTail          = 3 // datagrams after one on its lane, fewer than which cannot show it missing
+	maxThreshold        = 10 * targetQueue // above this, delay is a queue whatever the idle lane saw
+	repairTail          = 3                // datagrams after one on its lane, fewer than which cannot show it missing
 	feedbackHorizon     = 2 * time.Second
 	deliveryInterval    = 50 * time.Millisecond
 	baselineInterval    = 10 * time.Second
