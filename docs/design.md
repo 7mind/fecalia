@@ -279,7 +279,12 @@ production links (600 pings each, idle, 2026-09-30) has a round-trip standard
 deviation of 7-10 ms, and on one of them moves between levels 10-20 ms apart
 that last for seconds; a model lane with that wander and the fixed 10 ms
 threshold was held at its minimum rate (`TestWanderingLatencyIsNotAQueue`).
-netem's jitter is drawn anew for every datagram and does not show this.
+netem's jitter is drawn anew for every datagram and does not show this. The
+threshold is at most 100 ms: what an idle lane sees is the path's own only
+while nothing else loads the path. A Speedtest on the production mobile link
+itself raised the tunnel lane's idle variation to 361 ms and its threshold to
+722 ms, and the Speedtest through the bond that followed ran without a delay
+signal at 764 ms of loaded latency (2026-10-01; `TestThresholdIsBounded`).
 
 Loss is measured from byte counts. Every acknowledgement carries the bytes the
 receiver has received on the lane, and the sender knows the bytes it had sent

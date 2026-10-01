@@ -323,3 +323,28 @@ What did not work, or is new:
   recovers within ten seconds of idleness. In production nothing but the
   tunnel uses that link; the comparison method must leave ten seconds after
   a direct transfer.
+
+## After the deployment of `825b5ff` (2026-10-01, 21:31)
+
+Operator's run, cold lanes: satellite link alone 0.49 / 0.49 Mbit/s; mobile
+link alone 50.4 / 4.8 at 203 / 552 ms of loaded latency; bond 27.5 / 3.7 at
+117 / 764 ms. Then three uploads through the bond, ten seconds apart, from
+the state that gave 0.4 Mbit/s on `7351328` (the uplink lane returned to
+discovery with 0.9 MB/s demonstrated): 3.1, 3.9, 4.5 Mbit/s, the estimate
+kept, the threshold at 29 ms at most, mean queue delay 16 ms.
+
+- **The bond's upload latency of 764 ms was the unbounded threshold**: the
+  Speedtest on the mobile link ran immediately before and raised the uplink
+  lane's threshold to 722 ms. Bounded at 100 ms on branch `threshold-bound`.
+- **The downstream limit is no longer the lane control.** The mobile lane's
+  estimate was 4.6 MB/s (37 Mbit/s on the wire) and its target above what it
+  sent. Neither host is short of CPU: during a 23 Mbit/s download the edge's
+  daemon used 0.47 of its four cores and the concentrator's 0.21. Inferred,
+  not shown: TCP is the limit, answering the tunnel's queue drops (48 in that
+  Speedtest) and the 250 ms reorder hold, where the mobile link alone gives
+  it 200-500 ms of buffer and drops nothing. Raw: 50 Mbit/s at 203 ms of
+  loaded latency; bond: 27.5 at 117 ms. This is items 1 and 6.
+- **In a Speedtest most "repairs" on the lanes are copies of its own UDP
+  probes** (about 20 a second each way, the real-time class): 874 on the
+  uplink lane and 835 duplicates at the concentrator in one run. Repair and
+  duplicate counts are comparable only between runs of the same tool.
