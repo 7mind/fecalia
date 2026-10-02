@@ -375,3 +375,34 @@ then through the bond), twice:
 - **In the second run the bond's download exceeded the mobile link alone**
   (22.9 against 18.9 Mbit/s) at 161 ms of loaded latency against 96: the
   mobile link was slow that minute, and the comparison is not a ceiling.
+
+## After the deployment of `66afd06` (2026-10-02, 01:37)
+
+Operator's `wbtest` twice, the first 25 s after the restart; both ends
+captured once a second (`prod-20261002-013758-cold-66afd06`).
+
+| Run | Mobile alone, down / up, Mbit/s (latency, ms) | Bond, down / up, Mbit/s (latency, ms) |
+|---|---|---|
+| lanes cold | 33.1 / 13.6 (97 / 483) | 21.5 / 10.7 (74 / 77) |
+| ninety seconds later | 30.4 / 13.3 (84 / 491) | 29.4 / 11.2 (87 / 87) |
+
+- **The cold lane recovers.** The concentrator's mobile lane again ended its
+  first discovery one second into the download, at 0.16 MB/s, on one delay
+  signal. Three probes were won in the next three seconds, the lane returned
+  to discovery, and nine seconds later it sent 5.5 MB/s. On `2d2bd24` the
+  same start held about 0.09 MB/s for the whole download (1.2 Mbit/s).
+- **Warm, the bond carried 97% of the mobile link alone downstream and 84%
+  upstream**, at the same loaded latency downstream and a sixth of it
+  upstream. One pair of runs, on a mobile link that gave 30 Mbit/s that
+  minute and 50 in the afternoon.
+- **New: a discovery that ends on a plateau takes one sample as the
+  capacity.** The second run's return to discovery ended on a plateau with
+  an estimate of 10.5 MB/s; the highest delivery sampled on that lane in the
+  capture is 5.8. Inferred, not traced: the best delivery of the discovery
+  is a 50 ms sample, and what a stall held arrives in one. With stalls no
+  longer ending discovery, more discoveries end on a plateau. The estimate
+  then bounds nothing; the delay signal and the window bound the queue
+  (loaded latency 87 ms in that run).
+- The first discovery still ends at the first delay signal once the lane
+  limits the sender, and the return to discovery that follows takes nine
+  seconds to reach the lane's rate.
