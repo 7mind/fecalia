@@ -73,6 +73,14 @@ The existing transport is already adaptive in the small (delay and loss
 feedback per lane). What is missing is adaptivity of the *model*: no estimate
 ages, and most are measured only in the state they are least needed in.
 
+**Stage 0 finding, observed 2026-10-02.** The preliminary voice-only model
+test of 3a passes its receive-latency gate on `f75668e` on both families.
+The table's frozen-rank observation is inferred from code, but its claimed
+receive-latency consequence is wrong in that case: existing real-time copies
+can deliver on the better lane before the primary. The test is retained;
+primary route changes require a separate observable check. The full scenario
+and lab gates remain to be proved.
+
 ## 3. Target: one link model per lane, continuously measured, with ages
 
 A lane keeps a **link model**: a few estimates, each fed by every

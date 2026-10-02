@@ -174,6 +174,26 @@ malformed: a quarter of the acknowledgements of a download, and a lane left
 unconfirmed for 0.2-0.4 s at a time (production, 2026-10-02;
 `TestAdaptiveAcknowledgementIsNotStampedBeforeItsDatagrams`).
 
+The transport enforces that clock precondition: `Path`, `Enqueue`, `Receive`
+and `Poll` reject a time earlier than the preceding timed call, before changing
+transport state. Equal times are valid. Bind reads the clock under the mutex;
+a rejected internal path update or poll is an invariant violation. Receive
+rejections are counted by cause (`malformed`, `epoch`, `path`, `lane`, `ack`,
+`type`, `time`) in `wanbond_adaptive_rejected_frames_total{peer,cause}`. These
+counts cover authenticated CONTROL frames passed to the transport; outer
+authentication and route demultiplexing precede them.
+
+Stage 0 diagnostics expose the current policy's inputs without changing its
+decisions. Per-lane metrics and `wanbond monitor` report transit floor, whether
+it is known, its evidence age, path delay, rank and liveness. The floor is the
+receiver-relative transit minimum of the most recently sampled wire-size
+bucket: it includes the clock offset and may be negative. Its age is measured
+from the sample that set the minimum, rather than the last ACK. Path delay is
+still the legacy unloaded round trip; rank is the legacy latency score. This
+baseline has live/dead liveness, with no suspect state yet. These diagnostic
+fields are observations of the old policy, not the planned continuously aged
+link model.
+
 **Paths and epochs.** An unpadded challenge-protected PROBE carries a 22-byte
 capability record: `bond`, version 1, physical path ID, process Boot ID and Bind
 Open generation. Padded PMTU probes retain their original size. A logical lane

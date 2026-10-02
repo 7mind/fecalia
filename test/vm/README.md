@@ -1158,3 +1158,36 @@ missing piece; the rate schedule of `profiles/cellular.json` on branch
 `queue-allowance` is the place to add it. The usual series on `radio` and
 `gigaradio` with the continuity gates, interleaved with `b46f1c2`, was also
 not run: the host's load average was 18.
+
+## Adaptive-policy stage 0 — 2026-10-02, in progress
+
+The [adaptive-policy plan](../../docs/drafts/20261002-1730-adaptive-policy-plan.md)
+is being measured against the unmodified transport at `f75668e`. The baseline
+lab executable has SHA-256
+`59df1fbe9eed338b122ceab3cf4e512208631d7feaf849290b01135e78537987`.
+Its source is a detached checkout; model infrastructure and progression tests
+are added there separately from production sources.
+
+Observed: the original debug runner completed a full `latency-voice` run,
+including collection and summary, in
+`20261002-184746-adapt-latency-voice-f75668e-runner-check`. Its interface byte
+counters include voice and headers, so they do not establish TCP payload
+goodput. The added-delay phase had an edge voice arrival gap of 188 ms; the
+restore phase had a hub gap of 300 ms. Neither meets a 150 ms continuity gate.
+These are preliminary baseline observations, not a three-run acceptance series.
+
+Observed in the deterministic model: the preliminary voice-only 3a latency
+test passed on both profile families at `f75668e`. Code inspection explains
+why a frozen primary rank does not imply a frozen receive latency: copies on
+the other lane can arrive first. Primary-lane movement and delivery latency
+must therefore be measured separately. The remaining preliminary model
+matrix has failures in every row, but its radio directions and wire framing
+required correction before treating its throughput results as gate evidence.
+
+The stage 0 diagnostic change exposes the legacy policy's floor, floor age,
+path-delay input, rank, live/dead state and rejected-frame counts. It enforces
+the documented monotonic-time precondition. It does not replace the control
+policy. Observed validation: all 42 frontend tests, the root Go build/vet/tests,
+patched device vet/tests and formatting passed the non-privileged gate.
+Progression scenario tests remain behind `-tags adaptivepolicy` until their
+implementation stages; they are not claimed as passing that gate.

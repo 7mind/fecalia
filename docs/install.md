@@ -373,6 +373,16 @@ these are separate from queue drops. No extra configuration is needed for the
 local flow metadata and per-flow small-packet scheduling.
 `up=1` requires both a current authenticated lane lease and non-stalled
 delivery feedback.
+Stage 0 adds `transit_floor_seconds`, `transit_floor_known`,
+`transit_floor_age_seconds`, `path_delay_seconds`, `rank_seconds` and
+`liveness_state` (0 dead, 1 live). The floor includes the receiver's clock
+offset and can be negative; use its known flag and age when interpreting it.
+Path delay and rank still describe the legacy idle-only policy.
+`wanbond monitor` displays the same inputs and per-peer rejected-frame counts.
+`rejected_frames_total{peer,cause}` distinguishes malformed frames, stale
+epochs, unvalidated paths, mismatched lanes, invalid acknowledgements, unknown
+types and regressing transport time. It counts frames rejected after outer
+authentication; it is separate from packet loss and queue drops.
 Confirmation RTT includes reordering and receipt buffering; it controls the
 repair deadline independently of the newest physical packet's RTT sample.
 The unloaded forward variation excludes ACK return delay and controls the
