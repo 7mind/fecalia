@@ -154,3 +154,36 @@ func TestSlowdownDoesNotLowerTheEstimate(t *testing.T) {
 		}
 	}
 }
+
+// A probe is judged by delay: it is lost if delay rises while its feedback is
+// awaited. On a link whose delay rises now and then at any rate, that loses
+// about half the probes to coincidence, and an estimate that began low stayed
+// low. Production, 2026-10-02: delay signals came 13 times in a download at
+// 22 Mbit/s and 15 times at 52; a lane that ended its first discovery at
+// 3.5 MB/s won one probe in four or five and reached the 9 MB/s it then held
+// in its fifth download.
+//
+// The lane sends below its estimate, so delivery above the estimate is the
+// path catching up after it slowed: it carries that much.
+func TestCatchUpRaisesTheEstimate(t *testing.T) {
+	// The lane serves a tenth of its rate for about 150 ms about twice a
+	// second, and delay rises each time whatever the lane sends.
+	lane := varyingLane{rate: 6.25e6, delay: 25 * time.Millisecond, buffer: time.Second, stall: 150 * time.Millisecond, stallEvery: 500 * time.Millisecond, stallRate: 0.1}
+	for seed := uint64(0); seed < 3; seed++ {
+		var estimate float64
+		m := mixedLoad{lanes: []varyingLane{lowLatencyLane, lane}, offered: 8e6, seconds: 40, failed: -1, seed: seed}
+		m.observe = func(second int, s bond.Snapshot) {
+			if second == 20 {
+				estimate = s.Paths[1].Capacity
+			}
+		}
+		o := m.run()
+		t.Logf("schedule %d: estimate %.0f B/s eighteen seconds after the start; bulk %.0f B/s of the %.0f the lane serves", seed, estimate, o.bulk, served(lane))
+		if estimate < 0.8*lane.rate {
+			t.Errorf("schedule %d: estimate %.0f B/s on a lane of %.0f", seed, estimate, lane.rate)
+		}
+		if o.bulk < 0.75*served(lane) {
+			t.Errorf("schedule %d: bulk received %.0f B/s", seed, o.bulk)
+		}
+	}
+}

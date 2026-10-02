@@ -94,6 +94,25 @@ func (p *lane) demonstrated(now time.Time) float64 {
 	return math.Max(p.measuredDelivery(), p.sustained.value(now))
 }
 
+// raiseToDelivery lifts a held estimate to what the path has just delivered
+// over two control intervals, when that is clearly more. The lane sends below
+// its estimate, so delivery above it is the path catching up after it slowed:
+// it carries that much. A pulse judged by delay alone is lost to every
+// coincidence on a link whose delay rises now and then at any rate, and an
+// estimate that began low stayed low for a minute
+// (`TestCatchUpRaisesTheEstimate`).
+func (p *lane) raiseToDelivery(now time.Time) {
+	c := &p.control
+	if p.startup || c.capacity == 0 || p.previousDelivery == 0 || p.polices(now) {
+		// A path that polices forwards a burst above its rate and then
+		// drops: what it delivers for a moment is not what it carries.
+		return
+	}
+	if delivered := (p.deliverySample + p.previousDelivery) / 2; delivered > (1+pulseExcess/2)*c.capacity {
+		c.capacity = delivered
+	}
+}
+
 // congestionThreshold is the queue delay above which the path is taken to be
 // queueing this lane's datagrams.
 //

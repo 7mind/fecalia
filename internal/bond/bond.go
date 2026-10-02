@@ -1143,6 +1143,7 @@ func (t *Transport) ack(p *lane, a acknowledgement, now time.Time, fresh bool) {
 		p.rateBytes, p.rateElapsed, p.feedbackAt = a.bytes, a.elapsed, now
 		p.rateSentBytes = p.sent
 		p.sustained.record(now, a.bytes, a.elapsed)
+		p.raiseToDelivery(now)
 	}
 	p.peakDelivery = math.Max(p.peakDelivery, p.deliveryRate)
 	p.ackedBytes, p.ackedElapsed = a.bytes, a.elapsed
