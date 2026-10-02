@@ -131,6 +131,13 @@ type Resequencer struct {
 	ready    []Item // FIFO of released items awaiting Pop
 	readyPos int    // read cursor into ready (front of the FIFO)
 
+	// held lists, from heldPos on and in order of arrival, the sequences that
+	// were buffered behind a gap. The first of them still buffered was observed
+	// before every other buffered frame: a hold's deadline runs from it. Those
+	// released since are passed over when they reach the front.
+	held    []uint64
+	heldPos int
+
 	// Head-of-line timeout: when next is a gap but frames ahead are buffered,
 	// waiting is armed with a deadline measured from when the gap first formed.
 	// armedAt records that same arm instant so the hold's elapsed time can be
@@ -296,6 +303,9 @@ func (r *Resequencer) Observe(seq uint64, payload []byte, src netip.AddrPort) bo
 	cell.observedAt = now
 	cell.occupied = true
 	r.buf++
+	if seq != r.next {
+		r.held = append(r.held, seq)
+	}
 	if r.buf > r.highWater {
 		r.highWater = r.buf
 	}
@@ -579,6 +589,7 @@ func (r *Resequencer) resync(base uint64, now time.Time) {
 		r.ring[i] = slot{}
 	}
 	r.buf = 0
+	r.held, r.heldPos = r.held[:0], 0
 	r.next = base
 	r.endHoldLocked(now) // T242: account the abandoned hold's elapsed time, then disarm.
 	r.resyncReset()
@@ -609,6 +620,7 @@ func (r *Resequencer) RebaselineAt(next uint64) {
 		r.ring[i] = slot{}
 	}
 	r.buf = 0
+	r.held, r.heldPos = r.held[:0], 0
 	r.started = true
 	r.next = next
 	r.endHoldLocked(now) // T242: account the discarded hold's elapsed time, then disarm.
@@ -634,19 +646,28 @@ func (r *Resequencer) smallestBuffered() (uint64, bool) {
 }
 
 // oldestBufferedObservation returns when the receiver first had evidence of any
-// gap at or after next. All occupied cells lie in the bounded live window.
+// gap at or after next: when the earliest arrival still buffered was observed.
+//
+// It runs every time a hold is armed, and that is on every frame while one
+// that came early by a faster lane waits for those sent before it: each of them
+// fills the gap at the head and exposes the next. A scan of the window here
+// held a receiver to a few thousand datagrams a second
+// (`TestGapFillsBehindAnEarlyFrameDoNotScanTheWindow`). Caller holds r.mu.
 func (r *Resequencer) oldestBufferedObservation() (time.Time, bool) {
-	var oldest time.Time
-	found := false
-	for i := range r.ring {
-		cell := &r.ring[i]
-		if cell.occupied && cell.seq >= r.next &&
-			(!found || cell.observedAt.Before(oldest)) {
-			oldest = cell.observedAt
-			found = true
+	for ; r.heldPos < len(r.held); r.heldPos++ {
+		seq := r.held[r.heldPos]
+		if cell := &r.ring[seq%r.window]; cell.occupied && cell.seq == seq && seq >= r.next {
+			if r.heldPos > len(r.held)/2 {
+				// What was passed over is dropped once it is most of the list,
+				// so the list stays within twice what arrived since its front.
+				r.held = r.held[:copy(r.held, r.held[r.heldPos:])]
+				r.heldPos = 0
+			}
+			return cell.observedAt, true
 		}
 	}
-	return oldest, found
+	r.held, r.heldPos = r.held[:0], 0
+	return time.Time{}, false
 }
 
 // Buffered reports the number of frames currently held (not yet released). It is

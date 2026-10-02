@@ -1,6 +1,7 @@
 package reseq_test
 
 import (
+	"encoding/binary"
 	"testing"
 	"time"
 
@@ -407,5 +408,63 @@ func TestGapStaysHeldWhileSuccessorsKeepArriving(t *testing.T) {
 	clk.advance(50 * time.Millisecond)
 	if got := drain(r); !equalSeqs(got, []uint64{2, 3, 4, 5}) {
 		t.Fatalf("delivery at the first successor's deadline = %v, want [2 3 4 5]", got)
+	}
+}
+
+// A datagram sent on the lane with the shorter latency arrives a while before
+// the ones sent just ahead of it on a slower lane. Until they are all in, each
+// of them fills the gap at the head and exposes the next one: the hold is armed
+// anew, and finding the oldest buffered frame scanned the whole window every
+// time. With the production window that cost the production edge a quarter of a
+// millisecond per datagram (2026-10-02: 70% of the daemon's CPU in the scan, its
+// socket's receive queue 2 MB deep, 5.1 MB/s read of 7.5 MB/s offered).
+func TestGapFillsBehindAnEarlyFrameDoNotScanTheWindow(t *testing.T) {
+	const window, frames, lead = 32768, 100000, 100
+	// run delivers the frames and returns how long that took. With early set,
+	// every hundredth frame arrives before the ninety-nine ahead of it.
+	run := func(early bool) time.Duration {
+		r := reseq.New(window, gapTimeout, newFakeClock())
+		r.RebaselineAt(1)
+		released, expected := 0, uint64(1)
+		drain := func() {
+			for {
+				item, ok := r.Pop()
+				if !ok {
+					return
+				}
+				if got := binary.BigEndian.Uint64(item.Payload); got != expected {
+					t.Fatalf("frame %d released where %d was due", got, expected)
+				}
+				expected++
+				released++
+			}
+		}
+		observe := func(seq uint64) {
+			r.Observe(seq, binary.BigEndian.AppendUint64(nil, seq), testSrc)
+			drain()
+		}
+		began := time.Now()
+		for first := uint64(1); first <= frames; first += lead {
+			last := first + lead - 1
+			if early {
+				observe(last)
+			}
+			for seq := first; seq < last; seq++ {
+				observe(seq)
+			}
+			if !early {
+				observe(last)
+			}
+		}
+		if released != frames {
+			t.Fatalf("%d of %d frames released", released, frames)
+		}
+		return time.Since(began)
+	}
+	inOrder, withEarly := run(false), run(true)
+	t.Logf("%d frames: %s in order, %s with every %dth early", frames, inOrder, withEarly, lead)
+	// The scan made it several hundred times the work of in-order delivery.
+	if withEarly > 20*inOrder {
+		t.Fatalf("frames behind an early one took %s, in order %s", withEarly, inOrder)
 	}
 }
