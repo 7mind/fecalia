@@ -36,6 +36,7 @@ type adaptiveCollector struct {
 	admissionDrops, aqmDrops            *prometheus.Desc
 	duplicates                          *prometheus.Desc
 	rejected                            *prometheus.Desc
+	realtimeMoves                       *prometheus.Desc
 }
 
 func newAdaptiveCollector(source AdaptiveSource) *adaptiveCollector {
@@ -74,7 +75,7 @@ func newAdaptiveCollector(source AdaptiveSource) *adaptiveCollector {
 		makeMetric("window_bytes", "Current in-flight allowance, including startup discovery limit.", prometheus.GaugeValue, func(p bond.PathStats) float64 { return float64(p.Window) }),
 		makeMetric("sent_bytes_total", "Wire bytes submitted by the adaptive sender.", prometheus.CounterValue, func(p bond.PathStats) float64 { return float64(p.Sent) }),
 		makeMetric("interactive_sent_bytes_total", "Wire bytes of small datagrams submitted on this lane, including copies; included in sent_bytes_total.", prometheus.CounterValue, func(p bond.PathStats) float64 { return float64(p.InteractiveSent) }),
-		makeMetric("realtime_original_packets_total", "First transmissions of real-time datagrams on this lane; excludes copies, repairs and small TCP datagrams.", prometheus.CounterValue, func(p bond.PathStats) float64 { return float64(p.RealtimeOriginals) }),
+		makeMetric("realtime_original_packets_total", "First submissions of real-time datagrams to this lane; excludes copies, repairs and small TCP datagrams.", prometheus.CounterValue, func(p bond.PathStats) float64 { return float64(p.RealtimeOriginals) }),
 		makeMetric("acked_bytes_total", "Wire bytes acknowledged by the peer.", prometheus.CounterValue, func(p bond.PathStats) float64 { return float64(p.ACKed) }),
 		makeMetric("repair_packets_total", "Additional copies, including small-packet replication.", prometheus.CounterValue, func(p bond.PathStats) float64 { return float64(p.Retransmits) }),
 		makeMetric("discovering", "Lane has not yet observed a congestion signal and follows measured delivery.", prometheus.GaugeValue, func(p bond.PathStats) float64 {
@@ -110,6 +111,7 @@ func newAdaptiveCollector(source AdaptiveSource) *adaptiveCollector {
 		aqmDrops:          prometheus.NewDesc("wanbond_adaptive_aqm_drops_total", "Bulk datagrams dropped by the CoDel schedule; included in queue_drops_total. The remainder of queue_drops_total exceeded a residence bound.", []string{"peer"}, nil),
 		interactiveQueued: prometheus.NewDesc("wanbond_adaptive_interactive_queued_packets", "Small datagrams waiting for their first transmission.", []string{"peer"}, nil),
 		rejected:          prometheus.NewDesc("wanbond_adaptive_rejected_frames_total", "Authenticated frames rejected by the transport, by validation cause.", []string{"peer", "cause"}, nil),
+		realtimeMoves:     prometheus.NewDesc("wanbond_adaptive_realtime_original_path_moves_total", "Changes of lane between first submissions of real-time datagrams; excludes copies, repairs and small TCP datagrams.", []string{"peer"}, nil),
 		duplicates:        prometheus.NewDesc("wanbond_adaptive_duplicate_packets_total", "Received datagrams that had arrived before: the peer's repairs and copies of datagrams it could not confirm in time.", []string{"peer"}, nil)}
 }
 
@@ -126,6 +128,7 @@ func (c *adaptiveCollector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.aqmDrops
 	ch <- c.duplicates
 	ch <- c.rejected
+	ch <- c.realtimeMoves
 }
 
 func (c *adaptiveCollector) Collect(ch chan<- prometheus.Metric) {
@@ -146,5 +149,6 @@ func (c *adaptiveCollector) Collect(ch chan<- prometheus.Metric) {
 		ch <- prometheus.MustNewConstMetric(c.admissionDrops, prometheus.CounterValue, float64(peer.State.AdmissionDrops), peer.Peer)
 		ch <- prometheus.MustNewConstMetric(c.aqmDrops, prometheus.CounterValue, float64(peer.State.AQMDrops), peer.Peer)
 		ch <- prometheus.MustNewConstMetric(c.duplicates, prometheus.CounterValue, float64(peer.State.Duplicates), peer.Peer)
+		ch <- prometheus.MustNewConstMetric(c.realtimeMoves, prometheus.CounterValue, float64(peer.State.RealtimeMoves), peer.Peer)
 	}
 }

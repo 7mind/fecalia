@@ -68,21 +68,29 @@ func TestRealtimeOriginalsExcludeCopiesAndTCPACKs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	originals, moves := false, false
 	for _, family := range families {
-		if family.GetName() != "wanbond_adaptive_realtime_original_packets_total" {
-			continue
-		}
-		if len(family.Metric) != 2 {
-			t.Fatalf("original counter has %d lanes, want 2", len(family.Metric))
-		}
-		for _, metric := range family.Metric {
-			if value := metric.GetCounter().GetValue(); value != 1 {
-				t.Fatalf("lane original counter = %v, want 1", value)
+		switch family.GetName() {
+		case "wanbond_adaptive_realtime_original_packets_total":
+			originals = true
+			if len(family.Metric) != 2 {
+				t.Fatalf("original counter has %d lanes, want 2", len(family.Metric))
+			}
+			for _, metric := range family.Metric {
+				if value := metric.GetCounter().GetValue(); value != 1 {
+					t.Fatalf("lane original counter = %v, want 1", value)
+				}
+			}
+		case "wanbond_adaptive_realtime_original_path_moves_total":
+			moves = true
+			if len(family.Metric) != 1 || family.Metric[0].GetCounter().GetValue() != 1 {
+				t.Fatalf("primary route counter = %v, want one move", family.Metric)
 			}
 		}
-		return
 	}
-	t.Fatal("actual real-time primary transmissions have no exported counter")
+	if !originals || !moves {
+		t.Fatalf("real-time primary counters missing: originals=%t moves=%t", originals, moves)
+	}
 }
 
 func TestRejectedTransportFrameIsCounted(t *testing.T) {

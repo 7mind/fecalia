@@ -179,6 +179,7 @@ type Snapshot struct {
 	CoalescedACKs         uint64
 	Expired               uint64
 	Duplicates            uint64
+	RealtimeMoves         uint64
 	Rejected              [RejectionCauses]uint64
 }
 
@@ -338,31 +339,34 @@ type Transport struct {
 	receivers map[PathID]*receiver
 	// receiverOrder holds the receivers in order of creation: acknowledgements
 	// leave in that order, so a run does not depend on map iteration.
-	receiverOrder    []*receiver
-	queue            packetFIFO
-	bulkAQM          codel
-	small            [classBulk]fairPacketQueue
-	demand           [classBulk]rateMeter
-	pending          map[uint64]*packet
-	pendingOrder     []*packet
-	seq              uint64
-	bulkSeq          uint64
-	interactiveSeq   uint64
-	redundancyTokens float64
-	realtimeLate     time.Time
-	realtimeSkipping bool
-	lastPoll         time.Time
-	lastTime         time.Time
-	rejected         [RejectionCauses]uint64
-	drops            uint64
-	admissionDrops   uint64
-	aqmDrops         uint64
-	interactiveDrops uint64
-	coalescedACKs    uint64
-	expired          uint64
-	duplicates       uint64
-	received         receiptWindow
-	unreported       receiptWindow
+	receiverOrder     []*receiver
+	queue             packetFIFO
+	bulkAQM           codel
+	small             [classBulk]fairPacketQueue
+	demand            [classBulk]rateMeter
+	pending           map[uint64]*packet
+	pendingOrder      []*packet
+	seq               uint64
+	bulkSeq           uint64
+	interactiveSeq    uint64
+	redundancyTokens  float64
+	realtimeLate      time.Time
+	realtimeSkipping  bool
+	realtimePath      PathID
+	realtimePathKnown bool
+	realtimeMoves     uint64
+	lastPoll          time.Time
+	lastTime          time.Time
+	rejected          [RejectionCauses]uint64
+	drops             uint64
+	admissionDrops    uint64
+	aqmDrops          uint64
+	interactiveDrops  uint64
+	coalescedACKs     uint64
+	expired           uint64
+	duplicates        uint64
+	received          receiptWindow
+	unreported        receiptWindow
 }
 
 type receiptWindow struct {
@@ -751,6 +755,10 @@ func (t *Transport) transmit(p *packet, path *lane, now time.Time) Transmission 
 	if p.seq == 0 {
 		if p.class == classRealtime {
 			path.realtimeOriginals++
+			if t.realtimePathKnown && t.realtimePath != path.id {
+				t.realtimeMoves++
+			}
+			t.realtimePath, t.realtimePathKnown = path.id, true
 		}
 		if p.class != classBulk {
 			t.demand[p.class].add(now, float64(size))
@@ -1388,7 +1396,7 @@ func maxTime(a, b time.Time) time.Time {
 }
 
 func (t *Transport) Snapshot(now time.Time) Snapshot {
-	s := Snapshot{QueueDrops: t.drops, AdmissionDrops: t.admissionDrops, AQMDrops: t.aqmDrops, InteractiveQueueDrops: t.interactiveDrops, InteractiveQueued: t.small[classRealtime].count + t.small[classSmall].count, CoalescedACKs: t.coalescedACKs, Expired: t.expired, Duplicates: t.duplicates, Rejected: t.rejected}
+	s := Snapshot{QueueDrops: t.drops, AdmissionDrops: t.admissionDrops, AQMDrops: t.aqmDrops, InteractiveQueueDrops: t.interactiveDrops, InteractiveQueued: t.small[classRealtime].count + t.small[classSmall].count, CoalescedACKs: t.coalescedACKs, Expired: t.expired, Duplicates: t.duplicates, RealtimeMoves: t.realtimeMoves, Rejected: t.rejected}
 	for _, p := range t.paths {
 		baseline := p.transitBases[p.transitBucket]
 		age := time.Duration(0)
