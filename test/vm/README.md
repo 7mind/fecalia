@@ -1453,13 +1453,30 @@ while the lossy TCP diagnostic still delivered approximately 6.7 Mbit/s.
 This verifies the corrected separation of capacity and TCP response.
 
 Stage 0 also exports `wanbond_adaptive_realtime_original_packets_total` per
-lane. It counts actual first real-time transmissions, excluding copies,
+lane. It counts first real-time submissions, excluding copies,
 repairs and small TCP datagrams. A deterministic transport-to-metrics
 reproduction failed before the counter existed and passed after it, with
 both repair and small-TCP transmission exercised. At 10 Hz its increments
 provide aggregate primary-route observations; sub-100 ms changes remain
 unresolved by that sampling. A low RTT alone does not establish that the
 primary moved, as the passing voice-only 3a model demonstrates.
+
+Observed on 2026-10-03: the corresponding route-move reproduction failed
+because no counter existed, then passed after
+`wanbond_adaptive_realtime_original_path_moves_total` was added. Copies,
+repairs and small TCP packets do not increment it. A sampled increase of two
+or more reveals otherwise hidden moves; their exact spacing still needs
+sufficient time resolution. Both counters observe the transport's selected
+route, not successful socket writes or delivery. Transport and metrics tests
+passed (`realtime-moves-green.txt`).
+
+The original `f75668e` binary completed all 84 scenario collections: fourteen
+scenarios, three runs on each family. The manifest is
+`f75668e-lab-matrix-20261002-223350/manifest.json` in the evidence directory;
+all collector exits were zero. Section 4 verdicts still require matched
+references and gate evaluation. Collection success alone is not a policy
+pass. The original binary has no primary-route counters, so latency cannot
+prove its primary moved.
 
 The outage model gates now use measured baseline idle p99, rather than the
 previous fixed 110/182 ms limits. These are deterministic measurements on

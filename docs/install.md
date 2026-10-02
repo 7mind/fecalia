@@ -357,9 +357,11 @@ insufficient offered traffic; it does not establish link saturation. RTT,
 forward queue delay, in-flight bytes, sent/ACKed bytes, repair copies, and
 eligibility are also exposed. `interactive_sent_bytes_total` counts the small-datagram share of each
 lane's sent bytes, including copies. `realtime_original_packets_total` counts
-actual first transmissions in the real-time class, excluding copies, repairs
-and small TCP datagrams. Its increments identify which lane sent originals;
-receive latency alone can reflect a faster redundant copy. `discovering` is 1 until a lane's first
+first submissions in the real-time class, excluding copies, repairs
+and small TCP datagrams. Its increments identify the selected primary lane;
+`realtime_original_path_moves_total` counts changes of that lane. These count
+transport submissions, not confirmed socket writes or delivery. Receive
+latency alone can reflect a faster redundant copy. `discovering` is 1 until a lane's first
 congestion signal ends its capacity discovery. `window_bytes` reports the current in-flight
 allowance, including its initial delivery-credit limit; compare it with
 `in_flight_bytes` when a target rate is high but sending remains low.
