@@ -34,6 +34,31 @@ type modelLane struct {
 	// shiftEvery, as a satellite link's does when its path is reassigned.
 	shift      time.Duration
 	shiftEvery time.Duration
+	// A policed link forwards at its rate what a bucket of two datagrams
+	// admits and drops the rest without delaying it.
+	policed bool
+	buffer  time.Duration
+	// condition is evaluated independently for each direction at send time.
+	condition func(side int, elapsed time.Duration) modelCondition
+}
+
+type modelCondition struct {
+	rate          float64
+	delay         time.Duration
+	loss          float64
+	buffer        time.Duration
+	policed, dark bool
+}
+
+func (l modelLane) at(side int, elapsed time.Duration) modelCondition {
+	if l.condition != nil {
+		return l.condition(side, elapsed)
+	}
+	buffer := l.buffer
+	if buffer == 0 {
+		buffer = modelRouterBuffer
+	}
+	return modelCondition{rate: l.rate, delay: l.delay, loss: l.loss, buffer: buffer, policed: l.policed}
 }
 
 // tcpTransfer is one CUBIC-like sender with selective acknowledgements pushing
@@ -194,6 +219,12 @@ func (m tcpTransfer) run(t *testing.T) tcpOutcome {
 	wire := &events{}
 	heap.Init(wire)
 	available := make([][2]time.Time, len(m.lanes))
+	const policerBurst = 2 * (tcpSegment + 129.0)
+	tokens := make([][2]float64, len(m.lanes))
+	refilled := make([][2]time.Time, len(m.lanes))
+	for lane := range tokens {
+		tokens[lane], refilled[lane] = [2]float64{policerBurst, policerBurst}, [2]time.Time{start, start}
+	}
 	wander := make([][2]float64, len(m.lanes)) // current offset from the delay, in nanoseconds
 	level := make([][2]time.Duration, len(m.lanes))
 	sender := tcpSender{cwnd: tcpInitialCwnd, ssthresh: math.Inf(1), next: 1, unacked: 1, backoff: 1,
@@ -264,18 +295,34 @@ func (m tcpTransfer) run(t *testing.T) tcpOutcome {
 			for _, tx := range p.Poll(now) {
 				lane := int(tx.Path)
 				l := m.lanes[lane]
+				condition := l.at(side, now.Sub(start))
+				if condition.dark {
+					continue
+				}
+				if condition.policed {
+					bytes := float64(len(tx.Frame.Payload) + 78)
+					tokens[lane][side] = math.Min(policerBurst, tokens[lane][side]+now.Sub(refilled[lane][side]).Seconds()*condition.rate)
+					refilled[lane][side] = now
+					if tokens[lane][side] < bytes {
+						continue
+					}
+					tokens[lane][side] -= bytes
+					transit := condition.delay + level[lane][side] + time.Duration(wander[lane][side]) + time.Duration(bytes/condition.rate*float64(time.Second))
+					heap.Push(wire, event{now.Add(transit), 1 - side, tx.Path, tx.Frame})
+					continue
+				}
 				begin := maxTimeTest(now, available[lane][side])
-				if begin.Sub(now) > modelRouterBuffer {
+				if begin.Sub(now) > condition.buffer {
 					continue
 				}
 				if side == 0 && tick >= (m.seconds/2+1)*1000 {
 					waits[lane] = append(waits[lane], begin.Sub(now))
 				}
-				available[lane][side] = begin.Add(time.Duration(float64(len(tx.Frame.Payload)+78) / l.rate * float64(time.Second)))
-				if drops.Float64() < l.loss {
+				available[lane][side] = begin.Add(time.Duration(float64(len(tx.Frame.Payload)+78) / condition.rate * float64(time.Second)))
+				if drops.Float64() < condition.loss {
 					continue
 				}
-				transit := l.delay + level[lane][side] + time.Duration(wander[lane][side])
+				transit := condition.delay + level[lane][side] + time.Duration(wander[lane][side])
 				heap.Push(wire, event{available[lane][side].Add(transit), 1 - side, tx.Path, tx.Frame})
 			}
 		}
