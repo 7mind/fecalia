@@ -688,8 +688,13 @@ the wire format: two 50 Hz streams of 224-byte encrypted datagrams consume
 0.4 Mbit/s uplink survivor, that leaves at most 14,700 B/s for other traffic
 with no voice loss. Thus the adaptive-policy plan's simultaneous voice gate
 and bulk gate of 75% of the survivor's total capacity cannot both hold there,
-even allowing the voice gate's loss budget. Stage 0 stopped on this acceptance
-conflict; see the [baseline reproduction](../debug/20261002-180053-adaptive-budget.md).
+even allowing the voice gate's loss budget. The operator approved using the
+available TCP goodput after required voice traffic and protocol overhead as
+the percentage denominator in voice-bearing adaptive-policy scenarios.
+References must be independent of the candidate's estimates and unnecessary
+traffic; voice gates and adaptation deadlines stand. The
+[baseline reproduction](../debug/20261002-180053-adaptive-budget.md) records the
+original conflict; this amendment removes the stage 0 blocker.
 
 A real-time datagram that waited is worth less than the one behind it. When
 real-time datagrams have waited more than 20 ms for a lane throughout 100 ms

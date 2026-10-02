@@ -192,7 +192,7 @@ rates outside the tested profiles need their own scenarios.
 
 ## Adaptive-policy stage 0: acceptance conflict — 2026-10-02
 
-Implementation stopped at stage 0 under the adaptive-policy plan's stop rule.
+The first implementation audit stopped at stage 0 under the plan's stop rule.
 The `lab-tooling` branch was merged; the guests were booted and their private
 WAN reachability checked. No adaptive scenario or production measurement was
 completed. Neither `window-bound` nor `cold-start` was merged.
@@ -220,8 +220,13 @@ to 1c with this direction's survivor.
 
 The exact baseline reproduction and output are in
 [the acceptance-budget record](../../debug/20261002-180053-adaptive-budget.md).
-Stages 1–3 and the full scenario validation remain unimplemented; the gates
-have not been changed.
+The operator subsequently approved using available TCP goodput after required
+voice traffic and protocol overhead for capacity percentages in scenarios
+carrying voice. The deterministic wire budget and matched direct-link lab
+calibration must be independent of candidate estimates, repairs and redundant
+copies, and shared by baseline and candidate. Voice gates, progress rules and
+adaptation deadlines remain unchanged. This removes the acceptance blocker;
+stages 1–3 and full scenario validation remain unimplemented at this amendment.
 
 ## Initial validation — 2026-09-28, `8ff0c5e`
 

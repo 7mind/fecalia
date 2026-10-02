@@ -173,15 +173,28 @@ The voice and bulk figures were confirmed by the operator on 2026-10-02; the
 video row is a proposal. Each is checked in the
 deterministic model, in the lab, and where affordable on the production pair.
 
+**Operator amendment, 2026-10-02.** In scenarios carrying voice, a capacity
+percentage applies to the available TCP payload goodput after the required
+voice traffic and protocol overhead, not to the total link wire rate. The
+reference is independent of the candidate's target, capacity estimate, losses,
+repairs and redundant copies: use a deterministic wire budget in the model
+and matched direct-link calibration in the lab, accounting for encapsulation,
+feedback and the reverse TCP ACK stream. Record the reference for each
+direction and phase before evaluating a candidate; use the same reference
+for the baseline and candidate. A calibration that fails its own capacity
+gate makes the throughput verdict inconclusive. Voice gates, progress rules
+and adaptation deadlines are unchanged. This resolves the
+[radio survivor budget conflict](../../debug/20261002-180053-adaptive-budget.md).
+
 | # | Scenario | Voice (two 50 Hz streams) | Bulk (one TCP flow each way) |
 |---|---|---|---|
-| 1a | One link goes dark both ways for 15 s (tunnel), either link, with and without bulk | No receive gap of 150 ms; at most 3 consecutive datagrams lost; under 1% lost over the run; p99 round trip within the survivor's idle p99 + 50 ms from 1 s after | Delivery in every second after the first; 75% of the survivor's capacity within 3 s |
-| 1b | The link returns | No gap, no latency rise above the gate | Lane carries bulk within 2 s; 75% of the pair within 5 s |
+| 1a | One link goes dark both ways for 15 s (tunnel), either link, with and without bulk | No receive gap of 150 ms; at most 3 consecutive datagrams lost; under 1% lost over the run; p99 round trip within the survivor's idle p99 + 50 ms from 1 s after | Delivery in every second after the first; 75% of the survivor's available TCP goodput within 3 s |
+| 1b | The link returns | No gap, no latency rise above the gate | Lane carries bulk within 2 s; 75% of the pair's available TCP goodput within 5 s |
 | 1c | One direction of one link goes dark | As 1a | As 1a |
-| 2a | A link falls to 20-50% of its rate (deep buffer and shallow) | p99 round trip under 150 ms through the change | 75% of the new capacity within 5 s; no burst of expired datagrams |
-| 2b | A link rises by 5 times or more | Unchanged latency | 75% of the new capacity within 10 s |
-| 2c | Plan change on the low-latency link, 0.5 Mbit/s policed to 100/15 and back, while a call rides it | Call stays on the lowest-latency lane; p99 under 150 ms | Up: 75% of the pair within 20 s. Down: loss on that lane under 5% after 3 s |
-| 2d | Rate varying ±60% every 100 ms (`cellular.json`) | p99 under 150 ms | 70% of the mean rate |
+| 2a | A link falls to 20-50% of its rate (deep buffer and shallow) | p99 round trip under 150 ms through the change | 75% of the new available TCP goodput within 5 s; no burst of expired datagrams |
+| 2b | A link rises by 5 times or more | Unchanged latency | 75% of the new available TCP goodput within 10 s |
+| 2c | Plan change on the low-latency link, 0.5 Mbit/s policed to 100/15 and back, while a call rides it | Call stays on the lowest-latency lane; p99 under 150 ms | Up: 75% of the pair's available TCP goodput within 20 s. Down: loss on that lane under 5% after 3 s |
+| 2d | Rate varying ±60% every 100 ms (`cellular.json`) | p99 under 150 ms | 70% of the mean available TCP goodput |
 | 3a | The lane a call rides gains 100 ms; the other is lower | Median round trip within 20 ms of the better lane within 2 s; voice-only and with bulk | Not cut by more than a quarter for more than 2 s |
 | 3b | The other lane becomes the lower by 20 ms or more | Call moves within 5 s; at most one move per 5 s under jitter | Unchanged |
 | 3c | Both lanes gain latency | No loss, no gap | As 3a |
@@ -291,7 +304,8 @@ delay model is also what stage 3's congestion signal reads.
 
 ## 7. Operator decisions (2026-10-02) and what stays open
 
-1. The gates of section 4 stand.
+1. The gates of section 4 stand, with the approved available-goodput amendment
+   above. It preserves the voice gates and all adaptation deadlines.
 2. Probing uses real traffic pushed on demand; agreed. No synthetic probe
    traffic. Redundant copies in the pushed excess stay a fallback, adopted
    only if stage 3 measures a need, in the conditional form of rule 4.
