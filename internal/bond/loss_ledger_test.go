@@ -39,3 +39,39 @@ func TestLossLedgerTellsLateFromLost(t *testing.T) {
 		t.Fatalf("a path losing 5%% measured %.0f of %.0f bytes lost over %.0f datagrams, material %v", bytes, through, datagrams, lossy.material(now))
 	}
 }
+
+// What the sender takes to be still on its way is an estimate: every datagram
+// below the acknowledged one that this acknowledgement did not confirm and
+// that was sent shortly before it. It over-counts datagrams that arrived
+// unconfirmed. After a stall the path delivers hundreds at once, and one
+// acknowledgement confirms 64 of them by lane and 256 by receipt; while the
+// rate is high more of them fall within the allowance than when it is low.
+// The deficit then dipped below the loss so far, and its return read as loss.
+// Production, 2026-10-02: a discovery ended at 7.9 MB/s, the target was cut
+// to 3 MB/s, and the next second showed material loss on a lane whose peer
+// received 25.90 of the 25.98 MB sent and skipped no sequence; the estimate
+// was measured anew at 3.9 MB/s and the next two downloads ran at 24.8 Mbit/s
+// where the lane carried 45 a minute later.
+func TestLossLedgerIgnoresDatagramsCountedLateThatArrived(t *testing.T) {
+	const datagram = 1378
+	start := time.Unix(100, 0)
+	var ledger lossLedger
+	var sent uint64
+	now := start
+	// One datagram is sent every millisecond; all arrive.
+	for tick := 0; tick < 2600; tick++ {
+		now = start.Add(time.Duration(tick) * time.Millisecond)
+		sent += datagram
+		// For 200 ms, 300 datagrams that have arrived are still unconfirmed
+		// and counted as on their way; afterwards 20 are.
+		counted := uint64(20 * datagram)
+		if tick >= 1300 && tick < 1500 {
+			counted = 300 * datagram
+		}
+		ledger.record(now, uint64(tick+1), sent, sent, counted)
+		ledger.settled(now)
+	}
+	if bytes, through, _ := ledger.lost(now); bytes != 0 || ledger.material(now) {
+		t.Fatalf("a path that lost nothing measured %.0f of %.0f bytes lost, material %v", bytes, through, ledger.material(now))
+	}
+}

@@ -604,6 +604,13 @@ func (p *lane) discover(now time.Time, realtime, stream, laneLimited bool) {
 // later one is the loss in between.
 type lossLedger struct {
 	entries []lossEntry
+	// floor is the loss established so far: the deficit never falls below
+	// it. What counts as still on its way is an estimate that over-counts
+	// datagrams which arrived unconfirmed, more of them after a stall and at
+	// a high rate than otherwise; a deficit that dipped below the loss so far
+	// read as loss when it returned
+	// (`TestLossLedgerIgnoresDatagramsCountedLateThatArrived`).
+	floor float64
 }
 
 type lossEntry struct {
@@ -631,7 +638,7 @@ func (l *lossLedger) record(now time.Time, seq, sent, received, late uint64) {
 	if n := len(l.entries); n > 0 && seq <= l.entries[n-1].seq {
 		return
 	}
-	l.entries = append(l.entries, lossEntry{now, seq, sent, float64(sent) - float64(received) - float64(late)})
+	l.entries = append(l.entries, lossEntry{now, seq, sent, math.Max(l.floor, float64(sent)-float64(received)-float64(late))})
 }
 
 // settled is the loss so far, in bytes: the lowest deficit of the current
@@ -641,6 +648,9 @@ func (l *lossLedger) settled(now time.Time) (deficit float64, known bool) {
 		if e := l.entries[i]; now.Sub(e.at) < lossSettle && (!known || e.deficit < deficit) {
 			deficit, known = e.deficit, true
 		}
+	}
+	if known {
+		l.floor = math.Max(l.floor, deficit)
 	}
 	return deficit, known
 }
