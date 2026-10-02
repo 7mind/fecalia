@@ -16,6 +16,7 @@ import argparse
 import concurrent.futures
 import hashlib
 import json
+import math
 from pathlib import Path
 import statistics
 import subprocess
@@ -23,7 +24,7 @@ import sys
 import time
 
 from lab import GUESTS, Lab  # noqa: E402
-from benchmark import provision, profile_from  # noqa: E402
+from benchmark import provision, profile_from, start_iperf_server  # noqa: E402
 
 VOICE = r'''
 import json, select, socket, struct, sys, time
@@ -222,6 +223,15 @@ def clock_offset(lab, guest):
     return best[1], best[0] / 2
 
 
+
+def daemon_started(lab, guest):
+    code = ('import os,time; from pathlib import Path; '
+            'pid=Path("/root/wanbond.pid").read_text().strip(); '
+            'ticks=int(Path("/proc/"+pid+"/stat").read_text().split()[21]); '
+            'print(time.time()-time.monotonic()+ticks/os.sysconf("SC_CLK_TCK"))')
+    return float(lab.execute(guest, "python3 -c '" + code + "'", capture_output=True).stdout)
+
+
 def run(args):
     scenario = scenario_from(args.scenario, args.profile)
     lab = Lab()
@@ -234,6 +244,7 @@ def run(args):
         for future in [pool.submit(impair, lab, guest, lane, **conditions[guest][lane]) for guest in GUESTS for lane in (1, 2)]:
             future.result()
         provision(lab, args.binary)
+        daemon_starts = {guest: daemon_started(lab, guest) for guest in GUESTS}
         for guest in GUESTS:
             address = "10.77.0.1" if guest == "hub" else "10.77.0.2"
             lab.execute(guest, "cat > /root/voice2.py", input=VOICE)
@@ -243,19 +254,30 @@ def run(args):
         offsets = {guest: clock_offset(lab, guest) for guest in GUESTS}
         seconds = scenario["seconds"]
         manifest = {"scenario": args.scenario, "binary_sha256": hashlib.sha256(args.binary.read_bytes()).hexdigest(),
-                    "profile": json.loads(json.dumps(conditions)), "profile_family": args.profile.stem if args.profile is not None else "field", "seconds": seconds, "tcp": scenario["tcp"], "voice": scenario.get("voice", True), "clock_offsets": offsets, "events": []}
+                    "profile": json.loads(json.dumps(conditions)), "profile_family": args.profile.stem if args.profile is not None else "field", "seconds": seconds, "tcp": scenario["tcp"], "voice": scenario.get("voice", True), "clock_offsets": offsets, "daemon_started_guest": daemon_starts, "events": []}
         (output / "scenario.json").write_text(json.dumps(manifest, indent=2))
-        if args.idle or scenario.get("cold", False):
-            time.sleep(max(args.idle, 30 if scenario.get("cold", False) else 0))
-        lab.execute("hub", "killall -q iperf3 || true; iperf3 -s -1 -D -B 10.77.0.1")
+        cold = scenario.get("cold", False)
+        if cold:
+            traffic_deadline = max(daemon_starts[g] - offsets[g][0] for g in GUESTS) + max(args.idle, 30)
+            manifest["cold_dispatch_deadline_host"] = traffic_deadline
+        elif args.idle:
+            time.sleep(args.idle)
+        record_seconds = seconds + 6 + (math.ceil(max(0, traffic_deadline - time.time())) if cold else 0)
+        lab.execute("hub", "killall -q iperf3 || true")
+        if scenario["tcp"]:
+            start_iperf_server(lab, "10.77.0.1", 5201)
         for guest in GUESTS:
-            lab.execute(guest, f"nohup python3 /root/sampler.py {seconds + 6} > /root/sampler.log 2>&1 < /dev/null &")
-            lab.execute(guest, f"nohup python3 /root/observe.py --seconds {seconds + 6} --output /root/timing.jsonl --pid $(cat /root/wanbond.pid) > /root/timing.log 2>&1 < /dev/null &")
+            lab.execute(guest, f"nohup python3 /root/sampler.py {record_seconds} > /root/sampler.log 2>&1 < /dev/null &")
+            lab.execute(guest, f"nohup python3 /root/observe.py --seconds {record_seconds} --output /root/timing.jsonl --pid $(cat /root/wanbond.pid) > /root/timing.log 2>&1 < /dev/null &")
         host_pids = [entry["pid"] for entry in json.loads(lab.manifest.read_text()).values()]
         host_timing = subprocess.Popen([sys.executable, str(Path(__file__).with_name("observe.py")),
-            "--seconds", str(seconds + 6), "--output", str(output / "host-timing.jsonl"),
+            "--seconds", str(record_seconds), "--output", str(output / "host-timing.jsonl"),
             *[argument for pid in host_pids for argument in ("--pid", str(pid))]])
         time.sleep(1)
+        if cold:
+            if time.time() >= traffic_deadline:
+                raise RuntimeError("cold scenario preparation exceeded its 30-second start deadline")
+            time.sleep(traffic_deadline - time.time())
         manifest["start_host"] = time.time()
         start = time.monotonic()
         tcp = pool.submit(lab.execute, "edge", f"iperf3 -c 10.77.0.1 --bidir -l 1K -t {seconds} -J --get-server-output", capture_output=True) if scenario["tcp"] else None
@@ -273,7 +295,14 @@ def run(args):
         for guest, future in voices.items():
             (output / f"{guest}-voice.json").write_text(future.result().stdout)
         if tcp is not None:
-            (output / "tcp.json").write_text(tcp.result().stdout)
+            try:
+                result = tcp.result()
+            except subprocess.CalledProcessError as error:
+                (output / "tcp-error.txt").write_text(error.stdout + error.stderr)
+                (output / "hub-iperf.log").write_text(lab.execute("hub", "cat /root/iperf-5201.log", capture_output=True).stdout)
+                raise
+            (output / "tcp.json").write_text(result.stdout)
+            (output / "hub-iperf.log").write_text(lab.execute("hub", "cat /root/iperf-5201.log", capture_output=True).stdout)
         time.sleep(6)
         for guest in GUESTS:
             (output / f"{guest}-samples.jsonl").write_text(lab.execute(guest, "cat /root/samples.jsonl", capture_output=True).stdout)

@@ -89,6 +89,28 @@ ip -j link show wanbond0
     lab.execute("edge", "ping -c 3 -W 3 10.77.0.1")
 
 
+
+def start_iperf_server(lab, address, port):
+    log = f"/root/iperf-{port}.log"
+    lab.execute("hub", f"""set -eu
+for n in $(seq 1 50); do
+  test -z "$(ss -H -ltn sport = :{port})" && break
+  sleep 0.1
+done
+test -z "$(ss -H -ltn sport = :{port})"
+nohup iperf3 -s -1 -J -B {address} -p {port} > {log} 2>&1 < /dev/null &
+iperf_pid=$!
+for n in $(seq 1 50); do
+  if ss -H -ltnp sport = :{port} | grep -Fq "pid=$iperf_pid,"; then exit 0; fi
+  if ! kill -0 $iperf_pid 2>/dev/null; then cat {log}; exit 1; fi
+  sleep 0.1
+done
+cat {log}
+exit 1
+""")
+    return log
+
+
 def counters(lab):
     return json.loads(lab.execute("edge", "ip -s -j link show", capture_output=True).stdout)
 

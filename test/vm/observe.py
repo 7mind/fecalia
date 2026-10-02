@@ -34,10 +34,12 @@ def record(output, seconds, pids):
             worst = max(worst, now - next_sample)
             ticks += 1
             if ticks >= 10:
+                stats_switch = Path("/proc/sys/kernel/sched_schedstats")
+                stats_enabled = int(stats_switch.read_text()) if stats_switch.exists() else None
                 cpu = [int(value) for value in Path("/proc/stat").read_text().splitlines()[0].split()[1:]]
                 stream.write(json.dumps({"t": time.time(), "monotonic": now, "wake_delay_seconds": worst,
                     "cpu_ticks": cpu, "loadavg": Path("/proc/loadavg").read_text().strip(),
-                    "threads": scheduler(pids)}) + "\n")
+                    "scheduler_stats_enabled": stats_enabled, "threads": scheduler(pids)}) + "\n")
                 stream.flush()
                 worst, ticks = 0.0, 0
             next_sample += tick
