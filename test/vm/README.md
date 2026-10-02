@@ -1487,3 +1487,38 @@ all four bulk variants fail. All four 1b cases fail. The four voice-only 1c
 passes previously recorded remain; its other twelve variants fail. This
 supersedes the earlier outage matrix and corrects section 2's claimed voice
 consequence, without inventing a failure to fit the plan.
+
+The one-way bulk reference was subsequently corrected to the survivor
+criterion of 1a, which 1c explicitly inherits. It previously counted the
+failed link's usable reverse direction and changed both flow allocations.
+A reference invariant reproduced that mismatch before correction. Re-running
+1c on `f75668e` (`f75668e-model-oneway-v4.txt`) retains the same four passes
+and twelve failures, now against the specified survivor budget.
+
+`adaptive_reference.py` supplies the independent lab wire budget. Observed
+inputs (`lab-tcp-budget-inputs.txt` and raw iperf JSON) are TUN MTU 1339,
+TCP MSS 1287, enabled TCP timestamps and iperf 3.20. From those inputs and the
+framing/padding code, a full TCP segment occupies 1514 link bytes, a pure ACK
+239, a voice datagram 367, feedback 207 and a keepalive 143. These costs are
+inferences; the reference assumes full-MSS TCP segments and one reverse ACK
+per segment, plus feedback every 25 ms and every 64 receipts. It reserves
+the required 100 voice datagrams per direction per second and 200 ms
+keepalives. Copies and repairs do not lower the reference.
+
+Successful 1300-byte UDP calibration receipts are converted to link service
+with their 42-byte IP/UDP/Ethernet overhead, capped at the configured rate.
+The helper rejects a failed 85% UDP calibration or insufficient service for
+required traffic. Five tests prove the directional conservation constraints,
+the voice cost, survivor equivalence and calibration rejection. This is a
+budget helper; matched phase calibration and the complete section 4 evaluator
+are still pending. Cold and existing benchmark gates retain their specified
+wire-rate percentages; the voice amendment does not change those gates.
+
+The complete baseline collector series is running with the original
+`f75668e` binary, not the diagnostic build. Its manifest and per-run logs are
+under `f75668e-lab-matrix-20261002-223350` in the evidence directory. The first
+six voice-only blackout collections completed: five lost no echoes, radio
+run 3 lost three/two, and whole-run receive gaps stayed below 97 ms. Maximum
+guest observer wake delay was 25.68 ms. Those are observations of delivery
+and scheduling, not complete latency gate verdicts; independent idle
+references are still required.

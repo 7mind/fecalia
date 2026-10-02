@@ -223,6 +223,13 @@ corrections establish neither the adaptive-policy gates nor a stationary
 field rate: the operator's 5G/Starlink links require contemporaneous lane
 measurements and interleaved baseline/candidate rounds.
 
+The stage 0 lab reference budgets TCP payload independently of the candidate:
+calibrated UDP wire service minus required voice, feedback, keepalives and
+the reverse TCP ACK stream. It uses the observed lab MTU/MSS and inferred
+encapsulation costs; phase calibration and complete gate evaluation remain
+pending. One-way outages use the same fully surviving-lane reference as
+two-way outages. This reference changes no transport decision.
+
 **Paths and epochs.** An unpadded challenge-protected PROBE carries a 22-byte
 capability record: `bond`, version 1, physical path ID, process Boot ID and Bind
 Open generation. Padded PMTU probes retain their original size. A logical lane
