@@ -207,6 +207,16 @@ the continuously aged model and stages 1–3 are not implemented. See the
 [measurement record](../test/vm/README.md#adaptive-policy-stage-0--2026-10-02-in-progress)
 for provenance, incomplete gates and the independent calibration failure.
 
+Stage 0 collection now records actual daemon start times and dispatches a
+cold transfer 30 seconds after the later startup (observed verification:
+30.000 seconds). Direct-link calibration stops the owned wanbond processes
+and uses fixed-size UDP to verify emulated capacity; TCP is reported
+separately. On the lossy gigaradio path, removing 0.4% loss raised direct TCP
+from 7.556 to 286.840 Mbit/s, supporting that distinction. These harness
+corrections establish neither the adaptive-policy gates nor a stationary
+field rate: the operator's 5G/Starlink links require contemporaneous lane
+measurements and interleaved baseline/candidate rounds.
+
 **Paths and epochs.** An unpadded challenge-protected PROBE carries a 22-byte
 capability record: `bond`, version 1, physical path ID, process Boot ID and Bind
 Open generation. Padded PMTU probes retain their original size. A logical lane

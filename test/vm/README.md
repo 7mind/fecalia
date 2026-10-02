@@ -52,7 +52,7 @@ TCP there while the radio profile did not move.
 
 | Scenario | Conditions | Pass criteria |
 | --- | --- | --- |
-| `calibrate.py` | Plain TCP and 1300-byte UDP, both WANs concurrently, both directions | Each WAN delivers at least 85% of its configured rate |
+| `calibrate.py` | Plain TCP diagnostics and 1300-byte UDP, both WANs concurrently, both directions | UDP on each WAN delivers at least 85% of its configured rate; TCP is reported separately |
 | `benchmark.py` | One TCP flow, then its reverse; default 2+6 Mbit/s, 15/25 ms one-way delay | Each direction reaches 75% of combined wire capacity; both WAN byte counters advance by over 100 kB |
 | `udp.py` | Constant-rate UDP of full 1311-byte datagrams, then its reverse, offered at the rate full datagrams could carry (86.6% of wire capacity) | Each direction delivers 80% of combined wire capacity after a 10-second warmup; both WAN byte counters advance by over 100 kB |
 | `profiles/asymmetric.json` | 6+2 Mbit/s uplink, 1+7 downlink, 3 ms jitter | Same throughput gates; independent directional capacity estimates |
@@ -165,9 +165,10 @@ its limits are wire rates, whereas a speed-test result is application goodput.
 HTB limits each egress independently. Netem uses fixed per-guest/path seeds and
 holds a bandwidth-delay product plus a 100-packet router buffer; a flat packet
 limit would falsely reduce fast-link capacity before adding congestion. Guest
-scheduling is nondeterministic even with fixed random seeds. TCP calibration
-alone is insufficient because segmentation offload changes queue occupancy;
-the UDP calibration verifies packet-rate capacity as well.
+scheduling is nondeterministic even with fixed random seeds. Fixed-size UDP
+calibrates packet-rate capacity. TCP is a separate diagnostic: congestion
+control under the profile's intended loss can leave capacity unused, and
+segmentation offload changes queue occupancy.
 
 ## Inspection and artifacts
 
@@ -1365,3 +1366,83 @@ voice-only 1c passes for radio/gigaradio lane 0 direction 1 and gigaradio lane
 1 in both directions. The plan's section 2 does not establish a voice failure
 in these cases from its liveness mechanism alone. Those observed passes do
 not establish bulk progress or the other outage variants.
+
+
+### Calibration and cold-run collection corrections
+
+Observed reproduction: the original calibration repeatedly counted slow TCP
+receipts in 128 KiB chunks; the receiver's one-second reports alternated zero
+bytes and 128 KiB. At 0.4 Mbit/s a chunk spans multiple seconds, so that is not
+a precise ten-second goodput sample. Matched 1 KiB TCP reads brought the radio
+satellite uplink above its 85% gate. A longer convergence interval brought the
+mobile downlink from approximately 13–15 Mbit/s to approximately 95 Mbit/s.
+Longer measured intervals were still needed for the satellite downlink. The
+successful combined diagnostic (`20261002-211224-calibration`) measured
+0.356/1.170 Mbit/s TCP uplink and 0.455/95.587 Mbit/s TCP downlink; all TCP and
+UDP capacity gates passed. This is one run, not a repeated reference series.
+
+`calibrate.py` now uses 1 KiB TCP reads, 30 seconds of TCP convergence (UDP
+retains three seconds), and 30 measured seconds per flow. The fixed-size UDP
+capacity gate remains 85% on each WAN and direction. Both calibration and
+adaptive collection verify that the
+owned iperf process is listening before starting clients, rather than treating
+daemon startup as readiness; server output is retained in a guest log. A
+captured calibration attempt had failed with `Connection refused`. Adaptive
+collection retains TCP error output and the server log on a failed client.
+These are harness changes, not changes to wanbond's policy or its adaptation
+deadlines.
+
+Observed on the lab WAN: eight idle wanbond UDP packets were captured within
+approximately 140 ms while no test flow was active. The previous calibration
+did not stop an existing daemon, despite intending to measure without it.
+Calibration now stops only the processes recorded in the lab's wanbond PID
+files, verifies their executable before signaling them, and verifies exit.
+Calibration must therefore precede provisioning a baseline/candidate scenario.
+This removes policy-dependent background traffic from the reference.
+
+Observed cold-clock reproduction after a complete TCP run: the old driver
+dispatched traffic 39.739/41.570 seconds after edge/hub startup. The corrected
+driver records both process start times, anchors dispatch to 30 seconds after
+the later startup, and extends telemetry to cover the intervening idle time.
+The verifying run dispatched at 30.000/31.872 seconds after edge/hub startup.
+TCP's own timestamp and clock-offset uncertainty remain part of the raw
+record; dispatch is not an assertion that TCP negotiation takes zero time.
+The cold throughput itself is baseline evidence, not a candidate pass.
+
+The scheduler observer additionally records the kernel's
+`sched_schedstats` enablement when available (`null` if unavailable). Disabled
+scheduler collection must not be interpreted as zero waiting; observer wake
+delay and CPU counters remain separate observations. Neither these harness
+corrections nor the later successful measurements establish the cause of the
+original unrecorded host-contention failure.
+
+The isolated six-run series (`calibration-corrected-repeats-20261002-214636`
+under `/srv/nvme/tmp/wanbond-adaptive-evidence`) passed every UDP capacity
+check: three radio and three gigaradio runs. Radio TCP failed once at
+0.336 Mbit/s against a 0.340 Mbit/s threshold, then passed twice. All three
+gigaradio TCP runs failed on the WAN configured with 0.4% loss, delivering
+6.61–8.39 Mbit/s while its UDP delivered 287.11–290.25 Mbit/s. TCP on the
+loss-free WAN delivered 285.34–286.96 Mbit/s. These are observations, not
+adaptive-policy scenario passes.
+
+Controlled reproduction (`calibration-loss-repro-20261002-221212`): removing
+loss on the affected gigaradio WAN, keeping the rate and delay settings,
+raised uplink TCP from 7.556 to 286.840 Mbit/s; retransmissions fell from 156
+to zero. The inference is that the TCP capacity assertion rejected the
+intended congestion response to loss rather than establishing insufficient
+emulator capacity. `calibrate.py` therefore retains TCP diagnostics and gates
+capacity on fixed-size UDP. This changes a defective calibration criterion,
+not the section 4 throughput percentages or adaptation deadlines.
+
+In the six-run trace, maximum observer wake delays were 10.80/20.07/10.32 ms
+on host/edge/hub. Host aggregate CPU peaked at 99.17%; guest steal peaked at
+32.69%/26.92%. Scheduler statistics were disabled. These observations retain
+evidence of contention even though the UDP capacity checks passed; they do
+not establish that contention caused each voice or TCP failure.
+
+The 2d deterministic model now matches `cellular.json`'s mobile delay of
+25±5 ms as well as its ±60% grants. On `f75668e`, the corrected radio test
+fails p99 at 151 ms against 150 ms, with no voice loss; its bulk checks pass.
+The gigaradio test passes voice and fails both bulk directions. Raw output
+is `f75668e-model-cellular-v3.txt` in the evidence directory. The earlier
+matrix used the radio mobile delay for this row and is superseded for 2d.
