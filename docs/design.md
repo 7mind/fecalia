@@ -194,6 +194,14 @@ baseline has live/dead liveness, with no suspect state yet. These diagnostic
 fields are observations of the old policy, not the planned continuously aged
 link model.
 
+Stage 0 stopped on an observed lab/field disagreement: a voice-only 15-second
+mobile-egress outage lost no echoes in the field, but lost 10 and 40 in the lab,
+with a longest lab arrival gap of 880 ms. The initial lane states were not
+matched, and the cause is unknown. The policy remains the legacy controller;
+the continuously aged model and stages 1–3 are not implemented. See the
+[measurement record](../test/vm/README.md#adaptive-policy-stage-0--2026-10-02-in-progress)
+for provenance, incomplete gates and the independent calibration failure.
+
 **Paths and epochs.** An unpadded challenge-protected PROBE carries a 22-byte
 capability record: `bond`, version 1, physical path ID, process Boot ID and Bind
 Open generation. Padded PMTU probes retain their original size. A logical lane

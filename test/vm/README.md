@@ -98,6 +98,12 @@ lab's two WANs measured 6.3 ms (autocorrelation 0.55, 0.36) and 6.5 ms (0.01,
 -0.02). Lowering a netem delay lets new datagrams overtake queued ones, so
 this reorders within a WAN, which the real links are not known to do.
 
+When switching profiles, `lab.impair` emits delay correlation explicitly,
+including zero. Observed on 2026-10-02: omitting zero from `tc qdisc replace`
+retained the preceding profile's 95% correlation. A two-step 95% → 0% kernel
+check failed before the correction and reports zero afterwards. A result
+whose recorded qdisc disagrees with its profile is not a valid calibration.
+
 Voice latency is judged against the WANs that were up when a datagram was sent,
 using the times recorded in the phase manifest:
 
@@ -1191,3 +1197,73 @@ policy. Observed validation: all 42 frontend tests, the root Go build/vet/tests,
 patched device vet/tests and formatting passed the non-privileged gate.
 Progression scenario tests remain behind `-tags adaptivepolicy` until their
 implementation stages; they are not claimed as passing that gate.
+
+`test/vm/adapt.py` now collects complete runs and preserves the binary digest,
+initial conditions, actual event times, guest clock offsets, raw voice/TCP,
+10 Hz metrics/interface samples and daemon logs. `--profile` selects `radio`
+or `gigaradio`; rate changes are proportional to that family's rates.
+Collection scenarios cover one-way outages, deep/shallow rate falls, rises,
+plan changes, cellular grants, latency changes and a cold transfer. The
+display still uses interface bytes; the independent available-goodput
+reference and complete section 4 gate evaluator are unfinished. It must not
+be used to claim acceptance from a printed throughput figure.
+
+The corrected model matrix on `f75668e` has the following case counts. It
+includes first-second deadline measurements and primary voice-route checks;
+these are progression results, not candidate passes:
+
+| Row | Passing / failing cases |
+| --- | --- |
+| 1a | 3 / 5 |
+| 1b | 0 / 4 |
+| 1c | 4 / 12 |
+| 2a | 0 / 4 |
+| 2b | 0 / 2 |
+| 2c | 0 / 2 |
+| 2d | 0 / 2 |
+| 3a | 2 / 2; both voice-only latency cases pass |
+| 3b | 0 / 4 |
+| 3c | 0 / 4 |
+| 0 | 0 / 2 |
+
+**Stopped in stage 0: lab and field disagree.** Observed with two 50 Hz
+160-byte echo streams and no TCP: a 15-second outage of mobile egress on
+the edge gave these results:
+
+| Place | Edge / hub echoes lost during outage | Edge / hub longest arrival gap |
+| --- | --- | --- |
+| Production | 0 / 0 of 750 each | 62.3 / 69.8 ms |
+| Lab, field profile | 10 / 40 of 750 each | 177.2 / 880.3 ms |
+
+The field daemons are identified as `f75668e` by the plan; their observed
+restart times agree, but their source commit was not independently verified
+from the binaries. The lab digest above is from the verified `f75668e`
+checkout. This compares the same egress intervention and traffic, not equal
+initial lane state or identical physical links: the field daemons had been
+running for hours and the lab daemons were freshly started. The cause of the
+gate disagreement is unknown; no policy change was made to explain it away.
+
+The lab run is
+`20261002-193514-adapt-field-baseline-voice-f75668e-field-match` under the VM
+state directory. Field artifacts and exact commands are under
+`/srv/nvme/tmp/wanbond-adaptive-evidence/field-voice-20261002-193300` and
+`field_voice.py`. Management replies were observed routing over untagged
+`end0` via `192.168.222.1`, separately from the impaired VLANs. Each qdisc
+change had a verified active 15-second removal timer. Both VLANs subsequently
+reported `noqueue`; both services remained active. No candidate binary or
+deployment configuration was changed.
+
+The successful 60-second field measurement advanced the mobile interface's
+RX+TX counters by 2.396 MB. The counter increase from the first attempted run
+through the successful run was 7.931 MB, including failed echo setup and
+intervening background traffic. Initial UDP/5202 attempts were inconclusive:
+the host firewall did not admit that port. UDP/60099 was already permitted;
+both preflights then received 100/100 echoes without changing firewall rules.
+
+Two radio direct-link calibrations failed their existing capacity gate.
+After correcting correlation, TCP downlink on WAN2 measured 11.325 Mbit/s
+against the required 85 Mbit/s, while UDP measured 96.567 Mbit/s. The cause
+of the TCP shortfall was not established, so throughput references remain
+inconclusive. Three-run series, existing benchmark/UDP/continuity baselines,
+stopgap selection and stages 1–3 remain unfinished. This is a measurement
+stop, not an adaptive-policy handover.

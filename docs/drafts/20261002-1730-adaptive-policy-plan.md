@@ -81,6 +81,13 @@ can deliver on the better lane before the primary. The test is retained;
 primary route changes require a separate observable check. The full scenario
 and lab gates remain to be proved.
 
+Stage 0 subsequently stopped under the operator's lab/field disagreement
+rule. The same voice-only 15-second mobile-egress outage produced zero lost
+echoes in the field and 10/40 in the lab, with a longest lab gap of 880 ms.
+Initial lane states and physical link behavior were not matched, so the cause
+is unknown. The detailed [stage 0 record](../../test/vm/README.md#adaptive-policy-stage-0--2026-10-02-in-progress)
+also records the incomplete calibration and gates. Stages 1–3 have not begun.
+
 ## 3. Target: one link model per lane, continuously measured, with ages
 
 A lane keeps a **link model**: a few estimates, each fed by every
