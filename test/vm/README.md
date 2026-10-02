@@ -165,6 +165,13 @@ the UDP calibration verifies packet-rate capacity as well.
 
 ## Inspection and artifacts
 
+A profile may set `buffer_ms` to size its router buffer in milliseconds of
+traffic at its configured rate, instead of 100 packets. `swing` and `grant_ms`
+redraw the HTB rate uniformly within `rate*(1±swing)` every grant, using a
+seeded loop in each guest. `profiles/cellular.json` varies the mobile lane
+±60% every 100 ms with a 400 ms buffer. These are lab impairments, not daemon
+configuration; the adaptive-policy baseline for them has not been measured.
+
 ```sh
 python3 test/vm/lab.py exec hub 'cat /root/wanbond.log'
 python3 test/vm/lab.py exec edge 'curl -sf http://127.0.0.1:9090/metrics'
@@ -182,6 +189,39 @@ Starlink or LTE RF behavior, production NAT, or Pi CPU limits. The voice stream
 tests the adaptive small-packet heuristic; it is not an application classifier.
 Both paths failing together cannot preserve delivery. Startup, loss bursts and
 rates outside the tested profiles need their own scenarios.
+
+## Adaptive-policy stage 0: acceptance conflict — 2026-10-02
+
+Implementation stopped at stage 0 under the adaptive-policy plan's stop rule.
+The `lab-tooling` branch was merged; the guests were booted and their private
+WAN reachability checked. No adaptive scenario or production measurement was
+completed. Neither `window-bound` nor `cold-start` was merged.
+
+Observed on `f75668e`, the deterministic survivor reproduction delivered
+500/500 measured voice datagrams, with one-way p99 55 ms and maximum gap 38 ms.
+Bulk delivery in the final five seconds was `[3600 3600 2400 3600 2400]` B/s,
+failing scenario 1a's 37,500 B/s requirement in every second. This models a
+healthy sole survivor, giving recovery every opportunity before measurement;
+it omits random loss, jitter and the extra TCP ACK stream. It measures delivered
+bulk datagrams, an upper bound on TCP payload goodput.
+
+Independently of that controller result, the traffic budget makes the combined
+gate infeasible on the radio uplink when WAN2 fails. Its WAN1 rate is
+0.4 Mbit/s = 50,000 B/s. Two 50 Hz streams of 224-byte encrypted voice
+datagrams require `100*(224+101+28)` = 35,300 B/s; the bulk gate alone
+requires 37,500 B/s, before its own overhead. Over a 15-second outage,
+even giving bulk three seconds with no delivery, voice plus bulk requires
+979,500 bytes on a link that can carry 750,000. Accommodating bulk would
+require dropping at least 651 voice datagrams: over 8% of the direction's
+8,000 voice datagrams in the runner's 80-second blackout scenario, against
+the under-1% gate. This is a conservation bound inferred from the profile
+and wire format, not a measured capacity estimate. The same conflict applies
+to 1c with this direction's survivor.
+
+The exact baseline reproduction and output are in
+[the acceptance-budget record](../../debug/20261002-180053-adaptive-budget.md).
+Stages 1–3 and the full scenario validation remain unimplemented; the gates
+have not been changed.
 
 ## Initial validation — 2026-09-28, `8ff0c5e`
 

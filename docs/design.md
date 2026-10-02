@@ -682,6 +682,15 @@ whatever the allowance, and each of those lost on its lane arrived about
 250 ms late (`TestVoiceCopiesHaveRoomOnTheOtherLane`). Two 50 Hz voice streams
 need 30 kB/s of copies, 15% of a 0.4+1.25 Mbit/s uplink.
 
+The wire budget bounds bulk beside voice on a sole survivor. Inferred from
+the wire format: two 50 Hz streams of 224-byte encrypted datagrams consume
+`100*(224+Overhead+28)` = 35,300 B/s before feedback. On the radio profile's
+0.4 Mbit/s uplink survivor, that leaves at most 14,700 B/s for other traffic
+with no voice loss. Thus the adaptive-policy plan's simultaneous voice gate
+and bulk gate of 75% of the survivor's total capacity cannot both hold there,
+even allowing the voice gate's loss budget. Stage 0 stopped on this acceptance
+conflict; see the [baseline reproduction](../debug/20261002-180053-adaptive-budget.md).
+
 A real-time datagram that waited is worth less than the one behind it. When
 real-time datagrams have waited more than 20 ms for a lane throughout 100 ms
 without the queue emptying,
