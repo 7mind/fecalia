@@ -318,6 +318,7 @@ func TestAdaptivePolicy2dCellularGrants(t *testing.T) {
 			changed := policyChange(lanes, 1, func(side int, at time.Duration, c modelCondition) modelCondition {
 				draw := rand.New(rand.NewPCG(uint64(at/(100*time.Millisecond)), uint64(side+13)))
 				c.rate = []float64{6.25e6, 750000}[side] * (1 + .6*(2*draw.Float64()-1))
+				c.delay = 25*time.Millisecond + time.Duration(draw.Int64N(int64(10*time.Millisecond))) - 5*time.Millisecond
 				c.buffer = 400 * time.Millisecond
 				return c
 			})
