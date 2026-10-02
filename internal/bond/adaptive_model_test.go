@@ -328,13 +328,14 @@ func (m policyRun) run(t *testing.T) policyOutcome {
 // 25 ms lane feedback, 200 ms keepalives and one reverse TCP ACK per segment.
 // Bulk and ACK encapsulation are included. Repairs and extra copies never
 // lower the reference. Equal utilization of the available directional wire
-// budgets leaves room for both flows even on an asymmetric pair.
+// budgets leaves room for both flows even on an asymmetric pair. An outage
+// uses only the bidirectional survivors, as required by scenarios 1a/1c.
 func (m policyRun) reference(at time.Duration) [2]float64 {
 	var available [2]float64
 	for side := range available {
 		for _, l := range m.lanes {
 			c := l.at(side, at)
-			if !c.dark {
+			if !c.dark && !l.at(1-side, at).dark {
 				available[side] += c.rate - policyACKWireBytes/policyACKCadence.Seconds() - (bond.Overhead+policyLinkOverhead)/0.2
 			}
 		}

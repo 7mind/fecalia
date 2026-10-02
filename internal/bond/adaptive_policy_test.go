@@ -193,6 +193,22 @@ func checkPolicyRoute(t *testing.T, o policyOutcome, from, until, lane int, dwel
 	}
 }
 
+func TestAdaptiveOneWayReferenceUsesTheSurvivor(t *testing.T) {
+	for family, lanes := range policyProfiles() {
+		for failed := range lanes {
+			changed := policyChange(lanes, failed, func(side int, at time.Duration, c modelCondition) modelCondition {
+				c.dark = side == 0
+				return c
+			})
+			got := (policyRun{lanes: changed, voice: true}).reference(25 * time.Second)
+			want := (policyRun{lanes: []modelLane{lanes[1-failed]}, voice: true}).reference(25 * time.Second)
+			if got != want {
+				t.Errorf("%s lane%d one-way reference %v differs from survivor %v", family, failed, got, want)
+			}
+		}
+	}
+}
+
 func TestAdaptivePolicy1aBlackout(t *testing.T) {
 	for family, lanes := range policyProfiles() {
 		for failed := 0; failed < 2; failed++ {
