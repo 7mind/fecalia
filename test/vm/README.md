@@ -1446,3 +1446,17 @@ fails p99 at 151 ms against 150 ms, with no voice loss; its bulk checks pass.
 The gigaradio test passes voice and fails both bulk directions. Raw output
 is `f75668e-model-cellular-v3.txt` in the evidence directory. The earlier
 matrix used the radio mobile delay for this row and is superseded for 2d.
+
+Post-correction gigaradio calibration (`20261002-221603-calibration`) exited
+successfully: UDP delivered 290.29–290.33 Mbit/s on each 300 Mbit/s direction,
+while the lossy TCP diagnostic still delivered approximately 6.7 Mbit/s.
+This verifies the corrected separation of capacity and TCP response.
+
+Stage 0 also exports `wanbond_adaptive_realtime_original_packets_total` per
+lane. It counts actual first real-time transmissions, excluding copies,
+repairs and small TCP datagrams. A deterministic transport-to-metrics
+reproduction failed before the counter existed and passed after it, with
+both repair and small-TCP transmission exercised. At 10 Hz its increments
+provide aggregate primary-route observations; sub-100 ms changes remain
+unresolved by that sampling. A low RTT alone does not establish that the
+primary moved, as the passing voice-only 3a model demonstrates.

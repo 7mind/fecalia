@@ -194,6 +194,12 @@ baseline has live/dead liveness, with no suspect state yet. These diagnostic
 fields are observations of the old policy, not the planned continuously aged
 link model.
 
+`realtime_original_packets_total` records each lane's actual first real-time
+transmissions, excluding copies, repairs and small TCP datagrams. Its
+transport-to-metrics reproduction exercises all three exclusions. This
+diagnostic distinguishes a moving primary from delivery by an existing copy;
+it does not alter scheduling or the wire format.
+
 Stage 0 initially stopped on an observed lab/field disagreement: a voice-only 15-second
 mobile-egress outage lost no echoes in the field, but lost 10 and 40 in the lab,
 with a longest lab arrival gap of 880 ms. The initial lane states were not
