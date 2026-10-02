@@ -406,3 +406,76 @@ captured once a second (`prod-20261002-013758-cold-66afd06`).
 - The first discovery still ends at the first delay signal once the lane
   limits the sender, and the return to discovery that follows takes nine
   seconds to reach the lane's rate.
+
+## Candidates run on the production hosts (2026-10-02, 02:00-03:25)
+
+With the operator's leave, candidate builds ran on the edge and on `raspi5l`
+in place of the deployed one: a runtime drop-in points the units at a binary
+under `/run`, and a timer restores the deployed build unless re-armed
+(`/srv/nvme/tmp/wanbond-field/candidate.sh`, local scratch). A round restarts
+both ends, then runs three downloads and three uploads of 7 s through the
+bond with one TCP flow, ten seconds apart, beside a 20-a-second ping through
+the tunnel, both ends captured once a second; a warm round skips the restart.
+The mobile link alone carried 47.7-64.5 Mbit/s down and 13.3-14.1 up in the
+references of these rounds.
+
+| Build | Downloads after a restart, Mbit/s | Warm downloads | Uploads, warm |
+|---|---|---|---|
+| `66afd06` (deployed) | 22.6, 29.4, 48.9 | 44.3, 46.8, 50.0 | 9.9-11.2 |
+| c1: plateau estimate | 24.1, 24.8, 35.7 | 41.1, 45.1, 46.4 | 9.9-11.1 |
+| c2: and the loss ledger's floor | 14.6, 22.1, 23.0 | 33.9, 46.3, 51.8 | 10.3-11.4 |
+| c3: and the estimate raised to delivery | 26.7, 48.1, 53.2 | 51.4, 53.2, 49.3 | 10.2-11.3 |
+| c4: and the cumulative confirmation | 26.8, 46.4, 44.3 | 45.0, 48.2, 49.1, 50.2, 49.5, 44.2 | 10.6-11.6 |
+
+What the rounds showed, and what branch `field-night` (c4's code) does:
+
+- **Throughput follows the estimate, and the estimate was a matter of luck.**
+  Where a discovery ended and whether a loss signal followed decided the next
+  minute: 22-25 Mbit/s at an estimate of 3.5-4.5 MB/s, 45-53 at 8-10. The
+  deployed build reached the high estimate in its third download in the one
+  round it was given, by a plateau; c1 and c2 did not in theirs.
+- **One false loss signal halved an estimate.** The byte ledger subtracts
+  what it takes to be still on its way, which over-counts datagrams that
+  arrived unconfirmed, more at a high rate than at a low one; after a cut of
+  the target the deficit's return read as 2% loss. None in 29 downloads with
+  the ledger's floor, one in the 12 without.
+- **The link's delay rises at any rate** (13 signals in a download at
+  22 Mbit/s, 15 at 52), so about half the probes are lost to coincidence and a
+  low estimate climbs for minutes. A held estimate now rises to delivery
+  measured above it. With that, the second download after a restart ran at
+  46-48 Mbit/s.
+- **Repairs were of datagrams whose acknowledgement was lost.** A diagnostic
+  build showed every same-lane repair to be of a datagram the peer had
+  reported more than 64 lane sequences past, and one acknowledgement in
+  eleven advancing the lane by more than 64. The receiver's byte count now
+  serves as a cumulative acknowledgement: 900-1800 repairs per download
+  before, none but the ping's copies after.
+- **After a peer restart loss was not judged** until the lane had sent as
+  many datagrams as before it. Found in a test that passed by its margin.
+- **The plateau's estimate** is bounded by what the lane sustained.
+
+Against the goal set for the night:
+
+| | Goal | c4 |
+|---|---|---|
+| Warm, share of the mobile link alone | 75% both ways | down 74% (median of eight, 47.3 of 63.3-64.5), up 80% |
+| Loaded latency of the ping through the tunnel | 150 ms | p99 48-100 ms warm; 130 ms in the cold download |
+| First transfer after a restart | 60% within 7 s | down 42%, up 54% |
+| Estimate against the capacity | 1.3 times at most | up to 1.5 times (13.1 MB/s on a link of about 8.9) |
+| Duplicates among repairs of a plain download | a tenth | no repairs beyond the ping's copies |
+
+Open after it:
+
+- The estimate overshoots after a stall's backlog arrives, and the target
+  then lives on delay signals (26-36 per download) rather than at the hold.
+  Bounding the raise by what the lane sustained is the next thing to try; it
+  may be worth some of the missing quarter.
+- A cold lane: the first discovery still ends at the first delay signal once
+  the lane limits the sender. It costs the first transfer after a daemon
+  restart and nothing later, since a lane keeps its estimate while idle.
+- During a cold download bulk shares the satellite lane with the call while
+  that lane discovers (ping p95 72-150 ms in six cold downloads).
+- The test endpoint refused one download in forty (a one-byte answer); the
+  round script repeats such a transfer from another server.
+- Not run: the lab (host load average 28-35 all night), and the lab has no
+  WAN that stalls.

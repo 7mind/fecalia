@@ -529,6 +529,17 @@ capacity, the first datagrams of an upload left the production uplink lane,
 which had demonstrated 1.16 MB/s a minute earlier, at the 16 kB/s floor
 (2026-10-01).
 
+A held estimate rises to the delivery of the last two control intervals when
+that exceeds it by a twentieth: the lane sends below its estimate, so delivery
+above it is the path catching up after it slowed, and it carries that much.
+Judged by delay alone, probes on the production mobile link were lost to
+coincidence about every other time (its delay rises 13-15 times in a 7 s
+download at any rate), and a lane that began at 3.5 MB/s reached the 9 it
+carries in its fifth download (2026-10-02; `TestCatchUpRaisesTheEstimate`). A
+path that showed material loss within the last minute is left alone. The
+estimate overshoots when a stall's backlog arrives at the radio's peak rate;
+delay signals then hold the target.
+
 A path may also slow down without going silent, and delivery, measured over a
 control interval and smoothed over a quarter of a second, follows it down. A
 lane therefore remembers the highest delivery it kept up over half a second
@@ -587,6 +598,14 @@ the estimator initialization in [RFC 6298 §2.2](https://www.rfc-editor.org/rfc/
 This is a bounded datagram repair policy, not TCP's full retransmission timer.
 Physical attempt records expire after two seconds and release their in-flight
 bytes even when an RTT spike has raised the repair timer beyond that horizon.
+The peer's count of received bytes is a cumulative acknowledgement: when no
+more bytes are missing below the acknowledged sequence than at the last
+acknowledgement, every datagram sent between the two arrived and is confirmed,
+whatever the bitmaps cover. The bitmaps report a receipt once; when datagrams
+arrive a hundred at a time, those that only a lost acknowledgement reported
+were never confirmed and were sent again (production, 2026-10-02: 900-1800
+repairs in a 7 s download, all duplicates;
+`TestLostAcknowledgementDoesNotCauseRepairs`).
 Repairs prefer a different healthy lane. A repair returns to the lane of the
 datagram's last transmission only once the peer has reported a later datagram
 received on that lane, or when fewer than three followed it there, so that a
