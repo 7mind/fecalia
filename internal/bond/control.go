@@ -558,11 +558,15 @@ func (p *lane) discover(now time.Time, realtime, stream, laneLimited bool) {
 		} else if p.sendRate < startupPlateauSending*p.rate {
 			p.startupFlatRounds = 0
 		} else if p.startupFlatRounds++; p.startupFlatRounds >= startupPlateauRounds {
+			// The best delivery of the discovery is one interval's, and
+			// what a stall held arrives within one: the estimate is no more
+			// than the lane kept up
+			// (`TestPlateauEstimateIsWhatTheLaneSustained`).
 			p.decisions.DiscoveryPlateau++
 			p.startup = false
-			p.control = control{capacity: p.startupBest}
+			p.control = control{capacity: math.Min(p.startupBest, p.demonstrated(now))}
 			p.schedulePulse(now)
-			p.rate = math.Max(minimumRate, capacityHold*p.startupBest)
+			p.rate = math.Max(minimumRate, capacityHold*p.control.capacity)
 			return
 		}
 	}
