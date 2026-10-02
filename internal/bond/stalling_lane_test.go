@@ -50,6 +50,27 @@ func served(l varyingLane) float64 {
 	return l.rate * (float64(l.stallEvery-l.stall) + l.stallRate*float64(l.stall)) / float64(l.stallEvery)
 }
 
+// The receiver reports each receipt once, in the acknowledgement after it: a
+// lane bitmap of 64 datagrams and a receipt bitmap of 256. When datagrams
+// arrive a hundred or more at a time, one acknowledgement's bitmaps overlap
+// the next one's little, and the datagrams that only a lost acknowledgement
+// reported are never confirmed: each is sent again though it arrived.
+// Production, 2026-10-02: 1633 repairs in three downloads on the mobile lane,
+// every one of a datagram the peer had reported more than 64 lane sequences
+// past, 1255 of them more than 320 past; the edge counted as many duplicates
+// and skipped no sequence.
+func TestLostAcknowledgementDoesNotCauseRepairs(t *testing.T) {
+	lane := varyingLane{rate: 6.25e6, delay: 25 * time.Millisecond, buffer: 200 * time.Millisecond, batch: 40 * time.Millisecond}
+	baseline := mixedLoad{lanes: []varyingLane{lowLatencyLane, lane}, offered: 8e6, seconds: 30, failed: -1}.run()
+	lane.ackLoss = 0.02
+	o := mixedLoad{lanes: []varyingLane{lowLatencyLane, lane}, offered: 8e6, seconds: 30, failed: -1}.run()
+	copies, repairs := baseline.sender.Paths[1].Retransmits, o.sender.Paths[1].Retransmits
+	t.Logf("%d repairs and copies on the lane against %d with no acknowledgement lost; %d duplicates at the receiver against %d; bulk %.0f B/s against %.0f", repairs, copies, o.receiver.Duplicates, baseline.receiver.Duplicates, o.bulk, baseline.bulk)
+	if repairs > copies+100 {
+		t.Errorf("%d repairs sent on a lane that lost no datagram", repairs-copies)
+	}
+}
+
 // coldStart reports the stalling lane's estimate ten seconds after bulk
 // begins on it beside a call on the other lane, for each of eight schedules
 // of stalls.

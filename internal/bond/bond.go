@@ -258,6 +258,7 @@ type lane struct {
 	seq                uint64
 	ackRevision        uint64
 	receivedHigh       uint64 // the highest lane sequence the peer reported
+	arrived            arrived
 	progressAt         time.Time
 	stall              stall
 	ackReceipts        receiptWindow
@@ -398,7 +399,7 @@ func (t *Transport) SetRemote(epoch Epoch, adopted bool) bool {
 		p.stalled = false
 		p.losses, p.lossMark, p.lossMarked = lossLedger{}, 0, false
 		p.reordering, p.newestConfirmed = peak{bucket: reorderMemory}, time.Time{}
-		p.ackRevision, p.receivedHigh = 0, 0
+		p.ackRevision, p.receivedHigh, p.arrived = 0, 0, arrived{}
 		p.progressAt, p.stall = time.Time{}, stall{}
 		p.ackReceipts = receiptWindow{}
 		p.ackedBytes, p.ackedElapsed = 0, 0
@@ -525,6 +526,54 @@ func (p *lane) rto() time.Duration {
 		variation = max(variation, unknown)
 	}
 	return max(minimumRTO, p.rtt+4*variation+p.peerACKInterval(), p.feedbackRTT+4*p.feedbackRTTVariation)
+}
+
+// arrived is the last acknowledgement's account of the lane: the sequence it
+// acknowledged, and the bytes sent up to it that the peer had not received.
+type arrived struct {
+	high    uint64
+	missing int64
+	known   bool
+}
+
+// confirmArrived takes the peer's count of received bytes as a cumulative
+// acknowledgement. Every acknowledgement says how many bytes the lane has
+// delivered, and the sender knows how many it sent up to the acknowledged
+// sequence. When no more are missing than at the last acknowledgement, every
+// datagram sent between the two arrived, whatever the bitmaps cover.
+//
+// The bitmaps report each receipt once: 64 datagrams by lane, 256 by
+// receipt. When datagrams arrive a hundred or more at a time, the datagrams
+// that only a lost acknowledgement reported were never confirmed, and each
+// was sent again though it had arrived
+// (`TestLostAcknowledgementDoesNotCauseRepairs`). A datagram that arrives late
+// lowers the count of missing bytes; then the count proves nothing about the
+// others, and the bitmaps decide as before.
+func (t *Transport) confirmArrived(p *lane, a acknowledgement, through uint64) {
+	missing := int64(through) - int64(a.bytes)
+	last := p.arrived
+	if a.high <= last.high && last.known {
+		return
+	}
+	p.arrived = arrived{a.high, missing, true}
+	if !last.known || missing != last.missing {
+		return
+	}
+	for seq, sent := range p.attempts {
+		if seq <= last.high || seq > a.high {
+			continue
+		}
+		if !sent.released {
+			p.release(sent)
+		}
+		p.acked += uint64(sent.bytes)
+		if sent.packet != nil {
+			p.confirmedWireBytes = min(maxPackets*maxDatagram, p.confirmedWireBytes+sent.bytes)
+			sent.packet.acked = true
+			delete(t.pending, sent.packet.seq)
+		}
+		delete(p.attempts, seq)
+	}
 }
 
 // observeOrder records how far a confirmed datagram was sent before the newest
@@ -1069,6 +1118,9 @@ func (t *Transport) ack(p *lane, a acknowledgement, now time.Time, fresh bool) {
 			}
 			delete(p.attempts, seq)
 		}
+	}
+	if fresh && counted {
+		t.confirmArrived(p, a, through)
 	}
 	for _, path := range t.paths {
 		var feedbackSample time.Duration

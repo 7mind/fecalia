@@ -28,6 +28,11 @@ type varyingLane struct {
 	// lane serves at that fraction of its rate for the time instead.
 	stall, stallEvery time.Duration
 	stallRate         float64
+	// batch, when set, delivers the bulk direction's datagrams together at
+	// every multiple of it, as a radio link's scheduler does; ackLoss is the
+	// share of the acknowledgements for that direction that the lane loses.
+	batch   time.Duration
+	ackLoss float64
 }
 
 // stalls is a lane's schedule of stalls in the bulk direction.
@@ -157,6 +162,9 @@ func (m mixedLoad) run() mixedLoadOutcome {
 					continue
 				}
 				l := m.lanes[lane]
+				if side == 1 && tx.Frame.ControlType == bond.ACKType && l.ackLoss > 0 && random.Float64() < l.ackLoss {
+					continue
+				}
 				begin := maxTimeTest(now, available[lane][side])
 				rate := current[lane][side]
 				if side == 0 && l.stallEvery > 0 {
@@ -170,7 +178,11 @@ func (m mixedLoad) run() mixedLoadOutcome {
 					continue
 				}
 				available[lane][side] = begin.Add(time.Duration(float64(len(tx.Frame.Payload)+78) / rate * float64(time.Second)))
-				heap.Push(queue, event{available[lane][side].Add(l.delay), 1 - side, tx.Path, tx.Frame})
+				arrival := available[lane][side].Add(l.delay)
+				if side == 0 && l.batch > 0 {
+					arrival = start.Add(arrival.Sub(start).Truncate(l.batch) + l.batch)
+				}
+				heap.Push(queue, event{arrival, 1 - side, tx.Path, tx.Frame})
 			}
 		}
 		for queue.Len() > 0 && !(*queue)[0].at.After(now) {
