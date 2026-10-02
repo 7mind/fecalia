@@ -2,7 +2,6 @@ package bond
 
 import (
 	"encoding/binary"
-	"errors"
 	"math"
 
 	"github.com/7mind/wanbond/internal/frame"
@@ -47,11 +46,11 @@ func appendHeader(h packetHeader) []byte {
 
 func parseHeader(b []byte) (packetHeader, error) {
 	if len(b) < headerBytes || b[0] != Version {
-		return packetHeader{}, errors.New("bond: invalid version or truncated header")
+		return packetHeader{}, reject(RejectMalformed, "bond: invalid version or truncated header")
 	}
 	h := packetHeader{Epoch{binary.BigEndian.Uint64(b[1:9]), binary.BigEndian.Uint64(b[9:17])}, PathID(binary.BigEndian.Uint16(b[17:19]))}
 	if h.epoch.Boot == 0 || h.epoch.Generation == 0 {
-		return packetHeader{}, errors.New("bond: zero epoch")
+		return packetHeader{}, reject(RejectMalformed, "bond: zero epoch")
 	}
 	return h, nil
 }
@@ -98,12 +97,12 @@ func ackFrame(epoch Epoch, lane PathID, revision uint64, a acknowledgement) fram
 
 func parseACK(b []byte) (acknowledgement, error) {
 	if len(b) != headerBytes+ackBytes {
-		return acknowledgement{}, errors.New("bond: invalid ACK size")
+		return acknowledgement{}, reject(RejectMalformed, "bond: invalid ACK size")
 	}
 	b = b[headerBytes:]
 	a := acknowledgement{observed: Epoch{binary.BigEndian.Uint64(b), binary.BigEndian.Uint64(b[8:])}, high: binary.BigEndian.Uint64(b[16:]), mask: binary.BigEndian.Uint64(b[24:]), bytes: binary.BigEndian.Uint64(b[32:]), elapsed: binary.BigEndian.Uint64(b[40:]), delay: binary.BigEndian.Uint64(b[48:]), receivedHigh: binary.BigEndian.Uint64(b[56:])}
 	if a.elapsed > math.MaxInt64 || a.delay > math.MaxInt64 {
-		return acknowledgement{}, errors.New("bond: ACK duration exceeds monotonic clock range")
+		return acknowledgement{}, reject(RejectMalformed, "bond: ACK duration exceeds monotonic clock range")
 	}
 	for i := range a.receivedMask {
 		a.receivedMask[i] = binary.BigEndian.Uint64(b[64+i*8:])

@@ -37,7 +37,7 @@ func testAdaptiveReorderedStart(t *testing.T, delay time.Duration) {
 		if err := sender.Enqueue(bytes.Repeat([]byte{i}, 1000), bond.PacketMetadata{}, at); err != nil {
 			t.Fatal(err)
 		}
-		frames = append(frames, sender.Poll(at)[0].Frame)
+		frames = append(frames, poll(sender, at)[0].Frame)
 	}
 	m.SetPeerRemote(source)
 	a.learn(m.peers[0].paths[0], source, bond.Hello(sender.Epoch(), 0), false)
@@ -119,7 +119,7 @@ func TestAdaptiveSmallDatagramsDoNotWaitForMissingPredecessor(t *testing.T) {
 		if err := sender.Enqueue([]byte{i}, bond.PacketMetadata{}, at); err != nil {
 			t.Fatal(err)
 		}
-		frames = append(frames, sender.Poll(at)[0].Frame)
+		frames = append(frames, poll(sender, at)[0].Frame)
 	}
 	got := make(chan byte, 3)
 	go func() {

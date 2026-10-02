@@ -24,11 +24,11 @@ func TestBulkRepairLifetimeStartsWithFirstTransmission(t *testing.T) {
 			if err := a.Enqueue(payload, PacketMetadata{}, start); err != nil {
 				t.Fatal(err)
 			}
-			first := a.Poll(start.Add(90 * time.Millisecond))
+			first := poll(a, start.Add(90*time.Millisecond))
 			if len(first) != 1 || first[0].Path != 0 {
 				t.Fatal("expected one queued datagram to start on the first lane")
 			}
-			for _, tx := range a.Poll(start.Add(285 * time.Millisecond)) {
+			for _, tx := range poll(a, start.Add(285*time.Millisecond)) {
 				if tx.Frame.ControlType == DataType && bytes.Equal(tx.Frame.Payload[headerBytes+32:], payload) {
 					if size <= smallPacket {
 						t.Fatal("interactive datagram survived its enqueue-relative deadline")
@@ -36,7 +36,7 @@ func TestBulkRepairLifetimeStartsWithFirstTransmission(t *testing.T) {
 					if tx.Path != 1 {
 						t.Fatal("bulk repair did not use the healthy alternate lane")
 					}
-					for _, later := range a.Poll(start.Add(400 * time.Millisecond)) {
+					for _, later := range poll(a, start.Add(400*time.Millisecond)) {
 						if later.Frame.ControlType == DataType && bytes.Equal(later.Frame.Payload[headerBytes+32:], payload) {
 							t.Fatal("retransmission extended the original repair deadline")
 						}

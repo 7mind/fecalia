@@ -156,7 +156,7 @@ func (m mixedLoad) run() mixedLoadOutcome {
 			outcome.sender, outcome.receiver = peers[0].Snapshot(now), peers[1].Snapshot(now)
 		}
 		for side, p := range peers {
-			for _, tx := range p.Poll(now) {
+			for _, tx := range poll(p, now) {
 				lane := int(tx.Path)
 				if down(lane) {
 					continue

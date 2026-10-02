@@ -37,7 +37,7 @@ func TestCapacityDiscoveryAtCellularRTT(t *testing.T) {
 				}
 				for side, p := range peers {
 					p.Path(0, 0, 80*time.Millisecond, now)
-					for _, tx := range p.Poll(now) {
+					for _, tx := range poll(p, now) {
 						begin := now
 						if available[side].After(begin) {
 							begin = available[side]

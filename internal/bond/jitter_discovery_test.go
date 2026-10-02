@@ -46,7 +46,7 @@ func coldDiscoveryUnderRadioJitter(t *testing.T, idle time.Duration) {
 				}
 			}
 			for side, p := range peers {
-				for _, tx := range p.Poll(now) {
+				for _, tx := range poll(p, now) {
 					begin := maxTimeTest(now, available[side])
 					available[side] = begin.Add(time.Duration(float64(len(tx.Frame.Payload)+78) / wireCapacity * float64(time.Second)))
 					variation := time.Duration(random.Int64N(int64(2*jitter))) - jitter

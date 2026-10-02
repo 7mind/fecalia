@@ -93,7 +93,7 @@ func voiceThroughOutage(t *testing.T, rates []float64, delays, jitters []time.Du
 					}
 				}
 			}
-			for _, tx := range p.Poll(now) {
+			for _, tx := range poll(p, now) {
 				lane := int(tx.Path)
 				if down(lane) {
 					continue

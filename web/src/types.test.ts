@@ -231,7 +231,7 @@ describe('MonitorSnapshot wire fixtures (T218)', () => {
     const frame = `{
       "paths": [],
       "lanes": [
-        { "peer": "hub", "path": "5g", "remotePath": 0, "lane": 256, "up": true, "discovering": true,
+        { "peer": "hub", "path": "5g", "remotePath": 0, "lane": 256, "transitFloorSeconds": -0.01, "transitFloorKnown": true, "transitFloorAgeSeconds": 3, "pathDelaySeconds": 0.05, "rankSeconds": 0.07, "liveness": "live", "up": true, "discovering": true,
           "targetBps": 1000000, "sendBps": 800000, "deliveryBps": 720000, "capacityBps": 1040000,
           "rttSeconds": 0.06, "queueDelaySeconds": 0.037, "thresholdSeconds": 0.03,
           "inFlightBytes": 5000, "windowBytes": 30000, "sentBytes": 11, "ackedBytes": 10, "repairs": 12,
@@ -239,7 +239,7 @@ describe('MonitorSnapshot wire fixtures (T218)', () => {
           "capacityRemeasured": 25, "capacityDecays": 26, "pulses": 27, "pulseWins": 28, "pulseLosses": 29, "rediscoveries": 30, "stallSignals": 31 }
       ],
       "transport": [
-        { "peer": "hub", "queueDrops": 9, "admissionDrops": 1, "aqmDrops": 2, "interactiveDrops": 3, "interactiveQueued": 4, "expired": 5, "duplicates": 6, "coalescedAcks": 7 }
+        { "peer": "hub", "queueDrops": 9, "admissionDrops": 1, "aqmDrops": 2, "interactiveDrops": 3, "interactiveQueued": 4, "expired": 5, "duplicates": 6, "coalescedAcks": 7, "rejectedFrames": [] }
       ],
       "reseq": [], "session": { "established": false, "lastHandshakeSeconds": 0 }, "peerNames": [""], "multiPeer": false,
       "daemon": { "role": "edge", "version": "v0.1.0", "uptimeSeconds": 1 }, "endpoints": [], "peerSessions": [],
@@ -247,7 +247,7 @@ describe('MonitorSnapshot wire fixtures (T218)', () => {
     }`;
     const snapshot: MonitorSnapshot = JSON.parse(frame) as MonitorSnapshot;
     const expected: LaneSnapshot = {
-      peer: 'hub', path: '5g', remotePath: 0, lane: 256, up: true, discovering: true,
+      peer: 'hub', path: '5g', remotePath: 0, lane: 256, transitFloorSeconds: -0.01, transitFloorKnown: true, transitFloorAgeSeconds: 3, pathDelaySeconds: 0.05, rankSeconds: 0.07, liveness: 'live', up: true, discovering: true,
       targetBps: 1000000, sendBps: 800000, deliveryBps: 720000, capacityBps: 1040000,
       rttSeconds: 0.06, queueDelaySeconds: 0.037, thresholdSeconds: 0.03,
       inFlightBytes: 5000, windowBytes: 30000, sentBytes: 11, ackedBytes: 10, repairs: 12,
@@ -255,7 +255,7 @@ describe('MonitorSnapshot wire fixtures (T218)', () => {
       capacityRemeasured: 25, capacityDecays: 26, pulses: 27, pulseWins: 28, pulseLosses: 29, rediscoveries: 30, stallSignals: 31,
     };
     expect(snapshot.lanes).toEqual([expected]);
-    const queue: TransportSnapshot = { peer: 'hub', queueDrops: 9, admissionDrops: 1, aqmDrops: 2, interactiveDrops: 3, interactiveQueued: 4, expired: 5, duplicates: 6, coalescedAcks: 7 };
+    const queue: TransportSnapshot = { peer: 'hub', queueDrops: 9, admissionDrops: 1, aqmDrops: 2, interactiveDrops: 3, interactiveQueued: 4, expired: 5, duplicates: 6, coalescedAcks: 7, rejectedFrames: [] };
     expect(snapshot.transport).toEqual([queue]);
   });
 });

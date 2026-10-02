@@ -251,6 +251,7 @@ func renderMonitor(s monitor.MonitorSnapshot, now time.Time, interactive, color 
 				name, monitorStatus(fmt.Sprintf("%-7s", state), l.Up, color), formatRate(l.TargetBps/8), formatRate(l.SendBps/8), capacity)
 			fmt.Fprintf(&b, "    delivered %-11s queue %.0fms of %.0fms  rtt %.0fms  in flight %s of %s\n",
 				formatRate(l.DeliveryBps/8), l.QueueDelaySeconds*1000, l.ThresholdSeconds*1000, l.RTTSeconds*1000, formatBytes(uint64(l.InFlightBytes)), formatBytes(uint64(l.WindowBytes)))
+			fmt.Fprintf(&b, "    model %s  floor %.1fms (known %t, age %.1fs)  path delay %.1fms  rank %.1fms\n", l.Liveness, l.TransitFloorSeconds*1000, l.TransitFloorKnown, l.TransitFloorAgeSeconds, l.PathDelaySeconds*1000, l.RankSeconds*1000)
 			fmt.Fprintf(&b, "    signals delay %d loss %d stall %d  probes %d won %d lost %d  estimate remeasured %d decayed %d  repairs %d\n",
 				l.DelaySignals, l.LossSignals, l.StallSignals, l.Pulses, l.PulseWins, l.PulseLosses, l.CapacityRemeasured, l.CapacityDecays, l.Repairs)
 		}
@@ -260,6 +261,9 @@ func renderMonitor(s monitor.MonitorSnapshot, now time.Time, interactive, color 
 		for _, q := range s.Transport {
 			fmt.Fprintf(&b, "  %-18s dropped %d (full %d, aqm %d, small %d)  expired %d  duplicates %d\n",
 				peerName(q.Peer), q.QueueDrops, q.AdmissionDrops, q.AQMDrops, q.InteractiveDrops, q.Expired, q.Duplicates)
+			for _, rejected := range q.RejectedFrames {
+				fmt.Fprintf(&b, "    rejected %-10s %d\n", rejected.Cause, rejected.Count)
+			}
 		}
 	}
 	if len(s.Reseq) > 0 {

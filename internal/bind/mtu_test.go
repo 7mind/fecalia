@@ -72,7 +72,7 @@ func TestTransportOverheadMatchesEncoding(t *testing.T) {
 	if err := sender.Enqueue(payload, bond.PacketMetadata{}, now); err != nil {
 		t.Fatalf("enqueue: %v", err)
 	}
-	sent := sender.Poll(now)
+	sent := poll(sender, now)
 	if len(sent) != 1 {
 		t.Fatalf("transport sent %d frames for one datagram, want 1", len(sent))
 	}

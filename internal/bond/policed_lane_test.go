@@ -58,7 +58,7 @@ func policedSlowLane(t *testing.T, seconds int) (offered, dropped, target []floa
 					}
 				}
 			}
-			for _, tx := range p.Poll(now) {
+			for _, tx := range poll(p, now) {
 				lane := int(tx.Path)
 				wire := float64(len(tx.Frame.Payload) + 78)
 				transit := 20 * time.Millisecond

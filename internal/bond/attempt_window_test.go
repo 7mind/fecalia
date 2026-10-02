@@ -13,14 +13,14 @@ func TestAttemptRetentionReleasesCongestionWindowBeforeLongRTO(t *testing.T) {
 	if err := transport.Enqueue(make([]byte, 1200), PacketMetadata{}, now); err != nil {
 		t.Fatal(err)
 	}
-	transport.Poll(now)
+	poll(transport, now)
 	path := transport.paths[0]
 	if path.inflight == 0 {
 		t.Fatal("reproduction requires an unacknowledged transmission")
 	}
 	// A transient router queue can push the RTO beyond the attempt-retention horizon.
 	path.rttVariation = time.Second
-	transport.Poll(now.Add(feedbackHorizon))
+	poll(transport, now.Add(feedbackHorizon))
 	if len(path.attempts) != 0 || path.inflight != 0 {
 		t.Fatalf("retired attempts still occupy the congestion window: attempts=%d in_flight=%d", len(path.attempts), path.inflight)
 	}
@@ -36,12 +36,12 @@ func TestRecentDataDelayIsNotLearnedAsIdleJitter(t *testing.T) {
 	if err := a.Enqueue(make([]byte, 1200), PacketMetadata{}, now); err != nil {
 		t.Fatal(err)
 	}
-	for _, tx := range a.Poll(now) {
+	for _, tx := range poll(a, now) {
 		if _, err := b.Receive(tx.Path, tx.Frame, now.Add(300*time.Millisecond)); err != nil {
 			t.Fatal(err)
 		}
 	}
-	for _, tx := range b.Poll(now.Add(325 * time.Millisecond)) {
+	for _, tx := range poll(b, now.Add(325*time.Millisecond)) {
 		if _, err := a.Receive(tx.Path, tx.Frame, now.Add(625*time.Millisecond)); err != nil {
 			t.Fatal(err)
 		}
@@ -62,12 +62,12 @@ func TestIdleJitterDoesNotInheritLoadedRTTHistory(t *testing.T) {
 	a.Path(0, 0, 60*time.Millisecond, now)
 	b.Path(0, 0, 60*time.Millisecond, now)
 	a.paths[0].rttVariation = 100 * time.Millisecond
-	for _, tx := range a.Poll(now.Add(200 * time.Millisecond)) {
+	for _, tx := range poll(a, now.Add(200*time.Millisecond)) {
 		if _, err := b.Receive(tx.Path, tx.Frame, now.Add(230*time.Millisecond)); err != nil {
 			t.Fatal(err)
 		}
 	}
-	for _, tx := range b.Poll(now.Add(255 * time.Millisecond)) {
+	for _, tx := range poll(b, now.Add(255*time.Millisecond)) {
 		if _, err := a.Receive(tx.Path, tx.Frame, now.Add(285*time.Millisecond)); err != nil {
 			t.Fatal(err)
 		}

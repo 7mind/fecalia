@@ -146,6 +146,7 @@ func TestMonitorRendersLanesAndTransportQueue(t *testing.T) {
 		Daemon: monitor.DaemonSnapshot{Role: "edge", Version: "test"},
 		Lanes: []monitor.LaneSnapshot{
 			{Peer: "hub", Path: "5g", RemotePath: 0, Lane: 256, Up: true, TargetBps: 1000000, SendBps: 800000, DeliveryBps: 720000, CapacityBps: 1040000,
+				TransitFloorSeconds: -0.01, TransitFloorKnown: true, TransitFloorAgeSeconds: 3, PathDelaySeconds: 0.05, RankSeconds: 0.07, Liveness: "live",
 				RTTSeconds: 0.06, QueueDelaySeconds: 0.037, ThresholdSeconds: 0.03, InFlightBytes: 5000, WindowBytes: 30000, Repairs: 12,
 				DelaySignals: 21, LossSignals: 22, StallSignals: 31, Pulses: 27, PulseWins: 28, PulseLosses: 29, CapacityRemeasured: 25, CapacityDecays: 26},
 			{Path: "starlink", RemotePath: 1, Up: true, Discovering: true, TargetBps: 1000000},
@@ -157,6 +158,7 @@ func TestMonitorRendersLanesAndTransportQueue(t *testing.T) {
 		"LANES",
 		"hub / 5g #0                 HOLD    122.1KiB/s  97.7KiB/s   127.0KiB/s",
 		"delivered 87.9KiB/s   queue 37ms of 30ms  rtt 60ms  in flight 4.9KiB of 29.3KiB",
+		"model live  floor -10.0ms (known true, age 3.0s)  path delay 50.0ms  rank 70.0ms",
 		"signals delay 21 loss 22 stall 31  probes 27 won 28 lost 29  estimate remeasured 25 decayed 26  repairs 12",
 		"starlink #1                 PROBING 122.1KiB/s  0B/s        unknown",
 		"lte #0                      DOWN",

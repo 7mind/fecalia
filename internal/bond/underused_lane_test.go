@@ -56,7 +56,7 @@ func TestUnderusedLossyLaneKeepsItsTarget(t *testing.T) {
 			if side == 0 && tick >= settled && tick%50 == 0 {
 				lowest = min(lowest, p.Snapshot(now).Paths[0].Rate)
 			}
-			for _, tx := range p.Poll(now) {
+			for _, tx := range poll(p, now) {
 				begin := maxTimeTest(now, available[side])
 				if begin.Sub(now) > 100*time.Millisecond {
 					continue

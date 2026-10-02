@@ -30,7 +30,7 @@ func TestLossFreeRadioJitterDoesNotCauseRepeatedRepairs(t *testing.T) {
 		}
 		for side, peer := range peers {
 			peer.Path(0, 0, 80*time.Millisecond, now)
-			for _, tx := range peer.Poll(now) {
+			for _, tx := range poll(peer, now) {
 				transmissions[side]++
 				delay := time.Duration(10+transmissions[side]*17%61) * time.Millisecond
 				begin := now

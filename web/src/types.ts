@@ -46,6 +46,12 @@ export interface LaneSnapshot {
   path: string;
   remotePath: number;
   lane: number;
+  transitFloorSeconds: number;
+  transitFloorKnown: boolean;
+  transitFloorAgeSeconds: number;
+  pathDelaySeconds: number;
+  rankSeconds: number;
+  liveness: string;
   up: boolean;
   discovering: boolean;
   targetBps: number;
@@ -77,7 +83,13 @@ export interface LaneSnapshot {
  * Mirrors monitor.TransportSnapshot: one peer's transport queue counters,
  * cumulative except interactiveQueued.
  */
+export interface RejectedFrameCount {
+  cause: string;
+  count: number;
+}
+
 export interface TransportSnapshot {
+  rejectedFrames: RejectedFrameCount[];
   peer: string;
   queueDrops: number;
   admissionDrops: number;

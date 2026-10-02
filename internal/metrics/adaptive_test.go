@@ -8,9 +8,41 @@ import (
 	dto "github.com/prometheus/client_model/go"
 
 	"github.com/7mind/wanbond/internal/bond"
+	"github.com/7mind/wanbond/internal/frame"
 )
 
 type fixedAdaptive []AdaptiveSnapshot
+
+func TestRejectedTransportFrameIsCounted(t *testing.T) {
+	p := bond.New(bond.Epoch{Boot: 1, Generation: 1})
+	if _, err := p.Receive(0, frame.Control{}, time.Unix(100, 0)); err == nil {
+		t.Fatal("malformed frame accepted")
+	}
+	registry := prometheus.NewRegistry()
+	if err := registry.Register(newAdaptiveCollector(fixedAdaptive{{State: p.Snapshot(time.Unix(100, 0))}})); err != nil {
+		t.Fatal(err)
+	}
+	families, err := registry.Gather()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, family := range families {
+		if family.GetName() != "wanbond_adaptive_rejected_frames_total" {
+			continue
+		}
+		for _, metric := range family.Metric {
+			for _, label := range metric.Label {
+				if label.GetName() == "cause" && label.GetValue() == "malformed" {
+					if metric.GetCounter().GetValue() != 1 {
+						t.Fatalf("malformed rejection counter = %v", metric.GetCounter().GetValue())
+					}
+					return
+				}
+			}
+		}
+	}
+	t.Fatal("transport rejection has no exported cause counter")
+}
 
 func (f fixedAdaptive) Adaptive() []AdaptiveSnapshot { return f }
 
@@ -35,6 +67,12 @@ func TestAdaptiveCollectorExportsControlDecisions(t *testing.T) {
 	}
 	got := map[string]*dto.Metric{}
 	for _, family := range families {
+		if family.GetName() == "wanbond_adaptive_rejected_frames_total" {
+			if len(family.Metric) != int(bond.RejectionCauses) {
+				t.Fatalf("rejection causes: %d", len(family.Metric))
+			}
+			continue
+		}
 		if len(family.Metric) != 1 {
 			t.Fatalf("%s has %d samples, want 1", family.GetName(), len(family.Metric))
 		}

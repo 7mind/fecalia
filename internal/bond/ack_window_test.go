@@ -32,7 +32,7 @@ func testLateReceipts(t *testing.T, missing int) {
 		if err := a.Enqueue(make([]byte, 1200), PacketMetadata{}, now); err != nil {
 			t.Fatal(err)
 		}
-		for _, tx := range a.Poll(now) {
+		for _, tx := range poll(a, now) {
 			if i+1 == missing {
 				continue
 			}
@@ -46,7 +46,7 @@ func testLateReceipts(t *testing.T, missing int) {
 			}
 			delivered += len(ds)
 		}
-		for _, tx := range b.Poll(now) {
+		for _, tx := range poll(b, now) {
 			if _, err := a.Receive(tx.Path, tx.Frame, now); err != nil {
 				t.Fatal(err)
 			}
@@ -69,7 +69,7 @@ func testLateReceipts(t *testing.T, missing int) {
 	}
 	for tick := 50; tick <= 150; tick++ {
 		now = start.Add(time.Duration(tick) * time.Millisecond)
-		for _, tx := range b.Poll(now) {
+		for _, tx := range poll(b, now) {
 			if _, err := a.Receive(tx.Path, tx.Frame, now); err != nil {
 				t.Fatal(err)
 			}
@@ -95,7 +95,7 @@ func TestCrossLaneReceiptReleasesOriginalCongestionWindow(t *testing.T) {
 	if err := a.Enqueue(make([]byte, 1200), PacketMetadata{}, now); err != nil {
 		t.Fatal(err)
 	}
-	for _, tx := range a.Poll(now) {
+	for _, tx := range poll(a, now) {
 		if tx.Path != 0 {
 			t.Fatalf("expected original data on lane 0, got %d", tx.Path)
 		}
@@ -115,7 +115,7 @@ func TestCrossLaneReceiptReleasesOriginalCongestionWindow(t *testing.T) {
 	if got := a.Snapshot(now).Paths[0].ACKed; got != 0 {
 		t.Fatalf("global delivery does not prove physical delivery on lane 0: %d bytes", got)
 	}
-	for _, tx := range b.Poll(now.Add(40 * time.Millisecond)) {
+	for _, tx := range poll(b, now.Add(40*time.Millisecond)) {
 		if _, err := a.Receive(tx.Path, tx.Frame, now.Add(70*time.Millisecond)); err != nil {
 			t.Fatal(err)
 		}
@@ -144,7 +144,7 @@ func TestReorderedACKMergesReceiptsWithoutRegressingFeedback(t *testing.T) {
 		if err := a.Enqueue(make([]byte, 1200), PacketMetadata{}, at); err != nil {
 			t.Fatal(err)
 		}
-		a.Poll(at)
+		poll(a, at)
 	}
 	full := [ackReceiptWords]uint64{^uint64(0), ^uint64(0), ^uint64(0), ^uint64(0)}
 	old := acknowledgement{observed: a.Epoch(), high: 256, mask: ^uint64(0), bytes: 256 * (1200 + wireOverhead), elapsed: uint64(30 * time.Millisecond), receivedHigh: 256, receivedMask: full}

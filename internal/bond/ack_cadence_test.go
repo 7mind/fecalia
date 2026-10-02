@@ -40,7 +40,7 @@ func TestSlowLaneAcknowledgementShareIsBounded(t *testing.T) {
 					}
 				}
 				for side, p := range peers {
-					for _, tx := range p.Poll(now) {
+					for _, tx := range poll(p, now) {
 						wire := len(tx.Frame.Payload) + 78
 						if side == 1 && tx.Frame.ControlType == bond.ACKType && tick >= 5000 {
 							acknowledgementBytes += wire

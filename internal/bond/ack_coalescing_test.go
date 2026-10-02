@@ -70,7 +70,7 @@ func checkACKSequence(t *testing.T, mutate func(byte, *bond.PacketMetadata), wan
 	seen := make(map[byte]bool)
 	for range 40 {
 		now = now.Add(time.Millisecond)
-		for _, tx := range a.Poll(now) {
+		for _, tx := range poll(a, now) {
 			got, err := b.Receive(tx.Path, tx.Frame, now)
 			if err != nil {
 				t.Fatal(err)

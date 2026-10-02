@@ -134,7 +134,9 @@ func (a *adaptivePeer) learn(ps *peerPathState, remote netip.AddrPort, payload [
 	if ps.prober != nil {
 		rtt = ps.prober.Estimate().RTT
 	}
-	a.transport.Path(id, bond.PathID(uint16(remotePath)<<8|uint16(ps.id)), rtt, time.Now())
+	if err := a.transport.Path(id, bond.PathID(uint16(remotePath)<<8|uint16(ps.id)), rtt, time.Now()); err != nil {
+		panic(err)
+	}
 	a.signal()
 }
 
@@ -226,7 +228,12 @@ func (a *adaptivePeer) flush() {
 	// the datagrams received while the flush waited.
 	now := time.Now()
 	var sends []planned
-	for _, tx := range a.transport.Poll(now) {
+	transmissions, err := a.transport.Poll(now)
+	if err != nil {
+		a.mu.Unlock()
+		panic(err)
+	}
+	for _, tx := range transmissions {
 		route, ok := a.routes[tx.Path]
 		if !ok {
 			continue

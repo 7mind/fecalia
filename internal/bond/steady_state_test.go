@@ -64,7 +64,7 @@ func steadyPath(t *testing.T, capacity float64, delay time.Duration) (float64, t
 			}
 		}
 		for side, p := range peers {
-			for _, tx := range p.Poll(now) {
+			for _, tx := range poll(p, now) {
 				begin := maxTimeTest(now, available[side])
 				if side == 0 && tick >= 3000+warmup {
 					linkQueue = append(linkQueue, begin.Sub(now))

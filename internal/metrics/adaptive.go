@@ -35,6 +35,7 @@ type adaptiveCollector struct {
 	coalescedACKs                       *prometheus.Desc
 	admissionDrops, aqmDrops            *prometheus.Desc
 	duplicates                          *prometheus.Desc
+	rejected                            *prometheus.Desc
 }
 
 func newAdaptiveCollector(source AdaptiveSource) *adaptiveCollector {
@@ -42,6 +43,22 @@ func newAdaptiveCollector(source AdaptiveSource) *adaptiveCollector {
 		return adaptiveMetric{prometheus.NewDesc("wanbond_adaptive_"+name, help, []string{"peer", "lane"}, nil), kind, value}
 	}
 	return &adaptiveCollector{source: source, paths: []adaptiveMetric{
+		makeMetric("transit_floor_seconds", "Receiver-relative transit floor for the most recently sampled wire-size bucket; not absolute propagation time.", prometheus.GaugeValue, func(p bond.PathStats) float64 { return p.TransitFloor.Seconds() }),
+		makeMetric("transit_floor_known", "Most recently sampled wire-size bucket has a transit floor.", prometheus.GaugeValue, func(p bond.PathStats) float64 {
+			if p.TransitFloorKnown {
+				return 1
+			}
+			return 0
+		}),
+		makeMetric("transit_floor_age_seconds", "Age of the evidence that set the most recently sampled transit floor.", prometheus.GaugeValue, func(p bond.PathStats) float64 { return p.TransitFloorAge.Seconds() }),
+		makeMetric("path_delay_seconds", "Stage 0 unloaded round trip used as the path-delay input; refreshed only while idle or calibrating.", prometheus.GaugeValue, func(p bond.PathStats) float64 { return p.PathDelay.Seconds() }),
+		makeMetric("rank_seconds", "Latency score used to rank lanes for real-time traffic.", prometheus.GaugeValue, func(p bond.PathStats) float64 { return p.Rank.Seconds() }),
+		makeMetric("liveness_state", "Stage 0 liveness: 0 dead, 1 live. Suspect is introduced by stage 1.", prometheus.GaugeValue, func(p bond.PathStats) float64 {
+			if p.Liveness == "live" {
+				return 1
+			}
+			return 0
+		}),
 		makeMetric("target_rate_bytes_per_second", "Sender pacing target.", prometheus.GaugeValue, func(p bond.PathStats) float64 { return p.Rate }),
 		makeMetric("send_rate_bytes_per_second", "Measured wire rate submitted by the adaptive sender.", prometheus.GaugeValue, func(p bond.PathStats) float64 { return p.SendRate }),
 		makeMetric("delivery_rate_bytes_per_second", "Authenticated receiver delivery estimate.", prometheus.GaugeValue, func(p bond.PathStats) float64 { return p.DeliveryRate }),
@@ -91,6 +108,7 @@ func newAdaptiveCollector(source AdaptiveSource) *adaptiveCollector {
 		admissionDrops:    prometheus.NewDesc("wanbond_adaptive_admission_drops_total", "Datagrams refused because the queued and outstanding datagram limit was full; included in queue_drops_total.", []string{"peer"}, nil),
 		aqmDrops:          prometheus.NewDesc("wanbond_adaptive_aqm_drops_total", "Bulk datagrams dropped by the CoDel schedule; included in queue_drops_total. The remainder of queue_drops_total exceeded a residence bound.", []string{"peer"}, nil),
 		interactiveQueued: prometheus.NewDesc("wanbond_adaptive_interactive_queued_packets", "Small datagrams waiting for their first transmission.", []string{"peer"}, nil),
+		rejected:          prometheus.NewDesc("wanbond_adaptive_rejected_frames_total", "Authenticated frames rejected by the transport, by validation cause.", []string{"peer", "cause"}, nil),
 		duplicates:        prometheus.NewDesc("wanbond_adaptive_duplicate_packets_total", "Received datagrams that had arrived before: the peer's repairs and copies of datagrams it could not confirm in time.", []string{"peer"}, nil)}
 }
 
@@ -106,10 +124,14 @@ func (c *adaptiveCollector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.admissionDrops
 	ch <- c.aqmDrops
 	ch <- c.duplicates
+	ch <- c.rejected
 }
 
 func (c *adaptiveCollector) Collect(ch chan<- prometheus.Metric) {
 	for _, peer := range c.source.Adaptive() {
+		for cause, count := range peer.State.Rejected {
+			ch <- prometheus.MustNewConstMetric(c.rejected, prometheus.CounterValue, float64(count), peer.Peer, bond.RejectionCause(cause).String())
+		}
 		for _, p := range peer.State.Paths {
 			for _, m := range c.paths {
 				ch <- prometheus.MustNewConstMetric(m.desc, m.kind, m.value(p), peer.Peer, strconv.Itoa(int(p.Path)))

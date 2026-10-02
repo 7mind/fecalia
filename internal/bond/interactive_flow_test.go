@@ -40,7 +40,7 @@ func TestSparseSmallFlowsSurviveSustainedACKBacklog(t *testing.T) {
 				}
 			}
 			p.Path(0, 0, 40*time.Millisecond, now)
-			for _, tx := range p.Poll(now) {
+			for _, tx := range poll(p, now) {
 				begin := now
 				if available[side].After(begin) {
 					begin = available[side]

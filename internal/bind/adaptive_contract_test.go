@@ -186,7 +186,7 @@ func memoryAdaptiveHarness(t *testing.T) adaptiveHarness {
 						p.Path(bond.PathID(lane), bond.PathID(lane), 30*time.Millisecond, now)
 					}
 				}
-				for _, tx := range p.Poll(now) {
+				for _, tx := range poll(p, now) {
 					if drop && tx.Path == 0 {
 						continue
 					}

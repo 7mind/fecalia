@@ -34,6 +34,12 @@ function lane(overrides: Partial<LaneSnapshot> = {}): LaneSnapshot {
     path: '5g',
     remotePath: 0,
     lane: 256,
+    transitFloorSeconds: 0,
+    transitFloorKnown: false,
+    transitFloorAgeSeconds: 0,
+    pathDelaySeconds: 0,
+    rankSeconds: 0,
+    liveness: 'live',
     up: true,
     discovering: false,
     targetBps: 1000000,
@@ -241,7 +247,7 @@ describe('mountDashboard', () => {
       lane({ path: 'lte', lane: 512, up: false }),
     ];
     snapshot.transport = [
-      { peer: '', queueDrops: 9, admissionDrops: 1, aqmDrops: 2, interactiveDrops: 3, interactiveQueued: 4, expired: 5, duplicates: 6, coalescedAcks: 7 },
+      { peer: '', queueDrops: 9, admissionDrops: 1, aqmDrops: 2, interactiveDrops: 3, interactiveQueued: 4, expired: 5, duplicates: 6, coalescedAcks: 7, rejectedFrames: [] },
     ];
     dashboard.onSnapshot(snapshot);
 

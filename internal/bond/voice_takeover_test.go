@@ -107,7 +107,7 @@ func (m standbyModel) run(t *testing.T, measureFrom int) voiceOutcome {
 			if side == 0 && m.observe != nil {
 				m.observe(tick, p, now)
 			}
-			for _, tx := range p.Poll(now) {
+			for _, tx := range poll(p, now) {
 				lane := int(tx.Path)
 				if payload := tx.Frame.Payload; side == 0 && len(payload) > voiceWireGuardBytes && len(payload) < 2*voiceWireGuardBytes {
 					transmissions[int(binary.BigEndian.Uint64(payload[len(payload)-voiceWireGuardBytes:]))]++

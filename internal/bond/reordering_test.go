@@ -34,7 +34,7 @@ func TestInOrderPathShowsNoReordering(t *testing.T) {
 					_ = p.Enqueue(make([]byte, 1300), PacketMetadata{Flow: FlowID{4, 6, 1}}, now)
 				}
 			}
-			for _, tx := range p.Poll(now) {
+			for _, tx := range poll(p, now) {
 				wire = append(wire, inFlight{now.Add(delay), 1 - side, tx.Frame})
 			}
 		}

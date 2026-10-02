@@ -9,6 +9,7 @@ import (
 	"net/netip"
 	"time"
 
+	"github.com/7mind/wanbond/internal/bond"
 	"github.com/7mind/wanbond/internal/metrics"
 	"github.com/7mind/wanbond/internal/telemetry"
 )
@@ -84,23 +85,29 @@ type LaneSnapshot struct {
 	// Path is the local path's name, RemotePath the peer's path id the lane
 	// pairs it with, and Lane the transport's lane id (as in the `lane` label
 	// of the wanbond_adaptive_* series).
-	Path              string  `json:"path"`
-	RemotePath        uint8   `json:"remotePath"`
-	Lane              uint16  `json:"lane"`
-	Up                bool    `json:"up"`
-	Discovering       bool    `json:"discovering"`
-	TargetBps         float64 `json:"targetBps"`
-	SendBps           float64 `json:"sendBps"`
-	DeliveryBps       float64 `json:"deliveryBps"`
-	CapacityBps       float64 `json:"capacityBps"`
-	RTTSeconds        float64 `json:"rttSeconds"`
-	QueueDelaySeconds float64 `json:"queueDelaySeconds"`
-	ThresholdSeconds  float64 `json:"thresholdSeconds"`
-	InFlightBytes     int     `json:"inFlightBytes"`
-	WindowBytes       int     `json:"windowBytes"`
-	SentBytes         uint64  `json:"sentBytes"`
-	AckedBytes        uint64  `json:"ackedBytes"`
-	Repairs           uint64  `json:"repairs"`
+	Path                   string  `json:"path"`
+	RemotePath             uint8   `json:"remotePath"`
+	Lane                   uint16  `json:"lane"`
+	TransitFloorSeconds    float64 `json:"transitFloorSeconds"`
+	TransitFloorKnown      bool    `json:"transitFloorKnown"`
+	TransitFloorAgeSeconds float64 `json:"transitFloorAgeSeconds"`
+	PathDelaySeconds       float64 `json:"pathDelaySeconds"`
+	RankSeconds            float64 `json:"rankSeconds"`
+	Liveness               string  `json:"liveness"`
+	Up                     bool    `json:"up"`
+	Discovering            bool    `json:"discovering"`
+	TargetBps              float64 `json:"targetBps"`
+	SendBps                float64 `json:"sendBps"`
+	DeliveryBps            float64 `json:"deliveryBps"`
+	CapacityBps            float64 `json:"capacityBps"`
+	RTTSeconds             float64 `json:"rttSeconds"`
+	QueueDelaySeconds      float64 `json:"queueDelaySeconds"`
+	ThresholdSeconds       float64 `json:"thresholdSeconds"`
+	InFlightBytes          int     `json:"inFlightBytes"`
+	WindowBytes            int     `json:"windowBytes"`
+	SentBytes              uint64  `json:"sentBytes"`
+	AckedBytes             uint64  `json:"ackedBytes"`
+	Repairs                uint64  `json:"repairs"`
 	// The control's decisions (bond.Decisions), cumulative.
 	DelaySignals       uint64 `json:"delaySignals"`
 	LossSignals        uint64 `json:"lossSignals"`
@@ -115,18 +122,24 @@ type LaneSnapshot struct {
 	Rediscoveries      uint64 `json:"rediscoveries"`
 }
 
+type RejectedFrameCount struct {
+	Cause string `json:"cause"`
+	Count uint64 `json:"count"`
+}
+
 // TransportSnapshot is the JSON encoding of one peer's transport queue
 // counters (bond.Snapshot), cumulative except InteractiveQueued.
 type TransportSnapshot struct {
-	Peer              string `json:"peer"`
-	QueueDrops        uint64 `json:"queueDrops"`
-	AdmissionDrops    uint64 `json:"admissionDrops"`
-	AQMDrops          uint64 `json:"aqmDrops"`
-	InteractiveDrops  uint64 `json:"interactiveDrops"`
-	InteractiveQueued int    `json:"interactiveQueued"`
-	Expired           uint64 `json:"expired"`
-	Duplicates        uint64 `json:"duplicates"`
-	CoalescedACKs     uint64 `json:"coalescedAcks"`
+	RejectedFrames    []RejectedFrameCount `json:"rejectedFrames"`
+	Peer              string               `json:"peer"`
+	QueueDrops        uint64               `json:"queueDrops"`
+	AdmissionDrops    uint64               `json:"admissionDrops"`
+	AQMDrops          uint64               `json:"aqmDrops"`
+	InteractiveDrops  uint64               `json:"interactiveDrops"`
+	InteractiveQueued int                  `json:"interactiveQueued"`
+	Expired           uint64               `json:"expired"`
+	Duplicates        uint64               `json:"duplicates"`
+	CoalescedACKs     uint64               `json:"coalescedAcks"`
 }
 
 // SessionSnapshot is the JSON encoding of the connection-scoped WG-session
@@ -436,9 +449,13 @@ func BuildSnapshot(src metrics.Source, info Info, revealAddressing, controlAvail
 			Duplicates:        s.Duplicates,
 			CoalescedACKs:     s.CoalescedACKs,
 		}
+		for cause, count := range s.Rejected {
+			out.Transport[i].RejectedFrames = append(out.Transport[i].RejectedFrames, RejectedFrameCount{Cause: bond.RejectionCause(cause).String(), Count: count})
+		}
 		for _, lane := range s.Paths {
 			d := lane.Decisions
 			out.Lanes = append(out.Lanes, LaneSnapshot{
+				TransitFloorSeconds: lane.TransitFloor.Seconds(), TransitFloorKnown: lane.TransitFloorKnown, TransitFloorAgeSeconds: lane.TransitFloorAge.Seconds(), PathDelaySeconds: lane.PathDelay.Seconds(), RankSeconds: lane.Rank.Seconds(), Liveness: string(lane.Liveness),
 				Peer:               transport.Peer,
 				Path:               transport.LanePaths[lane.Path],
 				RemotePath:         uint8(lane.Path),

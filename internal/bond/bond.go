@@ -109,6 +109,12 @@ type PacketMetadata struct {
 
 type PathStats struct {
 	Path                 PathID
+	TransitFloor         time.Duration
+	TransitFloorKnown    bool
+	TransitFloorAge      time.Duration
+	PathDelay            time.Duration
+	Rank                 time.Duration
+	Liveness             LaneLiveness
 	Capacity             float64 // the demonstrated capacity the target holds below; 0 while discovering
 	Rate                 float64
 	SendRate             float64
@@ -133,6 +139,13 @@ type PathStats struct {
 	Threshold time.Duration
 	Decisions Decisions
 }
+
+type LaneLiveness string
+
+const (
+	LaneLive LaneLiveness = "live"
+	LaneDead LaneLiveness = "dead"
+)
 
 // Decisions counts what the lane's control concluded, so that a rate held low
 // can be traced to its cause from outside.
@@ -165,6 +178,7 @@ type Snapshot struct {
 	CoalescedACKs         uint64
 	Expired               uint64
 	Duplicates            uint64
+	Rejected              [RejectionCauses]uint64
 }
 
 type packet struct {
@@ -197,8 +211,9 @@ type attempt struct {
 }
 
 type transitBaseline struct {
-	delay time.Duration
-	known bool
+	delay    time.Duration
+	known    bool
+	observed time.Time
 }
 
 type lane struct {
@@ -269,6 +284,7 @@ type lane struct {
 	rateSentBytes      uint64
 	rateElapsed        uint64
 	firstSent          time.Time
+	transitBucket      int
 	transitBases       [(maxDatagram+wireOverhead)/transitSizeBucket + 1]transitBaseline
 	intervalQueueDelay time.Duration
 	signalDelay        time.Duration // the queue delay the last control interval judged
@@ -334,6 +350,8 @@ type Transport struct {
 	realtimeLate     time.Time
 	realtimeSkipping bool
 	lastPoll         time.Time
+	lastTime         time.Time
+	rejected         [RejectionCauses]uint64
 	drops            uint64
 	admissionDrops   uint64
 	aqmDrops         uint64
@@ -428,7 +446,10 @@ func (t *Transport) SetRemote(epoch Epoch, adopted bool) bool {
 
 func (t *Transport) Remote() Epoch { return t.remote }
 
-func (t *Transport) Path(id, remoteID PathID, rtt time.Duration, now time.Time) {
+func (t *Transport) Path(id, remoteID PathID, rtt time.Duration, now time.Time) error {
+	if err := t.checkTime(now); err != nil {
+		return err
+	}
 	p := t.find(id)
 	if p == nil {
 		if rtt <= 0 {
@@ -440,6 +461,7 @@ func (t *Transport) Path(id, remoteID PathID, rtt time.Duration, now time.Time) 
 		t.paths = append(t.paths, p)
 	}
 	p.lease = now
+	return nil
 }
 
 func (t *Transport) Disable(id PathID) {
@@ -458,6 +480,9 @@ func (t *Transport) find(id PathID) *lane {
 }
 
 func (t *Transport) Enqueue(payload []byte, metadata PacketMetadata, now time.Time) error {
+	if err := t.checkTime(now); err != nil {
+		return err
+	}
 	if len(payload) == 0 || len(payload) > maxDatagram {
 		return errors.New("bond: invalid datagram length")
 	}
@@ -766,7 +791,10 @@ func (t *Transport) transmit(p *packet, path *lane, now time.Time) Transmission 
 	return Transmission{path.id, dataFrame(t.epoch, t.remote, path.id, path.seq, p.seq, p.order, p.payload)}
 }
 
-func (t *Transport) Poll(now time.Time) []Transmission {
+func (t *Transport) Poll(now time.Time) ([]Transmission, error) {
+	if err := t.checkTime(now); err != nil {
+		return nil, err
+	}
 	if !t.lastPoll.IsZero() {
 		budget := t.copyBudget(now)
 		t.redundancyTokens = math.Min(budget/10, t.redundancyTokens+now.Sub(t.lastPoll).Seconds()*budget)
@@ -889,7 +917,7 @@ func (t *Transport) Poll(now time.Time) []Transmission {
 	}
 	clear(t.pendingOrder[len(retained):])
 	t.pendingOrder = retained
-	return t.send(now, out)
+	return t.send(now, out), nil
 }
 
 // discovering reports whether an up lane has not yet seen congestion. Its
@@ -924,36 +952,51 @@ func (t *Transport) bulkQueueAge(now time.Time) time.Duration {
 }
 
 func (t *Transport) Receive(path PathID, f frame.Control, now time.Time) ([]Delivery, error) {
+	deliveries, err := t.receive(path, f, now)
+	if err != nil {
+		var rejection *RejectionError
+		if !errors.As(err, &rejection) {
+			panic(err)
+		}
+		t.rejected[rejection.Cause]++
+	}
+	return deliveries, err
+}
+
+func (t *Transport) receive(path PathID, f frame.Control, now time.Time) ([]Delivery, error) {
+	if err := t.checkTime(now); err != nil {
+		return nil, err
+	}
 	h, err := parseHeader(f.Payload)
 	if err != nil {
 		return nil, err
 	}
 	if h.epoch != t.remote || f.Seq == 0 {
-		return nil, errors.New("bond: stale epoch or zero sequence")
+		return nil, reject(RejectEpoch, "bond: stale epoch or zero sequence")
 	}
 	local := t.find(path)
 	if local == nil || !local.up(now) {
-		return nil, errors.New("bond: unvalidated path")
+		return nil, reject(RejectPath, "bond: unvalidated path")
 	}
 	switch f.ControlType {
 	case DataType:
 		if h.lane != local.remoteID {
-			return nil, errors.New("bond: DATA lane disagrees with authenticated probe")
+			return nil, reject(RejectLane, "bond: DATA lane disagrees with authenticated probe")
 		}
 		if len(f.Payload) < headerBytes+32 || len(f.Payload) > headerBytes+32+maxDatagram {
-			return nil, errors.New("bond: invalid DATA size")
+			return nil, reject(RejectMalformed, "bond: invalid DATA size")
 		}
 		destination := Epoch{binary.BigEndian.Uint64(f.Payload[headerBytes:]), binary.BigEndian.Uint64(f.Payload[headerBytes+8:])}
 		if destination != t.epoch {
-			return nil, errors.New("bond: DATA for stale local epoch")
+			return nil, reject(RejectEpoch, "bond: DATA for stale local epoch")
 		}
 		seq := binary.BigEndian.Uint64(f.Payload[headerBytes+16:])
 		order := binary.BigEndian.Uint64(f.Payload[headerBytes+24:])
 		if seq == 0 && (order != 0 || len(f.Payload) != headerBytes+32) {
-			return nil, errors.New("bond: malformed keepalive")
+			return nil, reject(RejectMalformed, "bond: malformed keepalive")
 		}
 		if seq != 0 && (order & ^interactiveBit == 0 || len(f.Payload) == headerBytes+32) {
-			return nil, errors.New("bond: invalid delivery sequence or empty datagram")
+			return nil, reject(RejectMalformed, "bond: invalid delivery sequence or empty datagram")
 		}
 		r := t.receivers[h.lane]
 		if r == nil {
@@ -962,7 +1005,7 @@ func (t *Transport) Receive(path PathID, f frame.Control, now time.Time) ([]Deli
 			t.receiverOrder = append(t.receiverOrder, r)
 		}
 		if r.path != path {
-			return nil, errors.New("bond: receiver lane changed without probe")
+			return nil, reject(RejectLane, "bond: receiver lane changed without probe")
 		}
 		previousHigh := r.receipts.high
 		if !r.receipts.mark(f.Seq) {
@@ -987,21 +1030,21 @@ func (t *Transport) Receive(path PathID, f frame.Control, now time.Time) ([]Deli
 		return []Delivery{{Sequence: order & ^interactiveBit, Interactive: order&interactiveBit != 0, Payload: f.Payload[headerBytes+32:]}}, nil
 	case ACKType:
 		if h.lane != path {
-			return nil, errors.New("bond: ACK arrived on wrong path")
+			return nil, reject(RejectLane, "bond: ACK arrived on wrong path")
 		}
 		a, err := parseACK(f.Payload)
 		if err != nil {
 			return nil, err
 		}
 		if a.observed != t.epoch {
-			return nil, errors.New("bond: ACK for stale local epoch")
+			return nil, reject(RejectEpoch, "bond: ACK for stale local epoch")
 		}
 		fresh := f.Seq > local.ackRevision
 		if a.high > local.seq || a.receivedHigh > t.seq ||
 			fresh && (a.bytes < local.ackedBytes || a.elapsed < local.ackedElapsed) ||
 			!fresh && (a.bytes > local.ackedBytes || a.elapsed > local.ackedElapsed) ||
 			!local.ackReceipts.mark(f.Seq) {
-			return nil, errors.New("bond: stale or impossible ACK")
+			return nil, reject(RejectACK, "bond: stale or impossible ACK")
 		}
 		if fresh {
 			local.ackRevision = f.Seq
@@ -1009,7 +1052,7 @@ func (t *Transport) Receive(path PathID, f frame.Control, now time.Time) ([]Deli
 		t.ack(local, a, now, fresh)
 		return nil, nil
 	default:
-		return nil, errors.New("bond: unknown frame type")
+		return nil, reject(RejectType, "bond: unknown frame type")
 	}
 }
 
@@ -1086,9 +1129,10 @@ func (t *Transport) ack(p *lane, a acknowledgement, now time.Time, fresh bool) {
 				}
 				// Different-sized datagrams have different serialization delays.
 				// A bucket spans less than 8 ms at the minimum supported rate.
-				baseline := &p.transitBases[sent.bytes/transitSizeBucket]
+				p.transitBucket = sent.bytes / transitSizeBucket
+				baseline := &p.transitBases[p.transitBucket]
 				if !baseline.known || transit < baseline.delay {
-					baseline.delay, baseline.known = transit, true
+					baseline.delay, baseline.known, baseline.observed = transit, true, now
 				}
 				previous := p.queueDelay
 				p.queueDelay = transit - baseline.delay
@@ -1339,9 +1383,20 @@ func maxTime(a, b time.Time) time.Time {
 }
 
 func (t *Transport) Snapshot(now time.Time) Snapshot {
-	s := Snapshot{QueueDrops: t.drops, AdmissionDrops: t.admissionDrops, AQMDrops: t.aqmDrops, InteractiveQueueDrops: t.interactiveDrops, InteractiveQueued: t.small[classRealtime].count + t.small[classSmall].count, CoalescedACKs: t.coalescedACKs, Expired: t.expired, Duplicates: t.duplicates}
+	s := Snapshot{QueueDrops: t.drops, AdmissionDrops: t.admissionDrops, AQMDrops: t.aqmDrops, InteractiveQueueDrops: t.interactiveDrops, InteractiveQueued: t.small[classRealtime].count + t.small[classSmall].count, CoalescedACKs: t.coalescedACKs, Expired: t.expired, Duplicates: t.duplicates, Rejected: t.rejected}
 	for _, p := range t.paths {
+		baseline := p.transitBases[p.transitBucket]
+		age := time.Duration(0)
+		if baseline.known {
+			age = max(0, now.Sub(baseline.observed))
+		}
+		liveness := LaneLive
+		if !p.up(now) || p.stalled {
+			liveness = LaneDead
+		}
 		s.Paths = append(s.Paths, PathStats{
+			TransitFloor: baseline.delay, TransitFloorKnown: baseline.known, TransitFloorAge: age,
+			PathDelay: p.idleRTT, Rank: p.latency(), Liveness: liveness,
 			Path: p.id, Capacity: p.control.capacity, Rate: p.rate, SendRate: p.sendRate, DeliveryRate: p.deliveryRate,
 			RTT: p.rtt, RTTVariation: p.rttVariation, IdleRTTVariation: p.idleRTTVariation,
 			IdleForwardVariation: p.idleForwardVariation,

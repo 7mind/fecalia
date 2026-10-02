@@ -64,7 +64,7 @@ func TestPeerRestartKeepsTheCapacityEstimate(t *testing.T) {
 					}
 				}
 			}
-			for _, tx := range p.Poll(now) {
+			for _, tx := range poll(p, now) {
 				lane := int(tx.Path)
 				wire := float64(len(tx.Frame.Payload) + 78)
 				if lane == 0 {

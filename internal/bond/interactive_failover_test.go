@@ -39,7 +39,7 @@ func TestInteractiveRepairPrecedesFeedbackTimeout(t *testing.T) {
 			if err := a.Enqueue(make([]byte, scenario.size), PacketMetadata{Flow: FlowID{1}}, now); err != nil {
 				t.Fatal(err)
 			}
-			first := a.Poll(now)
+			first := poll(a, now)
 			if len(first) != 1 || first[0].Path != 0 {
 				t.Fatal("expected an initially unreplicated datagram on the faster lane")
 			}
@@ -47,7 +47,7 @@ func TestInteractiveRepairPrecedesFeedbackTimeout(t *testing.T) {
 				if scenario.feedback {
 					a.paths[0].lastACK = now.Add(time.Duration(tick) * time.Millisecond)
 				}
-				for _, tx := range a.Poll(now.Add(time.Duration(tick) * time.Millisecond)) {
+				for _, tx := range poll(a, now.Add(time.Duration(tick)*time.Millisecond)) {
 					if tx.Frame.ControlType == DataType && tx.Path == 1 && len(tx.Frame.Payload) == len(first[0].Frame.Payload) {
 						if !scenario.repaired {
 							t.Fatal("early copy violated its size, budget or path precondition")

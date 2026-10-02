@@ -15,7 +15,7 @@ func TestReverseJitterDoesNotMaskForwardCongestion(t *testing.T) {
 		a.Path(0, 0, 40*time.Millisecond, now)
 		b.Path(0, 0, 40*time.Millisecond, now)
 		forward, reverse := 20*time.Millisecond, time.Duration(20+80*(tick%2))*time.Millisecond
-		packets := a.Poll(now)
+		packets := poll(a, now)
 		before := a.Snapshot(now).Paths[0].Rate
 		if tick == 12 {
 			forward += 30 * time.Millisecond
@@ -24,14 +24,14 @@ func TestReverseJitterDoesNotMaskForwardCongestion(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			a.Poll(now.Add(time.Millisecond))
+			poll(a, now.Add(time.Millisecond))
 		}
 		for _, tx := range packets {
 			if _, err := b.Receive(0, tx.Frame, now.Add(forward)); err != nil {
 				t.Fatal(err)
 			}
 		}
-		for _, tx := range b.Poll(now.Add(forward + 30*time.Millisecond)) {
+		for _, tx := range poll(b, now.Add(forward+30*time.Millisecond)) {
 			if _, err := a.Receive(0, tx.Frame, now.Add(forward+reverse+30*time.Millisecond)); err != nil {
 				t.Fatal(err)
 			}

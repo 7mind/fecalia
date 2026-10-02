@@ -51,7 +51,7 @@ func TestConstantRateDatagramsFillRadioUplink(t *testing.T) {
 			}
 		}
 		for side, p := range peers {
-			for _, tx := range p.Poll(now) {
+			for _, tx := range poll(p, now) {
 				lane := int(tx.Path)
 				begin := maxTimeTest(now, available[lane][side])
 				if begin.Sub(now) > 100*time.Millisecond || random.Float64() < losses[lane] {

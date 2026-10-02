@@ -12,7 +12,7 @@ func TestSerializationDoesNotInventForwardQueue(t *testing.T) {
 	a.SetRemote(remote, true)
 	a.Path(0, 0, 40*time.Millisecond, now)
 	// Establish the receiver clock origin with a lone empty keepalive.
-	a.Poll(now.Add(200 * time.Millisecond))
+	poll(a, now.Add(200*time.Millisecond))
 	const capacity = 50000 // A 0.4 Mbit/s path, with no other traffic or router queue.
 	const propagation = 20 * time.Millisecond
 	serialization := func(bytes int) time.Duration { return time.Duration(float64(bytes) / capacity * float64(time.Second)) }
@@ -25,7 +25,7 @@ func TestSerializationDoesNotInventForwardQueue(t *testing.T) {
 	if err := a.Enqueue(make([]byte, 1200), PacketMetadata{}, sent); err != nil {
 		t.Fatal(err)
 	}
-	packets := a.Poll(sent)
+	packets := poll(a, sent)
 	if len(packets) != 1 {
 		t.Fatalf("expected one isolated data transmission, got %d", len(packets))
 	}
@@ -41,7 +41,7 @@ func TestSerializationDoesNotInventForwardQueue(t *testing.T) {
 	if err := a.Enqueue(make([]byte, 1200), PacketMetadata{}, sent); err != nil {
 		t.Fatal(err)
 	}
-	a.Poll(sent)
+	poll(a, sent)
 	const actualQueue = 40 * time.Millisecond
 	arrival = sent.Add(propagation + serialization(1200+wireOverhead) + actualQueue)
 	ack = acknowledgement{observed: a.Epoch(), high: 3, mask: 7, bytes: 2400 + 3*wireOverhead, elapsed: uint64(arrival.Sub(keepaliveArrival)), receivedHigh: 2, receivedMask: [ackReceiptWords]uint64{3}}

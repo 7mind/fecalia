@@ -20,7 +20,7 @@ func TestLocalRestartRejectsOldDataAndRestartsSequence(t *testing.T) {
 	if err := a.Enqueue(make([]byte, 1000), bond.PacketMetadata{}, now); err != nil {
 		t.Fatal(err)
 	}
-	old := a.Poll(now)[0]
+	old := poll(a, now)[0]
 	b = bond.New(bond.Epoch{Boot: 2, Generation: 2})
 	b.SetRemote(a.Epoch(), true)
 	b.Path(0, 0, time.Millisecond, now)
@@ -33,7 +33,7 @@ func TestLocalRestartRejectsOldDataAndRestartsSequence(t *testing.T) {
 		t.Fatal(err)
 	}
 	var got []bond.Delivery
-	for _, tx := range a.Poll(now.Add(20 * time.Millisecond)) {
+	for _, tx := range poll(a, now.Add(20*time.Millisecond)) {
 		deliveries, err := b.Receive(0, tx.Frame, now.Add(20*time.Millisecond))
 		if err != nil {
 			t.Fatal(err)
@@ -56,7 +56,7 @@ func TestSlowLaneRepairSurvivesFastLaneProgress(t *testing.T) {
 	if err := a.Enqueue(make([]byte, 1200), bond.PacketMetadata{}, now); err != nil {
 		t.Fatal(err)
 	}
-	first := a.Poll(now)[0].Frame
+	first := poll(a, now)[0].Frame
 	for seq := uint64(2); seq <= 600; seq++ {
 		f := first
 		f.Seq = seq
@@ -86,7 +86,7 @@ func TestMalformedDataDoesNotConsumeAttempt(t *testing.T) {
 	if err := a.Enqueue([]byte("test"), bond.PacketMetadata{}, now); err != nil {
 		t.Fatal(err)
 	}
-	valid := a.Poll(now)[0].Frame
+	valid := poll(a, now)[0].Frame
 	malformed := valid
 	malformed.Payload = append([]byte(nil), valid.Payload...)
 	binary.BigEndian.PutUint64(malformed.Payload[35:], 0)
@@ -109,10 +109,10 @@ func TestACKRejectsOverflowingDurations(t *testing.T) {
 	if err := a.Enqueue([]byte("test"), bond.PacketMetadata{}, now); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := b.Receive(0, a.Poll(now)[0].Frame, now); err != nil {
+	if _, err := b.Receive(0, poll(a, now)[0].Frame, now); err != nil {
 		t.Fatal(err)
 	}
-	valid := b.Poll(now.Add(30 * time.Millisecond))[0].Frame
+	valid := poll(b, now.Add(30*time.Millisecond))[0].Frame
 	for _, offset := range []int{59, 67} {
 		malformed := valid
 		malformed.Payload = append([]byte(nil), valid.Payload...)
@@ -189,7 +189,7 @@ func TestBidirectionalCapacityAndOutage(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			for _, tx := range p.Poll(now) {
+			for _, tx := range poll(p, now) {
 				path := int(tx.Path)
 				if path == 0 && outage {
 					continue
@@ -255,7 +255,7 @@ func TestEpochAndReplayIsolation(t *testing.T) {
 	if err := a.Enqueue([]byte("test"), bond.PacketMetadata{}, now); err != nil {
 		t.Fatal(err)
 	}
-	tx := a.Poll(now)[0]
+	tx := poll(a, now)[0]
 	got, err := b.Receive(0, tx.Frame, now)
 	if err != nil || len(got) != 1 {
 		t.Fatalf("delivery: %v %v", got, err)
@@ -264,14 +264,14 @@ func TestEpochAndReplayIsolation(t *testing.T) {
 	if err != nil || len(got) != 0 {
 		t.Fatalf("replay delivered: %v %v", got, err)
 	}
-	ack := b.Poll(now.Add(30 * time.Millisecond))[0]
+	ack := poll(b, now.Add(30*time.Millisecond))[0]
 	restarted := bond.New(bond.Epoch{Boot: 1, Generation: 2})
 	restarted.SetRemote(b.Epoch(), true)
 	restarted.Path(0, 0, time.Millisecond, now)
 	if err := restarted.Enqueue([]byte("new"), bond.PacketMetadata{}, now); err != nil {
 		t.Fatal(err)
 	}
-	restarted.Poll(now)
+	poll(restarted, now)
 	if _, err := restarted.Receive(0, ack.Frame, now.Add(10*time.Millisecond)); err == nil {
 		t.Fatal("old ACK accepted after local reopen")
 	}
@@ -303,9 +303,9 @@ func TestLateACKStillMeasuresCongestion(t *testing.T) {
 		if err := a.Enqueue(make([]byte, 1200), bond.PacketMetadata{}, now.Add(step.send)); err != nil {
 			t.Fatal(err)
 		}
-		packet := a.Poll(now.Add(step.send))[0]
+		packet := poll(a, now.Add(step.send))[0]
 		if step.send > 0 {
-			a.Poll(now.Add(step.send + 110*time.Millisecond))
+			poll(a, now.Add(step.send+110*time.Millisecond))
 			if err := a.Enqueue(make([]byte, 1200), bond.PacketMetadata{}, now.Add(step.ack)); err != nil {
 				t.Fatal(err)
 			}
@@ -313,7 +313,7 @@ func TestLateACKStillMeasuresCongestion(t *testing.T) {
 		if _, err := b.Receive(0, packet.Frame, now.Add(step.arrival)); err != nil {
 			t.Fatal(err)
 		}
-		ack := b.Poll(now.Add(step.arrival + 30*time.Millisecond))[0]
+		ack := poll(b, now.Add(step.arrival+30*time.Millisecond))[0]
 		if _, err := a.Receive(0, ack.Frame, now.Add(step.ack)); err != nil {
 			t.Fatal(err)
 		}
@@ -341,7 +341,7 @@ func TestSmallDatagramClassSurvivesACKBurst(t *testing.T) {
 	delivered := 0
 	for tick := 0; tick < 100; tick++ {
 		at := now.Add(time.Duration(tick) * time.Millisecond)
-		for _, tx := range a.Poll(at) {
+		for _, tx := range poll(a, at) {
 			got, err := b.Receive(0, tx.Frame, at)
 			if err != nil {
 				t.Fatal(err)
@@ -353,7 +353,7 @@ func TestSmallDatagramClassSurvivesACKBurst(t *testing.T) {
 				}
 			}
 		}
-		for _, tx := range b.Poll(at) {
+		for _, tx := range poll(b, at) {
 			if _, err := a.Receive(0, tx.Frame, at); err != nil {
 				t.Fatal(err)
 			}
@@ -386,7 +386,7 @@ func TestCapacityWithShallowRouterBuffer(t *testing.T) {
 			t.Fatal(err)
 		}
 		for side, p := range peers {
-			for _, tx := range p.Poll(now) {
+			for _, tx := range poll(p, now) {
 				begin := now
 				if available[side].After(begin) {
 					begin = available[side]
@@ -447,7 +447,7 @@ func TestPropagationDelayIncreaseDoesNotBecomePermanentCongestion(t *testing.T) 
 			t.Fatal(err)
 		}
 		for side, p := range peers {
-			for _, tx := range p.Poll(now) {
+			for _, tx := range poll(p, now) {
 				begin := now
 				if available[side].After(begin) {
 					begin = available[side]
@@ -501,7 +501,7 @@ func TestDeliveryEstimateIgnoresACKArrivalCompression(t *testing.T) {
 			t.Fatal(err)
 		}
 		for side, p := range peers {
-			for _, tx := range p.Poll(now) {
+			for _, tx := range poll(p, now) {
 				begin := now
 				if available[side].After(begin) {
 					begin = available[side]
@@ -557,7 +557,7 @@ func TestSmallPacketBacklogCanDiscoverCapacity(t *testing.T) {
 			}
 		}
 		for side, p := range peers {
-			for _, tx := range p.Poll(now) {
+			for _, tx := range poll(p, now) {
 				heap.Push(queue, event{now.Add(time.Millisecond), 1 - side, 0, tx.Frame})
 			}
 		}
@@ -587,7 +587,7 @@ func TestReceivingFastBulkDoesNotStarveReverseVoice(t *testing.T) {
 	if err := b.Enqueue(make([]byte, 1200), bond.PacketMetadata{}, start); err != nil {
 		t.Fatal(err)
 	}
-	template := b.Poll(start)[0].Frame
+	template := poll(b, start)[0].Frame
 	peers := [2]*bond.Transport{a, b}
 	queue := &events{}
 	heap.Init(queue)
@@ -614,7 +614,7 @@ func TestReceivingFastBulkDoesNotStarveReverseVoice(t *testing.T) {
 			}
 		}
 		for side, p := range peers {
-			for _, tx := range p.Poll(now) {
+			for _, tx := range poll(p, now) {
 				if side == 0 && tx.Frame.ControlType == bond.DataType || side == 1 && tx.Frame.ControlType == bond.ACKType {
 					heap.Push(queue, event{now.Add(15 * time.Millisecond), 1 - side, 0, tx.Frame})
 				}

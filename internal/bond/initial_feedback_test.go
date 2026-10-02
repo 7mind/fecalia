@@ -13,10 +13,10 @@ func TestInitialFeedbackAllowsDataSerialization(t *testing.T) {
 	if err := a.Enqueue(make([]byte, 1200), PacketMetadata{}, now); err != nil {
 		t.Fatal(err)
 	}
-	a.Poll(now)
+	poll(a, now)
 	// At 0.4 Mbit/s, a 1329-byte datagram and 193-byte ACK add 30.4 ms
 	// serialization to 40 ms propagation and up to 25 ms ACK delay.
-	a.Poll(now.Add(90 * time.Millisecond))
+	poll(a, now.Add(90*time.Millisecond))
 	state := a.Snapshot(now.Add(90 * time.Millisecond)).Paths[0]
 	if !state.Up || state.Rate != initialRate || state.InFlight < 1200+wireOverhead {
 		t.Fatalf("healthy initial data was declared lost before its first ACK could return: %+v", state)
@@ -35,7 +35,7 @@ func TestPriorityWindowBorrowsOnlyOneDatagram(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if got := len(a.Poll(now)); got != 1 {
+	if got := len(poll(a, now)); got != 1 {
 		t.Fatalf("full congestion window admitted %d additional priority datagrams, want one", got)
 	}
 }
@@ -68,10 +68,10 @@ func TestStartupAllowsOneDatagramLargerThanWindow(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if got := len(a.Poll(now)); got != 1 {
+	if got := len(poll(a, now)); got != 1 {
 		t.Fatalf("startup sent %d large datagrams, want exactly one", got)
 	}
-	if got := len(a.Poll(now.Add(80 * time.Millisecond))); got != 0 {
+	if got := len(poll(a, now.Add(80*time.Millisecond))); got != 0 {
 		t.Fatalf("unacknowledged large datagram admitted %d more", got)
 	}
 }

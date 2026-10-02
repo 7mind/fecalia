@@ -649,6 +649,7 @@ func TestBuildSnapshotLanesMirrorTransport(t *testing.T) {
 				QueueDrops: 9, AdmissionDrops: 1, AQMDrops: 2, InteractiveQueueDrops: 3, InteractiveQueued: 4, Expired: 5, Duplicates: 6, CoalescedACKs: 7,
 				Paths: []bond.PathStats{{
 					Path: 256, Capacity: 130000, Rate: 125000, SendRate: 100000, DeliveryRate: 90000,
+					TransitFloor: -10 * time.Millisecond, TransitFloorKnown: true, TransitFloorAge: 3 * time.Second, PathDelay: 50 * time.Millisecond, Rank: 70 * time.Millisecond, Liveness: "live",
 					RTT: 60 * time.Millisecond, QueueDelay: 37 * time.Millisecond, Threshold: 30 * time.Millisecond,
 					InFlight: 5000, Window: 30000, Sent: 11, ACKed: 10, Retransmits: 12, Up: true, Discovering: true,
 					Decisions: bond.Decisions{DelaySignals: 21, LossSignals: 22, DiscoveryCongested: 23, DiscoveryPlateau: 24,
@@ -669,6 +670,7 @@ func TestBuildSnapshotLanesMirrorTransport(t *testing.T) {
 		t.Fatal(err)
 	}
 	wantLane := map[string]any{
+		"transitFloorSeconds": -0.01, "transitFloorKnown": true, "transitFloorAgeSeconds": float64(3), "pathDelaySeconds": 0.05, "rankSeconds": 0.07, "liveness": "live",
 		"peer": "hub", "path": "5g", "remotePath": float64(0), "lane": float64(256), "up": true, "discovering": true,
 		"targetBps": float64(1000000), "sendBps": float64(800000), "deliveryBps": float64(720000), "capacityBps": float64(1040000),
 		"rttSeconds": 0.06, "queueDelaySeconds": 0.037, "thresholdSeconds": 0.03,
@@ -683,6 +685,15 @@ func TestBuildSnapshotLanesMirrorTransport(t *testing.T) {
 	wantTransport := map[string]any{
 		"peer": "hub", "queueDrops": float64(9), "admissionDrops": float64(1), "aqmDrops": float64(2), "interactiveDrops": float64(3),
 		"interactiveQueued": float64(4), "expired": float64(5), "duplicates": float64(6), "coalescedAcks": float64(7),
+	}
+	wantTransport["rejectedFrames"] = []any{
+		map[string]any{"cause": "malformed", "count": float64(0)},
+		map[string]any{"cause": "epoch", "count": float64(0)},
+		map[string]any{"cause": "path", "count": float64(0)},
+		map[string]any{"cause": "lane", "count": float64(0)},
+		map[string]any{"cause": "ack", "count": float64(0)},
+		map[string]any{"cause": "type", "count": float64(0)},
+		map[string]any{"cause": "time", "count": float64(0)},
 	}
 	if len(got.Transport) != 1 || !reflect.DeepEqual(got.Transport[0], wantTransport) {
 		t.Errorf("transport = %v\nwant        [%v]", got.Transport, wantTransport)
