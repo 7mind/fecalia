@@ -1460,3 +1460,30 @@ both repair and small-TCP transmission exercised. At 10 Hz its increments
 provide aggregate primary-route observations; sub-100 ms changes remain
 unresolved by that sampling. A low RTT alone does not establish that the
 primary moved, as the passing voice-only 3a model demonstrates.
+
+The outage model gates now use measured baseline idle p99, rather than the
+previous fixed 110/182 ms limits. These are deterministic measurements on
+`f75668e` with the same two echo streams, one lane enabled or both, measured
+in `[5,19)` seconds (`f75668e-model-idle-reference.txt`):
+
+| Family | Enabled lanes | Direction 0 idle p99 | Direction 1 idle p99 |
+|---|---|---:|---:|
+| radio | lane 0 | 191 ms | 77 ms |
+| radio | lane 1 | 154 ms | 154 ms |
+| radio | both | 76 ms | 90 ms |
+| gigaradio | lane 0 | 60 ms | 60 ms |
+| gigaradio | lane 1 | 134 ms | 135 ms |
+| gigaradio | both | 60 ms | 60 ms |
+
+Outage thresholds add the specified 50 ms; recovery uses the restored pair's
+idle reference. Baseline and candidate use these same fixed measurements.
+The under-1% loss check remains run-wide, rather than being imposed again on
+each outage phase. These references describe this model, not stationary
+5G/Starlink field conditions.
+
+Corrected baseline output (`f75668e-model-outages-v3.txt`) records another
+pass: radio lane 1 voice-only 1a. All four voice-only 1a variants now pass;
+all four bulk variants fail. All four 1b cases fail. The four voice-only 1c
+passes previously recorded remain; its other twelve variants fail. This
+supersedes the earlier outage matrix and corrects section 2's claimed voice
+consequence, without inventing a failure to fit the plan.

@@ -79,7 +79,7 @@ The table's frozen-rank observation is inferred from code, but its claimed
 receive-latency consequence is wrong in that case: existing real-time copies
 can deliver on the better lane before the primary. The test is retained;
 primary route changes require a separate observable check. Voice-only outage
-passes are also observed: 1a radio lane 0 and both gigaradio lanes; 1c
+passes are also observed: voice-only 1a on both lanes of both families; 1c
 radio/gigaradio lane 0 direction 1 and gigaradio lane 1 in both directions.
 The liveness mechanism alone does not establish caller-visible failure in
 those cases. The full scenario and lab gates remain to be proved.
