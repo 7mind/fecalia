@@ -13,6 +13,78 @@ import (
 
 type fixedAdaptive []AdaptiveSnapshot
 
+func TestRealtimeOriginalsExcludeCopiesAndTCPACKs(t *testing.T) {
+	start := time.Unix(100, 0)
+	p := bond.New(bond.Epoch{Boot: 1, Generation: 1})
+	p.SetRemote(bond.Epoch{Boot: 2, Generation: 1}, true)
+	for lane := range 2 {
+		if err := p.Path(bond.PathID(lane), bond.PathID(lane), time.Duration(40+40*lane)*time.Millisecond, start); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := p.Enqueue(make([]byte, 224), bond.PacketMetadata{Flow: bond.FlowID{4, 17}}, start); err != nil {
+		t.Fatal(err)
+	}
+	var repairs uint64
+	tcpSent := false
+	for tick := 0; tick < 160; tick++ {
+		now := start.Add(time.Duration(tick) * time.Millisecond)
+		if tick == 70 {
+			if err := p.Enqueue(make([]byte, 96), bond.PacketMetadata{Flow: bond.FlowID{4, 6}}, now); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if tick == 100 {
+			p.Disable(0)
+			if err := p.Enqueue(make([]byte, 224), bond.PacketMetadata{Flow: bond.FlowID{4, 17}}, now); err != nil {
+				t.Fatal(err)
+			}
+		}
+		tx, err := p.Poll(now)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, sent := range tx {
+			if sent.Frame.ControlType == bond.DataType && len(sent.Frame.Payload) == bond.Overhead-frame.ControlOverhead+96 {
+				tcpSent = true
+			}
+		}
+	}
+	state := p.Snapshot(start.Add(160 * time.Millisecond))
+	for _, lane := range state.Paths {
+		repairs += lane.Retransmits
+	}
+	if repairs == 0 {
+		t.Fatal("no copy or repair exercised the exclusion")
+	}
+	if !tcpSent {
+		t.Fatal("no small TCP datagram exercised the exclusion")
+	}
+	registry := prometheus.NewRegistry()
+	if err := registry.Register(newAdaptiveCollector(fixedAdaptive{{State: state}})); err != nil {
+		t.Fatal(err)
+	}
+	families, err := registry.Gather()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, family := range families {
+		if family.GetName() != "wanbond_adaptive_realtime_original_packets_total" {
+			continue
+		}
+		if len(family.Metric) != 2 {
+			t.Fatalf("original counter has %d lanes, want 2", len(family.Metric))
+		}
+		for _, metric := range family.Metric {
+			if value := metric.GetCounter().GetValue(); value != 1 {
+				t.Fatalf("lane original counter = %v, want 1", value)
+			}
+		}
+		return
+	}
+	t.Fatal("actual real-time primary transmissions have no exported counter")
+}
+
 func TestRejectedTransportFrameIsCounted(t *testing.T) {
 	p := bond.New(bond.Epoch{Boot: 1, Generation: 1})
 	if _, err := p.Receive(0, frame.Control{}, time.Unix(100, 0)); err == nil {
