@@ -86,7 +86,11 @@ rule. The same voice-only 15-second mobile-egress outage produced zero lost
 echoes in the field and 10/40 in the lab, with a longest lab gap of 880 ms.
 Initial lane states and physical link behavior were not matched, so the cause
 is unknown. The detailed [stage 0 record](../../test/vm/README.md#adaptive-policy-stage-0--2026-10-02-in-progress)
-also records the incomplete calibration and gates. Stages 1–3 have not begun.
+also records the incomplete calibration and gates. The operator subsequently
+reported host CPU spikes to 100% during those measurements and directed that
+the field be the behavioral reference (section 7). Stage 0 resumed with host
+and guest scheduler observations; the earlier timing verdict is inconclusive.
+Stages 1–3 have not begun.
 
 ## 3. Target: one link model per lane, continuously measured, with ages
 
@@ -325,6 +329,16 @@ delay model is also what stage 3's congestion signal reads.
    traffic. Redundant copies in the pushed excess stay a fallback, adopted
    only if stage 3 measures a need, in the conditional form of rule 4.
 3. Video calls: in scope as a stretch goal (stage 4).
+4. Field is the behavioral reference. The operator reports that the lab host
+   repeatedly reached 100% CPU during earlier measurements, although current
+   load is 9%. That is operator evidence, not a historical CPU trace. Treat
+   those lab timing verdicts as inconclusive and resume measurement with
+   host/guest wake delays, CPU/steal counters and daemon scheduler records.
+   Current load cannot establish the cause of an earlier failure. This does
+   not waive the numeric gates or the required three-run lab series. The
+   field links are 5G and Starlink and may vary widely (operator evidence):
+   retain their contemporaneous conditions and interleave baseline/candidate
+   rounds; a single field RTT or rate is not a stationary reference.
 
 Open: the video gates of row 4 (300 ms gap, 2% loss) are a proposal; and how a
 video call is told from a QUIC download.

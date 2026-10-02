@@ -1226,7 +1226,7 @@ these are progression results, not candidate passes:
 | 3c | 0 / 4 |
 | 0 | 0 / 2 |
 
-**Stopped in stage 0: lab and field disagree.** Observed with two 50 Hz
+**Initial stage 0 stop: lab and field disagree.** Observed with two 50 Hz
 160-byte echo streams and no TCP: a 15-second outage of mobile egress on
 the edge gave these results:
 
@@ -1267,3 +1267,101 @@ of the TCP shortfall was not established, so throughput references remain
 inconclusive. Three-run series, existing benchmark/UDP/continuity baselines,
 stopgap selection and stages 1–3 remain unfinished. This is a measurement
 stop, not an adaptive-policy handover.
+
+
+### Resumed measurement: host contention and field reference
+
+Operator evidence: the host repeatedly reached 100% CPU during earlier lab
+measurements; the later reported load was 9%. The operator directed that field
+measurements be the behavioral reference. No historical CPU trace was collected
+in those earlier runs, so CPU contention is a hypothesis, not an observed cause.
+Their timing verdicts are inconclusive. The numeric gates and the three-run
+series remain required.
+
+`adapt.py` now records 10 ms observer wake deadlines, summarized at 10 Hz,
+aggregate CPU counters (including steal), load average and per-thread Linux
+scheduler counters for each QEMU process and each guest daemon. It retains
+qdisc/filter statistics too. Recorder failures or insufficient duration fail
+collection. These observations can identify scheduling interference; a small
+observer delay cannot exclude a Go runtime stall or establish the cause of an
+unrecorded earlier gap. The observer test deliberately stops its own process
+for 200 ms and requires that pause to be visible; a missing observed process
+must fail, rather than produce valid evidence.
+
+Observed three fresh-daemon lab replays of the same field-profile voice-only
+interventions on verified `f75668e`:
+
+| Replay | Mobile outage lost, edge / hub | Outage maximum gap, edge / hub | Maximum guest observer wake delay |
+| --- | --- | --- | --- |
+| `20261002-201445-…-f75668e-timing-r1` | 4 / 4 of 750 each | 40 / 33 ms | 4.0 ms |
+| `20261002-202039-…-f75668e-timing-r2` | 0 / 0 | 21 / 21 ms | 2.1 ms |
+| `20261002-202327-…-f75668e-timing-r3` | 0 / 0 | 29 / 32 ms | 35.1 ms |
+
+All three completed collection. Replay 1 still recorded a brief aggregate host
+CPU sample near 100%; its maximum observer wake delay was 2.8 ms and maximum
+recorded guest-daemon thread runqueue-wait increment was 3.5 ms. Aggregate CPU
+utilization alone therefore does not identify a scheduling-induced gate failure.
+These replays cover voice-only mobile egress loss and satellite egress delay;
+they are not the full two-family section 4 series.
+
+Observed temporary field diagnostic candidate `adapt-s0-10609b9`, built from
+`10609b9`, SHA-256
+`4a5cf20aa8b3f14fd3d0489ca0808c927211aa99425790e8561c2cb36308a140`:
+
+| Round | Received, edge / hub | Whole-run maximum gap, edge / hub | Mobile RX+TX counter increase |
+| --- | --- | --- | --- |
+| After restart | 3000 / 3000 | 98.3 / 111.2 ms | 2.871 MB |
+| Warmed up | 3000 / 3000 | 126.0 / 130.3 ms | 2.367 MB |
+
+The first scheduler samples were approximately 29–34 seconds after daemon
+startup; the warm samples were 314–320 seconds after startup. This was not a
+row 0 cold-transfer measurement. Both rounds used two 50 Hz 160-byte echo
+streams, no TCP, a 15-second edge mobile-egress blackout and 15 seconds of
+100 ms added satellite-egress delay. Artifacts and exact commands are under
+`/srv/nvme/tmp/wanbond-adaptive-evidence/field-voice-{fresh,warm}-20261002-*`
+and `field_voice_timing.py`. Each impairment's removal timer was verified
+before adding its qdisc. Candidate restore timers were verified on both hosts;
+both hosts subsequently returned to the deployed store binary with empty
+runtime drop-ins, inactive restore timers, no echo listener/helper processes,
+and `noqueue` on both edge WAN VLANs. Deployment configuration was not edited.
+
+The diagnostic candidate's `control.go` digest equals that of `f75668e`;
+unchanged policy decisions are inferred from code, while the echo results and
+running executable digests were observed. Field scheduler observers had
+maximum wake delays of 1.4 ms on the edge and 4.0 ms on the concentrator.
+Nine epoch rejections were already present in the concentrator's first sample
+and did not increase during either round. The warm edge round recorded one
+path rejection; its cause beyond that validation category is not established.
+The 5.238 MB total is the mobile interface counter increase during the two
+measurement windows, including background traffic and excluding preflights
+and artifact transfer outside those windows. These continuity observations do
+not establish the latency-deadline, bulk, calibration or full acceptance gates.
+
+
+Operator evidence also identifies the field links as 5G and Starlink and warns
+that their metrics vary widely. Their nominal rates and individual idle RTT
+samples are not stationary reference values. Field comparisons must retain
+both lanes' time series before, during and after each intervention, pair
+baseline/candidate rounds closely, and describe `tc` as an added impairment
+on top of the observed native conditions. A zero-loss round establishes that
+round's continuity, rather than a general property of either link.
+
+
+Observed calibration follow-up: two isolated 60-second WAN2 downlink tests
+measured 95.420 Mbit/s with the radio jitter and 95.489 Mbit/s with jitter
+removed; both reached approximately that rate in their early measured
+intervals, after the usual three-second omission. The three-run original
+calibration procedure still failed its gate, including a 13.002 Mbit/s WAN2
+TCP downlink in the first repetition while UDP delivered 95.900 Mbit/s.
+Thus neither low present load nor a successful isolated flow establishes that
+the original calibration is valid. Artifacts are
+`calibration-diagnostic-20261002-203106` and
+`calibration-repeats-20261002-203541` in the evidence directory. The cause of
+the procedure-dependent TCP result remains under investigation.
+
+The model's passing outage cases on `f75668e` must also be retained as
+findings: voice-only 1a passes for radio lane 0 and both gigaradio lanes;
+voice-only 1c passes for radio/gigaradio lane 0 direction 1 and gigaradio lane
+1 in both directions. The plan's section 2 does not establish a voice failure
+in these cases from its liveness mechanism alone. Those observed passes do
+not establish bulk progress or the other outage variants.

@@ -194,10 +194,15 @@ baseline has live/dead liveness, with no suspect state yet. These diagnostic
 fields are observations of the old policy, not the planned continuously aged
 link model.
 
-Stage 0 stopped on an observed lab/field disagreement: a voice-only 15-second
+Stage 0 initially stopped on an observed lab/field disagreement: a voice-only 15-second
 mobile-egress outage lost no echoes in the field, but lost 10 and 40 in the lab,
 with a longest lab arrival gap of 880 ms. The initial lane states were not
-matched, and the cause is unknown. The policy remains the legacy controller;
+matched, and the cause is unknown. The operator subsequently reported host
+CPU saturation during those measurements and designated field measurements
+as the behavioral reference. Stage 0 resumed with host/guest wake-delay,
+CPU/steal and per-thread scheduler observations; the earlier lab timing
+verdict is inconclusive. CPU saturation is operator evidence, not a recorded
+cause. The policy remains the legacy controller;
 the continuously aged model and stages 1–3 are not implemented. See the
 [measurement record](../test/vm/README.md#adaptive-policy-stage-0--2026-10-02-in-progress)
 for provenance, incomplete gates and the independent calibration failure.
