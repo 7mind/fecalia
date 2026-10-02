@@ -20,6 +20,17 @@ IMAGE = "alpine-3.24.2-x86_64-cloudinit-r0.qcow2"
 IMAGE_URL = f"https://dl-cdn.alpinelinux.org/alpine/v3.24/releases/cloud/{IMAGE}"
 IMAGE_SHA512 = "c9504d23613f304e0cfb6f5fec872e29e5a5a62e2bc64796daf19c14fdddaa87dc252912fd8bdd17f7b8ebf0cd03305e4075993d54de175e6028d6b50414c67f"
 GUESTS = ("hub", "edge")
+# Redraws an interface's shaped rate every grant, in the guest.
+VARY_RATE = """import random, subprocess, sys, time
+interface, rate, swing, grant, seed = sys.argv[1], float(sys.argv[2]), float(sys.argv[3]), float(sys.argv[4]) / 1000, int(sys.argv[5])
+draw = random.Random(seed)
+deadline = time.monotonic()
+while True:
+    current = f"{rate * (1 + swing * (2 * draw.random() - 1)):.3f}mbit"
+    subprocess.run(["tc", "class", "change", "dev", interface, "parent", "1:", "classid", "1:10", "htb", "rate", current, "ceil", current, "burst", "4k"], check=True)
+    deadline += grant
+    time.sleep(max(0, deadline - time.monotonic()))
+"""
 
 
 def run(args, **kwargs):
@@ -202,33 +213,51 @@ runcmd:
             self.execute(guest, "\n".join(commands))
         self.execute("edge", "ping -c 2 -I 10.77.1.2 10.77.200.1 && ping -c 2 -I 10.77.2.2 10.77.200.1")
 
-    def impair(self, guest, lane, rate, delay, loss, jitter, correlation=0, police=False):
+    def impair(self, guest, lane, rate, delay, loss, jitter, correlation=0, police=False, buffer_ms=None, swing=0, grant_ms=0):
         """correlation is netem's delay correlation in percent: successive
         delays stay close, as on a radio link whose latency drifts rather than
         scatters, so a fast link does not reorder thousands of datagrams.
 
         police drops what exceeds the rate instead of queueing it, with a
         burst of two datagrams: overload then shows as loss and not as delay,
-        as it does on the production satellite link."""
+        as it does on the production satellite link.
+
+        buffer_ms sizes the router buffer in milliseconds of traffic at the
+        rate instead of 100 packets. swing and grant_ms make the rate vary, as
+        a cellular scheduler's grant does: every grant_ms it is redrawn
+        uniformly within rate*(1±swing), so a queue forms whenever a grant
+        falls below the sending rate."""
         if guest not in GUESTS or lane not in (1, 2) or rate <= 0 or delay < jitter or jitter < 0 or not 0 <= loss <= 100 or not 0 <= correlation < 100:
             raise ValueError("invalid guest/lane or impairment values")
+        if not 0 <= swing < 1 or (swing > 0) != (grant_ms > 0) or (buffer_ms is not None and buffer_ms <= 0) or (police and swing > 0):
+            raise ValueError("invalid buffer or rate variation")
         # netem holds propagation traffic as well as the router queue. Reserve
-        # its bandwidth-delay product before adding the 100-packet router buffer.
-        limit = 100 + math.ceil(rate * 1e6 / 8 * (delay + jitter) / 1000 / 1200)
+        # its bandwidth-delay product before adding the router buffer.
+        buffer = 100 if buffer_ms is None else math.ceil(rate * 1e6 / 8 * buffer_ms / 1000 / 1200)
+        limit = buffer + math.ceil(rate * 1e6 / 8 * (delay + jitter) / 1000 / 1200)
         interface = f"eth{lane}"
+        seed = 100 + lane + GUESTS.index(guest) * 10
         shaping = f"tc class replace dev {interface} parent 1: classid 1:10 htb rate {rate}mbit ceil {rate}mbit burst 4k"
         policing = f"tc filter del dev {interface} parent 1: prio 1 2>/dev/null || true"
         if police:
             shaping = f"tc class replace dev {interface} parent 1: classid 1:10 htb rate 1000mbit ceil 1000mbit"
             policing += f"\ntc filter add dev {interface} parent 1: prio 1 protocol all matchall action police rate {rate}mbit burst 3k conform-exceed drop/pipe flowid 1:10"
         self.execute(guest, f"""set -eu
+if test -f /root/vary-{interface}.pid; then kill $(cat /root/vary-{interface}.pid) 2>/dev/null || true; rm /root/vary-{interface}.pid; fi
 if ! tc qdisc show dev {interface} | grep -q 'qdisc htb 1:'; then
   tc qdisc add dev {interface} root handle 1: htb default 10
 fi
 {shaping}
 {policing}
-tc qdisc replace dev {interface} parent 1:10 handle 10: netem delay {delay}ms {jitter}ms{f' {correlation}%' if correlation else ''} loss {loss}% limit {limit} seed {100 + lane + GUESTS.index(guest) * 10}
+tc qdisc replace dev {interface} parent 1:10 handle 10: netem delay {delay}ms {jitter}ms{f' {correlation}%' if correlation else ''} loss {loss}% limit {limit} seed {seed}
 tc -s qdisc show dev {interface}
+""")
+        if swing:
+            self.execute(guest, f"""set -eu
+cat > /root/vary.py <<'VARY'
+{VARY_RATE}VARY
+nohup python3 /root/vary.py {interface} {rate} {swing} {grant_ms} {seed} > /root/vary-{interface}.log 2>&1 < /dev/null &
+echo $! > /root/vary-{interface}.pid
 """)
 
     def stop(self):
