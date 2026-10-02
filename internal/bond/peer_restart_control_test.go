@@ -33,6 +33,7 @@ func TestPeerRestartKeepsTheCapacityEstimate(t *testing.T) {
 	refilled := [2]time.Time{start, start}
 	var offered, dropped float64
 	var peak float64
+	var lossSignalsAtRestart uint64
 	const restartAt = 10000
 	for tick := 0; tick < restartAt+5000; tick++ {
 		now := start.Add(time.Duration(tick) * time.Millisecond)
@@ -43,6 +44,7 @@ func TestPeerRestartKeepsTheCapacityEstimate(t *testing.T) {
 			peers[0].SetRemote(peers[1].Epoch(), true)
 			queue = &events{}
 			heap.Init(queue)
+			lossSignalsAtRestart = peers[0].Snapshot(now).Paths[0].Decisions.LossSignals
 			for lane, path := range peers[0].Snapshot(now).Paths {
 				if path.Capacity == 0 {
 					t.Errorf("lane %d forgot its capacity when the peer restarted", lane)
@@ -101,5 +103,13 @@ func TestPeerRestartKeepsTheCapacityEstimate(t *testing.T) {
 	t.Logf("after the restart the slow lane's target peaked at %.2f of its capacity; %.0f%% of what was offered to the path was dropped", peak/rates[0], 100*dropped/offered)
 	if peak > 1.5*rates[0] || dropped/offered > 0.15 {
 		t.Fatalf("slow lane overdriven after a peer restart: target peaked at %.1f of capacity, %.0f%% dropped", peak/rates[0], 100*dropped/offered)
+	}
+	// The path polices throughout. A delivery round ends at a lane sequence,
+	// and the sequences begin again with the peer: left at the old one, no
+	// round ended for as long as the lane took to send that many datagrams
+	// again, and the loss of those seconds was not judged.
+	end := start.Add((restartAt + 5000) * time.Millisecond)
+	if signals := peers[0].Snapshot(end).Paths[0].Decisions.LossSignals; signals == lossSignalsAtRestart {
+		t.Errorf("no loss signal in the five seconds after the restart on a path that dropped %.0f%% of what it was offered", 100*dropped/offered)
 	}
 }

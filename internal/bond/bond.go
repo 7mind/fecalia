@@ -389,6 +389,10 @@ func (t *Transport) SetRemote(epoch Epoch, adopted bool) bool {
 		p.attempts = make(map[uint64]attempt)
 		p.inflight, p.classInflight = 0, [classes]int{}
 		p.seq = 0
+		// A delivery round ends at a lane sequence, and the sequences begin
+		// again: left at the old one, no round ended for as long as the lane
+		// took to send that many datagrams again, and loss was not judged.
+		p.roundEnd, p.roundDone, p.roundLossy = 0, false, false
 		p.lastACK, p.ackGap = time.Time{}, 0
 		p.nextSend = time.Time{}
 		p.stalled = false
