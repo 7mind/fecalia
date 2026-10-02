@@ -249,7 +249,7 @@ if ! tc qdisc show dev {interface} | grep -q 'qdisc htb 1:'; then
 fi
 {shaping}
 {policing}
-tc qdisc replace dev {interface} parent 1:10 handle 10: netem delay {delay}ms {jitter}ms{f' {correlation}%' if correlation else ''} loss {loss}% limit {limit} seed {seed}
+tc qdisc replace dev {interface} parent 1:10 handle 10: netem delay {delay}ms {jitter}ms {correlation}% loss {loss}% limit {limit} seed {seed}
 tc -s qdisc show dev {interface}
 """)
         if swing:
