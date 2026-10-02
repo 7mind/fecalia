@@ -48,6 +48,38 @@ func policyQuantile(values []time.Duration, numerator int) time.Duration {
 	return values[min(len(values)-1, len(values)*numerator/100)]
 }
 
+const policyPairIdle = 2
+
+func policyIdleLatency(family string, topology int) [2]time.Duration {
+	// Observed on f75668e with voice only, one lane or both, in [5,19)s.
+	measured := map[string][3][2]int{
+		"radio":     {{191, 77}, {154, 154}, {76, 90}},
+		"gigaradio": {{60, 60}, {134, 135}, {60, 60}},
+	}[family][topology]
+	if measured[0] == 0 || measured[1] == 0 {
+		panic("no measured idle reference for " + family)
+	}
+	return [2]time.Duration{time.Duration(measured[0]+50) * time.Millisecond, time.Duration(measured[1]+50) * time.Millisecond}
+}
+
+func checkPolicyVoiceLatency(t *testing.T, o policyOutcome, from, until int, limits [2]time.Duration) {
+	t.Helper()
+	for side, stream := range o.voice {
+		var rtts []time.Duration
+		for _, v := range stream {
+			if v.sent >= from*1000 && v.sent < until*1000 && v.arrived >= 0 {
+				rtts = append(rtts, v.rtt)
+			}
+		}
+		if len(rtts) == 0 || limits[side] <= 0 {
+			t.Fatalf("direction %d has no latency samples or valid reference", side)
+		}
+		if p99 := policyQuantile(rtts, 99); p99 > limits[side] {
+			t.Errorf("direction %d voice RTT p99 %s > idle + 50ms (%s)", side, p99, limits[side])
+		}
+	}
+}
+
 func checkPolicyVoice(t *testing.T, o policyOutcome, from, until int, latency time.Duration, strictLoss bool) {
 	t.Helper()
 	for side, stream := range o.voice {
@@ -173,7 +205,7 @@ func TestAdaptivePolicy1aBlackout(t *testing.T) {
 					m := policyRun{lanes: changed, seconds: 45, trafficAt: 2, bulk: bulk, voice: true}
 					o := m.run(t)
 					checkPolicyVoice(t, o, 2, 45, 0, false)
-					checkPolicyVoice(t, o, 21, 35, []time.Duration{110 * time.Millisecond, 182 * time.Millisecond}[1-failed], false)
+					checkPolicyVoiceLatency(t, o, 21, 35, policyIdleLatency(family, 1-failed))
 					if bulk {
 						checkPolicyProgress(t, o, 21, 35)
 						checkPolicyBulkDeadline(t, m, o, 23, .75)
@@ -195,7 +227,8 @@ func TestAdaptivePolicy1bRecovery(t *testing.T) {
 				})
 				m := policyRun{lanes: changed, seconds: 45, trafficAt: 2, bulk: true, voice: true}
 				o := m.run(t)
-				checkPolicyVoice(t, o, 35, 45, 150*time.Millisecond, false)
+				checkPolicyVoice(t, o, 2, 45, 0, false)
+				checkPolicyVoiceLatency(t, o, 35, 45, policyIdleLatency(family, policyPairIdle))
 				for side := range o.laneBulk {
 					if o.laneBulk[side][failed][35]+o.laneBulk[side][failed][36] == 0 {
 						t.Errorf("direction %d recovered lane has no bulk within 2s", side)
@@ -221,7 +254,7 @@ func TestAdaptivePolicy1cOneWayBlackout(t *testing.T) {
 						m := policyRun{lanes: changed, seconds: 45, trafficAt: 2, bulk: bulk, voice: true}
 						o := m.run(t)
 						checkPolicyVoice(t, o, 2, 45, 0, false)
-						checkPolicyVoice(t, o, 21, 35, []time.Duration{110 * time.Millisecond, 182 * time.Millisecond}[1-failed], false)
+						checkPolicyVoiceLatency(t, o, 21, 35, policyIdleLatency(family, 1-failed))
 						if bulk {
 							checkPolicyProgress(t, o, 21, 35)
 							checkPolicyBulkDeadline(t, m, o, 23, .75)
