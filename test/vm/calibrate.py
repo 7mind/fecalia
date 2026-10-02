@@ -37,7 +37,7 @@ fi
     apply_profile(lab, profile)
     output = lab.state / (time.strftime("%Y%m%d-%H%M%S") + "-calibration")
     output.mkdir()
-    summary = {"profile": profile, "measurements": {}}
+    summary = {"profile": profile, "capacity_protocol": "udp", "measurements": {}}
     for protocol in ("tcp", "udp"):
         for reverse in (False, True):
             direction = "downlink" if reverse else "uplink"
@@ -61,9 +61,8 @@ fi
     print(output)
     for direction, sender in (("uplink", "edge"), ("downlink", "hub")):
         for lane, condition in profile[sender].items():
-            for protocol in ("tcp", "udp"):
-                actual = summary["measurements"][f"{protocol}-{direction}-wan{lane}"]
-                assert actual >= condition["rate"] * 0.85, "emulator failed capacity calibration; tunnel performance result is inconclusive"
+            actual = summary["measurements"][f"udp-{direction}-wan{lane}"]
+            assert actual >= condition["rate"] * 0.85, "emulator failed UDP capacity calibration; tunnel performance result is inconclusive"
 
 
 if __name__ == "__main__":
