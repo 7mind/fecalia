@@ -479,3 +479,103 @@ Open after it:
   round script repeats such a transfer from another server.
 - Not run: the lab (host load average 28-35 all night), and the lab has no
   WAN that stalls.
+
+## Daytime on `14b4bf8` (2026-10-02, 09:45-11:10): two defects below the lane control
+
+The operator deployed `14b4bf8` at 09:45 and ran `./wbtest` three times
+(Speedtest on the mobile link alone, then through the bond):
+
+| Run | Mobile alone, down / up, Mbit/s | Bond, down / up | Loaded latency down, mobile / bond, ms |
+|---|---|---|---|
+| 1, 1m44s after the restart | 36.3 / 11.7 | 34.9 / 10.0 | 80 / 161 |
+| 2 | 67.1 / 4.8 | 33.9 / 9.9 | 325 / 89 |
+| 3 | 52.6 / 11.0 | 25.8 / 10.3 | 280 / 79 |
+
+One TCP flow in the same half hour: 47.6, 50.1, 47.2 Mbit/s on the mobile link
+alone against 21.2, 26.3, 24.1 through the bond. The night's 74% did not hold
+by day. Two defects were found under the lane control, both older than every
+branch of this plan, and both corrected on branch `reseq-scan`.
+
+**Acknowledgements rejected for their time stamp.** A download on the mobile
+link alone, traced at the interface every 50 ms, arrived at 7.2-9.5 MB/s
+without a pause of 80 ms. Through the bond the concentrator's mobile lane went
+unconfirmed for 0.2-0.4 s two to six times per download, while the edge
+received that lane's datagrams at about 5 MB/s and the concentrator went on
+receiving frames from the edge. A build with frame counters showed the
+concentrator rejecting 488 of 1838 acknowledgements. The bind's flush read the
+clock before it waited for the transport; datagrams received meanwhile were
+stamped later, the acknowledgement reported a negative time held, and the peer
+takes that for a malformed frame. The unconfirmed lane was then treated as
+silent: its datagrams timed out and its target was cut by 0.7 per interval
+(6.3 to 2.2 MB/s in 0.2 s). With the flush stamped after it takes the
+transport: none of 1802 rejected, no unconfirmed interval, no cut and no drop
+in three downloads.
+
+**The receiver scanned its window on every datagram.** With that corrected
+the bond still carried a flat 5 MB/s on the wire with one flow or four, the
+lane open, under a queue delay of 60-80 ms. With the lane's target held at
+7.5 MB/s by a diagnostic build and UDP offered at that rate, without TCP, the
+edge read 5.0-5.2 MB/s for twelve seconds and the lane measured 190 ms of
+queue, while a ping over the same link stayed at 40 ms. Neither link is the
+limit:
+
+| Measured outside the tunnel | Result |
+|---|---|
+| TCP from the exit host to the internet | 150-170 Mbit/s |
+| UDP from the exit host to a public server, 100 Mbit/s offered | 98.6 Mbit/s, none lost |
+| UDP to the edge over the mobile link from a public server, 80 Mbit/s offered | 54-64 Mbit/s received |
+| UDP between the two hosts over the mobile link on other ports, 7.5 MB/s offered | 7.0-9.2 MB/s after 3 s |
+
+The queue was in the edge's own socket: 1.6-2.1 MB stood in its receive
+buffer, and 70% of the daemon's CPU, four fifths of one core, was in
+`Resequencer.oldestBufferedObservation`, which looked through all 32768
+slots of the window each time a hold was armed. A hold is armed on every
+datagram for as long as one that came early by the satellite lane waits for
+those sent before it on the mobile lane; `hol_holds_total` was half to three
+quarters of the frames released in the morning's captures. The reader took about 3800
+datagrams a second. With the buffered sequences listed in order of arrival
+the edge reads 6.6-7.5 MB/s at the same offered rate with an empty socket
+queue, and the daemon's CPU fell from 116% of a core to 21%.
+
+With both corrections, alternating with the mobile link alone, one flow, 7 s:
+
+| | 1 (first after the restart) | 2 | 3 | 4 |
+|---|---|---|---|---|
+| Mobile alone, Mbit/s | 39.8 | 51.4 | 41.6 | 47.8 |
+| Bond, Mbit/s | 26.8 | 36.2 | 42.2 | 41.3 |
+
+The same comparison on the deployed build that morning gave 44-53%.
+
+What this withdraws from the sections above:
+
+- "The mobile link stalls 0.2-0.4 s about once a second." It does not, as far
+  as these traces show. The intervals were those in which the lane's
+  acknowledgements were rejected.
+- "Repairs were of datagrams whose acknowledgement was lost." They were
+  rejected by the receiver of the acknowledgement, not lost on the link.
+- "The link's delay rises at any rate." Part of what the lane measured as
+  queue delay was the wait in the edge's socket, and part the unconfirmed
+  intervals. How much delay the link itself adds has to be measured again.
+- The ceilings of the earlier runs (57% of the mobile link in the field facts,
+  47 Mbit/s warm in the night's rounds) were taken with both defects present.
+  They say little about the lane control.
+
+Stall recognition, the cumulative acknowledgement and the ledger's floor
+remain sound as defences, and their model tests stand. Their field
+justification, and the tuning that followed from those runs, need measuring
+again on a build with the two corrections.
+
+Not yet measured with both corrections: uploads, Speedtest, the first
+transfer after a restart, loaded latency through the tunnel, the lab.
+
+Open:
+
+- The estimate moved between 7.8 and 11.9 MB/s within one download and the
+  lane took 14-29 delay signals per download: to be re-tuned on clean data.
+- The sender's `Poll` walks every attempt of the last two seconds on each
+  call: 36% of the concentrator daemon's CPU samples at 5 MB/s (0.8 s of CPU
+  in 4 s). It grows with the square of the rate and is the next limit.
+- A frame the transport rejects is dropped without a count
+  (`bind/adaptive.go` discards the error). A counter by cause would have
+  shown the first defect on the first day.
+- These measurements used about 1.4 GB of mobile data.

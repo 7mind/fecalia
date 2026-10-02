@@ -365,7 +365,16 @@ Every per-path series carries a `path="<name>"` label matching the `[[paths]]`
 > `hol_hold_seconds_total / hol_holds_total` is the mean time gaps are held.
 > `gap_fills_total` rising with `hol_holds_total` means repairs arrive in time;
 > `skipped_seqs_total` rising means datagrams were given up and the inner
-> protocol saw the loss.
+> protocol saw the loss. With a low-latency lane beside a slower one,
+> `hol_holds_total` near half of `released_frames_total` is normal: while a
+> datagram that came early by the faster lane waits, each one that fills the
+> gap ahead of it arms a hold for the next.
+>
+> **A receiver that cannot keep up** looks like a queue in the path: the
+> sender's lane reports queue delay and its delivery stays flat, while a ping
+> over the same link is not delayed. On the receiving host,
+> `ss -uanm` shows the daemon's socket with a standing receive queue
+> (`skmem:(r…)` in the megabytes instead of zero).
 >
 > **Multi-peer labels (G4/G28).** Any node bound to 2+ peers — a concentrator
 > serving multiple edges or a multi-exit edge with warm-standby concentrators —

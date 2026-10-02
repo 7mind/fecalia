@@ -165,7 +165,14 @@ it and is the default. `bond.Transport` owns no I/O or goroutines: its
 owner supplies authenticated frames, validated paths, monotonic time and calls
 `Poll`. `bind/adaptive.go` holds one transport per peer, serializes its state
 and performs UDP I/O outside its state mutex; a per-peer goroutine polls it
-every millisecond and whenever a send or a receive wakes it.
+every millisecond and whenever a send or a receive wakes it. Every call reads
+the clock while it holds the transport, so the times the transport is given
+follow the order of its calls. A flush that read the clock before it waited for
+the transport was stamped earlier than the datagrams received meanwhile; its
+acknowledgement then reported a negative time held, and the peer rejected it as
+malformed: a quarter of the acknowledgements of a download, and a lane left
+unconfirmed for 0.2-0.4 s at a time (production, 2026-10-02;
+`TestAdaptiveAcknowledgementIsNotStampedBeforeItsDatagrams`).
 
 **Paths and epochs.** An unpadded challenge-protected PROBE carries a 22-byte
 capability record: `bond`, version 1, physical path ID, process Boot ID and Bind
@@ -604,7 +611,8 @@ acknowledgement, every datagram sent between the two arrived and is confirmed,
 whatever the bitmaps cover. The bitmaps report a receipt once; when datagrams
 arrive a hundred at a time, those that only a lost acknowledgement reported
 were never confirmed and were sent again (production, 2026-10-02: 900-1800
-repairs in a 7 s download, all duplicates;
+repairs in a 7 s download, all duplicates; the acknowledgements were not lost
+on the link but rejected for their time stamp, the defect described above;
 `TestLostAcknowledgementDoesNotCauseRepairs`).
 Repairs prefer a different healthy lane. A repair returns to the lane of the
 datagram's last transmission only once the peer has reported a later datagram
@@ -612,9 +620,12 @@ received on that lane, or when fewer than three followed it there, so that a
 loss at the end of a burst is still repaired. While a lane delivers nothing,
 everything in flight on it times out together, and what is sent again on it
 arrives as a duplicate behind the originals: in production the concentrator
-sent 1119 repairs in one 15 s download, 319-354 of them within a second at
-each stall of the mobile lane, and the edge counted 1035 duplicates while its
-resequencer skipped 4 sequences (2026-10-01; `TestSilentLaneIsNotSentRepairs`).
+sent 1119 repairs in one 15 s download, 319-354 of them within a second each
+time the mobile lane went unconfirmed, and the edge counted 1035 duplicates
+while its resequencer skipped 4 sequences (2026-10-01;
+`TestSilentLaneIsNotSentRepairs`). The lane was unconfirmed there because its
+acknowledgements were rejected, not because the link delivered nothing; the
+rule is for a lane that does.
 
 **Traffic classes (`schedule.go`).** Datagrams of at most 384 encrypted bytes
 are small. Small datagrams that are not TCP form the real-time class (voice,
@@ -1228,7 +1239,14 @@ as a straggler on a slower lane — or the hold expires. The hold bound is
 is measured from the first observation of the oldest datagram still buffered
 behind it, not from the moment the gap reached the head: several gaps that are
 already due release in one pass, and a gap exposed behind an earlier one keeps
-its remaining time instead of a fresh full hold.
+its remaining time instead of a fresh full hold. The buffered sequences are
+listed in order of arrival, so the oldest is found without looking through the
+window. A hold is armed on every datagram for as long as one that came early by
+a faster lane waits for those sent before it on a slower one, each of which
+fills the gap at the head and exposes the next; a scan of the 32768 slots each
+time held an edge on a Raspberry Pi 5 to 3800 datagrams a second, 5.1 MB/s,
+whatever the links carried (production, 2026-10-02;
+`TestGapFillsBehindAnEarlyFrameDoNotScanTheWindow`).
 
 Every gap waits for its hold, whichever lanes delivered the datagrams behind
 it.
