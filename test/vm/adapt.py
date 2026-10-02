@@ -18,6 +18,7 @@ import hashlib
 import json
 from pathlib import Path
 import statistics
+import subprocess
 import sys
 import time
 
@@ -237,6 +238,7 @@ def run(args):
             address = "10.77.0.1" if guest == "hub" else "10.77.0.2"
             lab.execute(guest, "cat > /root/voice2.py", input=VOICE)
             lab.execute(guest, "cat > /root/sampler.py", input=SAMPLER)
+            lab.put(guest, Path(__file__).with_name("observe.py"), "/root/observe.py")
             lab.execute(guest, f"{STOP_VOICE}; nohup python3 /root/voice2.py server {address} > /root/voice-server.log 2>&1 < /dev/null & echo $! > /root/voice2.pid")
         offsets = {guest: clock_offset(lab, guest) for guest in GUESTS}
         seconds = scenario["seconds"]
@@ -248,6 +250,11 @@ def run(args):
         lab.execute("hub", "killall -q iperf3 || true; iperf3 -s -1 -D -B 10.77.0.1")
         for guest in GUESTS:
             lab.execute(guest, f"nohup python3 /root/sampler.py {seconds + 6} > /root/sampler.log 2>&1 < /dev/null &")
+            lab.execute(guest, f"nohup python3 /root/observe.py --seconds {seconds + 6} --output /root/timing.jsonl --pid $(cat /root/wanbond.pid) > /root/timing.log 2>&1 < /dev/null &")
+        host_pids = [entry["pid"] for entry in json.loads(lab.manifest.read_text()).values()]
+        host_timing = subprocess.Popen([sys.executable, str(Path(__file__).with_name("observe.py")),
+            "--seconds", str(seconds + 6), "--output", str(output / "host-timing.jsonl"),
+            *[argument for pid in host_pids for argument in ("--pid", str(pid))]])
         time.sleep(1)
         manifest["start_host"] = time.time()
         start = time.monotonic()
@@ -271,7 +278,18 @@ def run(args):
         for guest in GUESTS:
             (output / f"{guest}-samples.jsonl").write_text(lab.execute(guest, "cat /root/samples.jsonl", capture_output=True).stdout)
             (output / f"{guest}-daemon.log").write_text(lab.execute(guest, "cat /root/wanbond.log", capture_output=True).stdout)
+            (output / f"{guest}-timing.jsonl").write_text(lab.execute(guest, "cat /root/timing.jsonl", capture_output=True).stdout)
+            (output / f"{guest}-timing.log").write_text(lab.execute(guest, "cat /root/timing.log", capture_output=True).stdout)
+            (output / f"{guest}-qdiscs.txt").write_text(lab.execute(guest, "tc -s -j qdisc show; tc -s -j filter show dev eth1 parent 1:", capture_output=True).stdout)
             lab.execute(guest, STOP_VOICE)
+        if host_timing.wait() != 0:
+            raise RuntimeError("host timing recorder failed")
+        for guest in ("host", *GUESTS):
+            if guest != "host" and (output / f"{guest}-timing.log").read_text():
+                raise RuntimeError(f"{guest} timing recorder failed; see its log")
+            records = [json.loads(line) for line in (output / f"{guest}-timing.jsonl").read_text().splitlines()]
+            if len(records) < 2 or records[-1]["monotonic"] - records[0]["monotonic"] < seconds:
+                raise RuntimeError(f"{guest} timing evidence does not cover the scenario duration")
         (output / "scenario.json").write_text(json.dumps(manifest, indent=2))
     print(output, flush=True)
     show(output)
