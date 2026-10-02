@@ -208,3 +208,68 @@ func TestAdaptiveInvalidSecondaryPeerDoesNotHangOpen(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// An acknowledgement says how long the receiver held the newest datagram before it
+// acknowledged. The flush read the clock and then waited for the transport; datagrams
+// that arrived meanwhile were stamped later, the time held came out negative, and the
+// far end rejects such an acknowledgement as malformed. On the production hosts on
+// 2026-10-02 that was 488 of 1838 acknowledgements during three downloads: the lane
+// carrying them went unconfirmed for 0.2-0.4 s at a time while its datagrams arrived.
+func TestAdaptiveAcknowledgementIsNotStampedBeforeItsDatagrams(t *testing.T) {
+	m, _ := newProbingMultipath(t, loopbackPaths(1), testKey(t, 0x42), newFakeClock())
+	if _, _, err := m.Open(0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = m.Close() })
+	peer, source := rawPeer(t)
+	view := m.peers[0].paths[0]
+	remote := newRemoteTransport(t, m.peers[0], 987)
+	remote.join(view, source)
+	m.SetPeerRemote(source)
+	type tally struct {
+		acknowledgements, negative int
+		undecoded                  error
+	}
+	read := make(chan tally)
+	go func() {
+		var seen tally
+		buf := make([]byte, maxDatagram)
+		for {
+			n, err := peer.Read(buf)
+			if err != nil {
+				read <- seen
+				return
+			}
+			fr, err := remote.codec.Decode(buf[:n])
+			if err != nil {
+				seen.undecoded = err
+				continue
+			}
+			if f, ok := fr.(frame.Control); ok && f.ControlType == bond.ACKType {
+				seen.acknowledgements++
+				if remote.held(f) < 0 {
+					seen.negative++
+				}
+			}
+		}
+	}()
+	// A burst arrives faster than the flush can take the transport between two datagrams.
+	payload := make([]byte, 1000)
+	for i := range 20000 {
+		if i%1000 == 0 {
+			remote.join(view, source)
+		}
+		remote.local.receive(view, source, remote.bulk(view, payload))
+	}
+	time.Sleep(50 * time.Millisecond)
+	if err := peer.SetReadDeadline(time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	seen := <-read
+	if seen.undecoded != nil {
+		t.Fatalf("undecodable frame from the bind: %v", seen.undecoded)
+	}
+	if seen.acknowledgements == 0 || seen.negative > 0 {
+		t.Fatalf("%d of %d acknowledgements report a negative time held", seen.negative, seen.acknowledgements)
+	}
+}

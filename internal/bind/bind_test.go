@@ -166,6 +166,14 @@ func (r *remoteTransport) small(view *peerPathState, payload []byte) frame.Contr
 	return r.data(view, r.sent.smallOrder|remoteInteractiveBit, payload)
 }
 
+// held is how long the local transport says it held the newest datagram before it sent
+// the acknowledgement f. The far end rejects an acknowledgement whose times are not
+// durations.
+func (r *remoteTransport) held(f frame.Control) time.Duration {
+	const header, observed, fieldsBefore = 1 + 16 + 2, 16, 4 * 8
+	return time.Duration(binary.BigEndian.Uint64(f.Payload[header+observed+fieldsBefore:]))
+}
+
 func (r *remoteTransport) wire(f frame.Control) []byte {
 	r.t.Helper()
 	raw, err := r.codec.Encode(nil, f)

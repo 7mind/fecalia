@@ -75,7 +75,7 @@ func (m *Multipath) openAdaptivePeer(peer *peerState) error {
 			case <-ticker.C:
 			case <-a.wake:
 			}
-			a.flush(time.Now())
+			a.flush()
 		}
 	}()
 	return nil
@@ -215,12 +215,16 @@ func (a *adaptivePeer) receiveBatchDelay(size int) time.Duration {
 	return min(adaptiveReceiveBatchDelay, time.Duration(float64(size)/rate*float64(time.Second)))
 }
 
-func (a *adaptivePeer) flush(now time.Time) {
+func (a *adaptivePeer) flush() {
 	type planned struct {
 		route adaptiveRoute
 		frame frame.Control
 	}
 	a.mu.Lock()
+	// The transport's calls are in the order of their times only if each reads
+	// the clock while it holds the transport: read before, this one precedes
+	// the datagrams received while the flush waited.
+	now := time.Now()
 	var sends []planned
 	for _, tx := range a.transport.Poll(now) {
 		route, ok := a.routes[tx.Path]

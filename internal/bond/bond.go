@@ -311,7 +311,8 @@ type receiver struct {
 	revision   uint64
 }
 
-// Transport has no goroutines or I/O. Its owner serializes calls.
+// Transport has no goroutines or I/O. Its owner serializes calls and gives
+// each a time no earlier than the one before.
 type Transport struct {
 	epoch     Epoch
 	remote    Epoch
