@@ -1853,3 +1853,52 @@ physical bulk receipt, including a duplicate datagram in a new attempt;
 it does not establish inner or TCP delivery. It changes no control rule or
 wire field. The full non-privileged gate passed with this diagnostic
 (`stage0-current-nonprivileged-v5.txt`); lab gate integration remains pending.
+
+The returning-lane gate now checks physical bulk receipts within two seconds,
+using the correct destination lane IDs (`0`/`256` on edge, `0`/`1` on hub).
+The evaluator reproduction initially failed to recognize a timely receipt
+(`return-lane-gate-red.txt`). Its corrected checks also reject a substitution
+of submissions for receipts, preserve uncertainty for a read spanning the
+deadline, and detect counter resets. All 24 Python checks pass
+(`return-lane-gate-green.txt`). A real one-second sampler check recorded ten
+bounded reads on each guest; maximum durations were 94/126 ms
+(`metric-read-completion-lab.txt`). This implements the observation, not a
+claim that scenario 1b passes. The original `f75668e` binary lacks the new
+counter, so this component remains inconclusive on its metrics alone.
+
+### Existing gates with contemporaneous scheduler observations
+
+Observed baseline binary SHA-256 was
+`59df1fbe9eed338b122ceab3cf4e512208631d7feaf849290b01135e78537987`
+in both guests. The six unchanged existing gate scripts produced these
+results; TCP measurements are the initial run and its observer rerun:
+
+| Gate | Family | Result | Uplink / downlink Mbit/s |
+| --- | --- | --- | --- |
+| continuity | radio | pass | — |
+| continuity | gigaradio | pass | — |
+| benchmark | radio | pass twice | 1.308 / 83.362; 1.306 / 83.729 |
+| benchmark | gigaradio | fail twice | 195.126 / 54.944; 45.558 / 33.764 |
+| UDP | radio | pass | 1.352 / 80.568 |
+| UDP | gigaradio | fail | 285.505 / 405.868 |
+
+Gigaradio TCP requires 450 Mbit/s and UDP requires 480 Mbit/s in each
+direction. The failures are those throughput assertions, not collection
+errors. Baseline failures do not establish a candidate regression or prove
+these gates impossible. No candidate comparison has run.
+
+The initial benchmark observer hook did not wrap the separately loaded
+module's own provision function. Its CPU traces are missing; the correction
+was followed by both reruns above with complete observer logs. In the
+gigaradio rerun, maximum recorder wake delays were 1.077/2.529/2.274 ms for
+host/edge/hub. Host aggregate CPU peaked at 83.898%; guest aggregate CPU
+peaked at 25.641/27.907%, and guest steal peaked at 13.953%. Scheduler
+statistics were disabled on all three, so thread wait-time deltas are not
+established. Aggregate CPU and recorder wake times do not exclude saturation
+of an individual execution thread or establish the cause of low throughput.
+
+Evidence: `f75668e-existing-gates-20261003-183828/{index,scheduler-summary}.json`,
+`f75668e-benchmark-{radio,gigaradio}-with-observer-v2` and their logs, and
+`f75668e-existing-benchmark-observer-v2-summary.json`, under the evidence
+directory above. The lane controller remains unchanged. Stage 0 and stages
+1–3 remain incomplete.
