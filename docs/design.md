@@ -202,6 +202,15 @@ diagnostic distinguishes a moving primary from delivery by an existing copy;
 submissions. Neither counter establishes socket delivery; both observe the
 transport's selected route. They do not alter scheduling or the wire format.
 
+The stage 0 scenario collector records actual voice send times and captures
+iperf's test-start events in each guest. Its gate evaluator uses TCP receiver
+bytes and actual echoed send stamps, and distinguishes missing evidence from
+a pass. Independent phase goodput and idle-latency references are required.
+The first 84 baseline collections did not record actual TCP test starts:
+iperf's JSON timestamp belongs to connection setup, so their absolute TCP
+adaptation deadlines remain inconclusive. These are measurement changes;
+the adaptive lane policy has not been replaced yet.
+
 Stage 0 initially stopped on an observed lab/field disagreement: a voice-only 15-second
 mobile-egress outage lost no echoes in the field, but lost 10 and 40 in the lab,
 with a longest lab arrival gap of 880 ms. The initial lane states were not

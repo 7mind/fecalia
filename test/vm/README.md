@@ -1478,6 +1478,53 @@ references and gate evaluation. Collection success alone is not a policy
 pass. The original binary has no primary-route counters, so latency cannot
 prove its primary moved.
 
+The initial receiver evaluator's deadline calculations are superseded.
+**Inferred from inspected upstream source:** iperf 3.20 creates its JSON
+timestamp in `iperf_on_connect`, before initializing the stream measurement
+clocks. See [the pinned source](https://github.com/esnet/iperf/blob/3.20/src/iperf_api.c).
+Millisecond precision does not make that timestamp a test-start timestamp.
+A reproduction supplied a connection timestamp one second before test start;
+the evaluator assigned the receiver interval to the wrong second
+(`iperf-time-origin-red.txt`). It now requires a separately captured start.
+The original 84 collections lack that observation, so their absolute TCP
+deadlines and phase-specific TCP gates are inconclusive. Their raw receiver
+intervals, voice reports and scheduler traces remain evidence.
+
+`tcp_capture.py` records the guest time when iperf emits its test-start event
+and reconstructs the same receiver JSON from streamed events. The collector
+retains both endpoints' reports and event times. This timestamps receipt of
+the event, not the kernel's first data packet; guest recorder scheduling
+remains an uncertainty. Voice reports now also retain actual send times,
+including packets without an echo. The shared parser contract passed with
+an in-memory event source and a real subprocess pipe. An actual iperf 3.21
+loopback test also passed: both endpoints retained two receiver intervals;
+their captured starts were approximately 1.8 ms after the connection
+timestamp (`tcp-capture-loopback.txt`). Guest iperf 3.20 validation is pending.
+
+`adapt.py check DIRECTORY --references REFERENCES.json` writes `gates.json`:
+exit 0 means pass, 1 means at least one failed check, and 2 means inconclusive.
+`run --references REFERENCES.json` evaluates after collection. The reference
+file has a `phases` object keyed by phase number, each with `payload_bps`
+(downlink, uplink), `idle_p99_ms` (edge echo, hub echo), and, for 3a,
+`idle_p50_ms`. Record the independent calibration evidence alongside it.
+TCP measurements use complete receiver intervals; no within-interval arrival
+times are invented. Qualitative unchanged/burst definitions and observations
+of restored-lane bulk and physical post-change loss remain unfinished, and
+are reported as inconclusive. A collector exit of zero without references
+continues to mean collection only.
+
+The model's under-150-ms gate also accepted exactly 150 ms. Its deterministic
+boundary reproduction failed for that reason, then passed after the strict
+comparison was corrected (`model-latency-gate-{red,green}.txt`). This corrects
+the acceptance test; it does not change transport behavior.
+
+Matched UDP calibration of the 26 distinct healthy profile states is in
+progress. The first sweep stopped on an iperf error during its second
+profile and lacked guest timing records because their required PID argument
+was omitted. That incomplete sweep is not used as a reference. The resumed
+sweep records host/guest timing and retains client errors; its completed
+states are indexed under `matched-phase-calibration-20261003-005314`.
+
 The outage model gates now use measured baseline idle p99, rather than the
 previous fixed 110/182 ms limits. These are deterministic measurements on
 `f75668e` with the same two echo streams, one lane enabled or both, measured
