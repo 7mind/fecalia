@@ -194,6 +194,26 @@ def route_gate(name, samples, begin, end, lanes, desired):
                 f"primary submissions by lane {dict(zip(lanes, deltas))}")
 
 
+def receipt_gate(name, samples, begin, end, lane):
+    if not samples or any("bounds" not in sample for sample in samples):
+        return unknown(name, "missing metric-read completion bounds")
+    measured = [(sample["bounds"], metric(sample, "wanbond_adaptive_received_bulk_packets_total", lane)) for sample in samples]
+    relevant = [(bounds, count) for bounds, count in measured if bounds.latest >= begin.earliest and bounds.earliest <= end.latest]
+    before = [(bounds, count) for bounds, count in measured if bounds.latest <= begin.earliest]
+    after = [(bounds, count) for bounds, count in measured if bounds.earliest >= end.latest]
+    covered = ([before[-1]] if before else []) + relevant + ([after[0]] if after else [])
+    if len(covered) < 2 or any(count is None for _, count in covered):
+        return unknown(name, "missing physical bulk-receipt counter coverage")
+    if any(right < left for (_, left), (_, right) in zip(covered, covered[1:])):
+        return unknown(name, "physical bulk-receipt counter reset during measurement")
+    inside = [(bounds, count) for bounds, count in covered if bounds.earliest >= begin.latest and bounds.latest <= end.earliest]
+    if len(inside) >= 2 and inside[-1][1] > inside[0][1]:
+        return gate(name, True, f"lane {lane} received {inside[-1][1] - inside[0][1]:g} physical bulk attempts certainly within the deadline")
+    if before and after and covered[-1][1] == covered[0][1]:
+        return gate(name, False, f"lane {lane} received no physical bulk attempts across the whole bounded deadline window")
+    return unknown(name, "counter intervals cannot place a physical bulk receipt inside the deadline")
+
+
 def evaluate(directory, references):
     directory = Path(directory)
     manifest = json.loads((directory / "scenario.json").read_text())
@@ -206,6 +226,9 @@ def evaluate(directory, references):
         samples[guest] = [json.loads(line) for line in (directory / f"{guest}-samples.jsonl").read_text().splitlines()]
         for sample in samples[guest]:
             sample["at"] = sample["t"] - offsets[guest] - origin
+            if "t_complete" in sample:
+                uncertainty = manifest["clock_offsets"][guest][1]
+                sample["bounds"] = TimeBounds(sample["at"] - uncertainty, sample["t_complete"] - offsets[guest] - origin + uncertainty)
     tcp, tcp_uncertainty = {}, {}
     if manifest["tcp"]:
         report = json.loads((directory / "tcp.json").read_text())
@@ -299,7 +322,12 @@ def evaluate(directory, references):
                 if row == "2a":
                     checks.append(unknown(name + "/expiry", "definition of an expired-datagram burst pending"))
                 if row == "1b":
-                    checks.append(unknown(name + "/lane-bulk", "aggregate lane bytes include small TCP, copies and repairs"))
+                    returned = {change["lane"] for change in events[phase - 1]["changes"]}
+                    if len(returned) != 1 or not returned.issubset({1, 2}):
+                        checks.append(unknown(name + "/lane-bulk", "return event does not identify one physical WAN"))
+                    else:
+                        lane = "0" if returned == {1} else "1" if guest == "hub" else "256"
+                        checks.append(receipt_gate(name + "/lane-bulk", samples[guest], start_bounds, start_bounds.shifted(2), lane))
                 if row == "2c" and phase == 2:
                     checks.append(unknown(name + "/lane-loss", "physical loss after three seconds needs phase-bounded qdisc/filter counters"))
     return checks

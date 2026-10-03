@@ -83,7 +83,8 @@ with open("/root/samples.jsonl", "w") as out:
             if line.startswith(keep):
                 name, value = line.rsplit(" ", 1)
                 series[name] = float(value)
-        out.write(json.dumps({"t": at, "if": {d: counters(d) for d in ("wanbond0", "eth1", "eth2")}, "m": series}) + "\n")
+        interfaces = {d: counters(d) for d in ("wanbond0", "eth1", "eth2")}
+        out.write(json.dumps({"t": at, "t_complete": time.time(), "if": interfaces, "m": series}) + "\n")
         time.sleep(max(0, 0.1 - (time.time() - at)))
 '''
 

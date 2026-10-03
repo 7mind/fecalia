@@ -9,6 +9,45 @@ from adaptive_gates import Interval, TimeBounds, bounded_latency, bulk_gate, eva
 
 
 class GateTests(unittest.TestCase):
+    def test_return_lane_requires_receipts_bounded_by_the_two_second_deadline(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            manifest = {"scenario": "blackout", "start_host": 0, "seconds": 16, "voice": False, "tcp": True,
+                        "clock_offsets": {guest: [0, 0] for guest in ("edge", "hub")}, "events": [
+                            {"name": "mobile back", "changes": [
+                                {"guest": guest, "lane": 2, "submitted_host": 10, "at_guest": 10} for guest in ("edge", "hub")]}]}
+            (directory / "scenario.json").write_text(json.dumps(manifest))
+            tcp = {"start": {"timestamp": {"timemillisecs": 0}}, "test_started_guest": 0,
+                   "intervals": [{"streams": [{"sender": False, "omitted": False, "start": second, "end": second + 1, "bytes": 100}]} for second in range(16)]}
+            (directory / "tcp.json").write_text(json.dumps({**tcp, "server_output_json": tcp}))
+            references = {"phases": {"1": {"payload_bps": [100, 100]}}}
+
+            def receipt_checks(points, completion=True, received=True):
+                for guest, lane in (("edge", "256"), ("hub", "1")):
+                    samples = []
+                    for started, finished, count in points:
+                        sample = {"t": started, "m": {
+                            f'wanbond_adaptive_bulk_original_packets_total{{peer="other",lane="{lane}"}}': 1000 + started,
+                            f'wanbond_adaptive_received_bulk_packets_total{{peer="other",lane="{lane}"}}': count}}
+                        if completion:
+                            sample["t_complete"] = finished
+                        if not received:
+                            sample["m"].pop(f'wanbond_adaptive_received_bulk_packets_total{{peer="other",lane="{lane}"}}')
+                        samples.append(json.dumps(sample))
+                    (directory / f"{guest}-samples.jsonl").write_text("\n".join(samples))
+                return [check.status for check in evaluate(directory, references) if check.name.endswith("/lane-bulk")]
+
+            self.assertEqual(receipt_checks([(10.1, 10.11, 100), (11.9, 11.91, 101)]), ["pass", "pass"],
+                             "physical receipt before the deadline was not recognized")
+            self.assertEqual(receipt_checks([(10.1, 10.11, 100), (11.9, 12.1, 101)]), ["inconclusive", "inconclusive"],
+                             "HTTP read spanning the deadline cannot prove a timely receipt")
+            self.assertEqual(receipt_checks([(9.8, 9.9, 100), (12.1, 12.2, 100)]), ["fail", "fail"],
+                             "submissions cannot replace missing physical bulk receipts")
+            self.assertEqual(receipt_checks([(9.8, 9.9, 100), (12.1, 12.2, 101)]), ["inconclusive", "inconclusive"])
+            self.assertEqual(receipt_checks([(10.1, 10.11, 100), (11.9, 11.91, 101)], completion=False), ["inconclusive", "inconclusive"])
+            self.assertEqual(receipt_checks([(10.1, 10.11, 100), (11.9, 11.91, 1)]), ["inconclusive", "inconclusive"])
+            self.assertEqual(receipt_checks([(10.1, 10.11, 100), (11.9, 11.91, 101)], received=False), ["inconclusive", "inconclusive"])
+
     def test_late_latency_recovery_does_not_pass_the_two_second_deadline(self):
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)
