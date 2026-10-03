@@ -1719,8 +1719,8 @@ every raw run remains available. These are lab references, not stationary
 
 Observed maximum recorder wake delays across these runs were 7.519 ms on
 the host, 15.196 ms on edge and 17.911 ms on hub. The WAN1 gigaradio outlier
-round recorded maxima of 0.925/0.500/0.204 ms; wake delay alone does not
-explain its 145.580 ms p99. Its cause remains unknown. Scheduler observations
+round recorded maxima of 0.925/0.500/0.204 ms; these recorder observations do
+not establish the cause of its 145.580 ms p99. Scheduler observations
 are retained in `scheduler-summary.json` beside the reference index.
 
 The assembled phase files now include the idle references and their raw
@@ -1730,8 +1730,22 @@ observations and definitions remain unfinished. Edge SSH still reported
 `No route to host` on the subsequent read-only recheck
 (`field-access-recheck.txt`); no field candidate or impairment ran.
 
+The assembled references are preserved with SHA-256 digests in
+`phase-references-with-idle-20261003-030336` (28 family/scenario files and an
+index). Baseline and candidate evaluations must use that same reference set.
+
+Further read-only contact checks found the concentrator reachable, its tunnel
+interface present, and its WAN probe status down (`field-hub-contact-state.txt`).
+One ping to the edge's tunnel address `10.77.0.2` received no reply; SSH via
+the concentrator to that address timed out during banner exchange
+(`field-hub-tunnel-contact.txt`, `field-tunnel-ssh-contact.txt`). These
+observations establish that neither tested SSH route worked; they do not
+establish whether the edge is powered off. No candidate or qdisc change ran.
+The physical WAN carrying management `192.168.222.15` remains unestablished;
+the earlier Linux reply-route observation is insufficient for another blackout.
+
 The current non-privileged AGENTS gate and `nix build` passed after the ACK
-model and diagnostic-counter changes (`stage0-current-nonprivileged-v2.txt`,
-`stage0-current-nix-build-v2.txt`). The policy's `control.go`, `schedule.go`
+model, diagnostic-counter and evaluator changes (`stage0-current-nonprivileged-v3.txt`,
+`stage0-current-nix-build-v3.txt`). The policy's `control.go`, `schedule.go`
 and `queue.go` remain byte-identical to `f75668e` (observed git comparison).
 Stages 1–3 and their validation remain unstarted.
