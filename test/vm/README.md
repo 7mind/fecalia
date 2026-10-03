@@ -1209,19 +1209,19 @@ display still uses interface bytes; the independent available-goodput
 reference and complete section 4 gate evaluator are unfinished. It must not
 be used to claim acceptance from a printed throughput figure.
 
-The corrected model matrix on `f75668e` has the following case counts. It
+The latest model matrix on `f75668e` has the following case counts. It
 includes first-second deadline measurements and primary voice-route checks;
 these are progression results, not candidate passes:
 
 | Row | Passing / failing cases |
 | --- | --- |
-| 1a | 3 / 5 |
+| 1a | 4 / 4; all voice-only cases pass |
 | 1b | 0 / 4 |
 | 1c | 4 / 12 |
 | 2a | 0 / 4 |
 | 2b | 0 / 2 |
 | 2c | 0 / 2 |
-| 2d | 0 / 2 |
+| 2d | 1 / 1; radio passes |
 | 3a | 2 / 2; both voice-only latency cases pass |
 | 3b | 0 / 4 |
 | 3c | 0 / 4 |
@@ -1661,4 +1661,24 @@ two reports (`model-sack-red-three.txt`); after correcting the model metadata
 it retained all three (`model-sack-green.txt`). A preliminary two-ACK fixture
 passed because coalescing requires three advancing ACKs and did not exercise
 that precondition. This changes the simulated TCP input, not wanbond policy.
-Baseline scenario results need remeasurement with the corrected model.
+The corrected `f75668e` matrix completed three repetitions of all 52 cases.
+Measurements and verdicts were identical, including all failure messages
+(`f75668e-model-sack-matrix-v5.jsonl` and its summary JSON). Radio 2d now
+passes: p99 is 136/141 ms; bulk delivers 3,717,120/233,220 B/s against
+references of 2,030,443/288,205 B/s. Gigaradio 2d still fails. The previous
+151 ms radio verdict is superseded; this passing finding is retained and
+the plan's section 2 corrected. Qualitative gate definitions and the
+remaining gate-fidelity audit are still unfinished.
+
+Independent phase references have also been assembled for all 106 phases
+of the 28 family/scenario combinations from the successful calibrations.
+`phase-goodput-references-v1` retains each calibration path, directional wire
+service and protocol budget; no candidate estimate or delivery is an input.
+A one-way-dark WAN is excluded entirely, as required by 1c. Independent
+idle-latency collection remains in progress.
+
+The current non-privileged AGENTS gate and `nix build` passed after the ACK
+model and diagnostic-counter changes (`stage0-current-nonprivileged-v2.txt`,
+`stage0-current-nix-build-v2.txt`). The policy's `control.go`, `schedule.go`
+and `queue.go` remain byte-identical to `f75668e` (observed git comparison).
+Stages 1–3 and their validation remain unstarted.

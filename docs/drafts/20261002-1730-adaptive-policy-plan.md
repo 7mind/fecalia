@@ -84,6 +84,15 @@ radio/gigaradio lane 0 direction 1 and gigaradio lane 1 in both directions.
 The liveness mechanism alone does not establish caller-visible failure in
 those cases. The full scenario and lab gates remain to be proved.
 
+**Stage 0 finding, observed 2026-10-03.** After correcting the model's ACK
+metadata to preserve SACK as the production classifier does, radio 2d passes
+on `f75668e`: voice p99 is 136/141 ms and both bulk directions exceed 70%
+of the independent reference. All 52 model cases produced identical
+measurements and verdicts in three repetitions. An inference that the old
+model necessarily fails this radio grant pattern is wrong; the pass is
+retained. Gigaradio 2d still fails. These observations do not prove the
+unfinished lab or field gates.
+
 Stage 0 subsequently stopped under the operator's lab/field disagreement
 rule. The same voice-only 15-second mobile-egress outage produced zero lost
 echoes in the field and 10/40 in the lab, with a longest lab gap of 880 ms.
