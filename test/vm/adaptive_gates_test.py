@@ -48,9 +48,14 @@ class GateTests(unittest.TestCase):
 
     def test_missing_reference_cannot_pass_bulk(self):
         intervals = [Interval(second, second + 1, 100) for second in range(10)]
-        self.assertEqual(bulk_gate("bulk", intervals, 0, 10, 3, None, .75, True)[0].status, "inconclusive")
-        self.assertTrue(all(check.status == "pass" for check in bulk_gate("bulk", intervals, 0, 10, 3, 100, .75, True)))
-        self.assertEqual(bulk_gate("bulk", intervals, 0, 10, 3, 200, .75, True)[0].status, "fail")
+        self.assertEqual(bulk_gate("bulk", intervals, 0, 10, 3, None, .75, True, 0)[0].status, "inconclusive")
+        self.assertTrue(all(check.status == "pass" for check in bulk_gate("bulk", intervals, 0, 10, 3, 100, .75, True, 0)))
+        self.assertEqual(bulk_gate("bulk", intervals, 0, 10, 3, 200, .75, True, 0)[0].status, "fail")
+
+    def test_partial_deadline_interval_cannot_create_a_false_failure(self):
+        intervals = [Interval(.5, 1.5, 100), Interval(1.5, 2.5, 100)]
+        checks = bulk_gate("bulk", intervals, 0, 3, 2, 150, .75, False, 0)
+        self.assertEqual(checks[0].status, "inconclusive")
 
     def test_route_needs_originals_on_the_correct_guest_lane_ids(self):
         samples = [{"at": at, "m": {f'wanbond_adaptive_realtime_original_packets_total{{peer="hub",lane="{lane}"}}': count

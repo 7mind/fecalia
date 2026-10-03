@@ -88,7 +88,7 @@ def receiver_intervals(data, clock_offset, origin):
     return result
 
 
-def bulk_gate(name, intervals, begin, end, deadline, reference, share, sustain):
+def bulk_gate(name, intervals, begin, end, deadline, reference, share, sustain, origin_uncertainty):
     if reference is None or not math.isfinite(reference) or reference <= 0:
         return [unknown(name, "missing successful independent phase calibration")]
     # Use complete receiver intervals, without inventing within-interval arrival times.
@@ -101,8 +101,12 @@ def bulk_gate(name, intervals, begin, end, deadline, reference, share, sustain):
         checks.append(unknown(name + "/deadline", "no complete receiver interval near deadline"))
     else:
         item = early[-1]
-        checks.append(gate(name + "/deadline", item.rate >= share * reference,
-                           f"[{item.begin:.3f},{item.end:.3f}) {item.rate:.0f} B/s; requires {share * reference:.0f}"))
+        if item.rate >= share * reference:
+            checks.append(gate(name + "/deadline", True, f"[{item.begin:.3f},{item.end:.3f}) {item.rate:.0f} B/s; requires {share * reference:.0f}"))
+        else:
+            upper = sum(part.bytes for part in intervals if part.begin < deadline + origin_uncertainty and part.end > deadline - 1)
+            checks.append(gate(name + "/deadline", False, f"final-second upper bound {upper} bytes < required {share * reference:.0f}")
+                          if upper < share * reference else unknown(name + "/deadline", "partial intervals and start-time uncertainty cannot resolve deadline"))
     if not sustain:
         return checks
     if not steady:
@@ -160,7 +164,7 @@ def evaluate(directory, references):
         samples[guest] = [json.loads(line) for line in (directory / f"{guest}-samples.jsonl").read_text().splitlines()]
         for sample in samples[guest]:
             sample["at"] = sample["t"] - offsets[guest] - origin
-    tcp = {}
+    tcp, tcp_uncertainty = {}, {}
     if manifest["tcp"]:
         report = json.loads((directory / "tcp.json").read_text())
         server = report["server_output_json"]
@@ -169,6 +173,8 @@ def evaluate(directory, references):
             server = json.loads(server_path.read_text())
         tcp["edge"] = receiver_intervals(report, offsets["edge"], origin) if "test_started_guest" in report else []
         tcp["hub"] = receiver_intervals(server, offsets["hub"], origin) if "test_started_guest" in server else []
+        for guest, data in (("edge", report), ("hub", server)):
+            tcp_uncertainty[guest] = max(0, data["test_started_guest"] - data["start"]["timestamp"]["timemillisecs"] / 1000) + 2 * manifest["clock_offsets"][guest][1] if "test_started_guest" in data else 0
     events = manifest["events"]
     bounds = [0] + [max(event["at_host"], *(at - offsets[guest] for guest, at in event["at_guest"].items())) - origin for event in events] + [manifest["seconds"]]
     case = manifest["scenario"]
@@ -229,7 +235,7 @@ def evaluate(directory, references):
                         sender = "hub" if guest == "edge" else "edge"
                         rates = [sum(lane["rate"] for lane in manifest["profile"][sender].values()) * 1e6 / 8] * 2
                     # Client receiver is downlink; server receiver is uplink.
-                    checks.extend(bulk_gate(name + "/bulk", tcp[guest], begin, end, None if deadline is None else begin + deadline, None if rates is None else rates[side], .6 if row == "0" else .7 if row == "2d" else .75, row != "0"))
+                    checks.extend(bulk_gate(name + "/bulk", tcp[guest], begin, end, None if deadline is None else begin + deadline, None if rates is None else rates[side], .6 if row == "0" else .7 if row == "2d" else .75, row != "0", tcp_uncertainty[guest]))
                 if row in ("1a", "1c"):
                     intervals = [item for item in tcp[guest] if item.begin >= begin + 1 and item.end <= end]
                     checks.append(gate(name + "/progress", all(item.bytes > 0 for item in intervals), f"{len(intervals)} complete receiver intervals") if intervals else unknown(name + "/progress", "missing time-aligned TCP receiver intervals"))
