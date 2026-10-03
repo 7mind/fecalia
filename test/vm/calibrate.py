@@ -42,15 +42,21 @@ fi
         for reverse in (False, True):
             direction = "downlink" if reverse else "uplink"
             sender = "hub" if reverse else "edge"
+            direct_downlink = protocol == "udp" and reverse
+            receiver = "edge" if direct_downlink else "hub"
             for lane in (1, 2):
-                start_iperf_server(lab, "10.77.200.1", 5210+lane)
+                address = f"10.77.{lane}.2" if direct_downlink else "10.77.200.1"
+                start_iperf_server(lab, receiver, address, 5210+lane)
             with concurrent.futures.ThreadPoolExecutor() as pool:
                 tests = {}
                 for lane in (1, 2):
                     rate = profile[sender][str(lane)]["rate"]
                     flags = f"-u -b {rate}M -l 1300" if protocol == "udp" else "-l 1K"
                     warmup = 3 if protocol == "udp" else 30
-                    tests[lane] = pool.submit(lab.execute, "edge", f"iperf3 -c 10.77.200.1 -B 10.77.{lane}.2 -p {5210+lane} -t 30 -O {warmup} -J {flags} {'-R' if reverse else ''}", capture_output=True)
+                    client = "hub" if direct_downlink else "edge"
+                    address = f"10.77.{lane}.2" if direct_downlink else "10.77.200.1"
+                    source = f"10.77.{lane}.{1 if direct_downlink else 2}"
+                    tests[lane] = pool.submit(lab.execute, client, f"iperf3 -c {address} -B {source} -p {5210+lane} -t 30 -O {warmup} -J {flags} {'-R' if reverse and not direct_downlink else ''}", capture_output=True)
                 for lane, future in tests.items():
                     data = json.loads(future.result().stdout)
                     name = f"{protocol}-{direction}-wan{lane}"

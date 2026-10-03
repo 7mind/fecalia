@@ -90,9 +90,9 @@ ip -j link show wanbond0
 
 
 
-def start_iperf_server(lab, address, port):
+def start_iperf_server(lab, guest, address, port):
     log = f"/root/iperf-{port}.log"
-    lab.execute("hub", f"""set -eu
+    lab.execute(guest, f"""set -eu
 for n in $(seq 1 50); do
   test -z "$(ss -H -ltn sport = :{port})" && break
   sleep 0.1
