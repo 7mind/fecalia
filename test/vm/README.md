@@ -1585,7 +1585,12 @@ profile, with reused ports: WAN1 measured approximately 0.4845 Mbit/s against
 0.5, and WAN2 290.21–290.36 against 300, in both directions. Each exceeds the
 unchanged 85% capacity gate. Results are under
 `calibration-direct-udp-20261003-013025`; the Python checks passed too.
-The remaining matched reference states still need collection.
+The remaining eleven states subsequently passed. The complete 26-state set
+is indexed under `matched-phase-calibration-20261003-005314` (fifteen states)
+and `matched-phase-calibration-direct-20261003-014040` (eleven). Each state
+has raw UDP receipts in both directions on both WANs and host/guest timing
+records. These successful capacity references do not establish policy gates;
+phase reference assembly and independent idle-latency measurements remain.
 
 The outage model gates now use measured baseline idle p99, rather than the
 previous fixed 110/182 ms limits. These are deterministic measurements on
@@ -1640,7 +1645,7 @@ budget helper; matched phase calibration and the complete section 4 evaluator
 are still pending. Cold and existing benchmark gates retain their specified
 wire-rate percentages; the voice amendment does not change those gates.
 
-The complete baseline collector series is running with the original
+The original baseline collector series completed with the original
 `f75668e` binary, not the diagnostic build. Its manifest and per-run logs are
 under `f75668e-lab-matrix-20261002-223350` in the evidence directory. The first
 six voice-only blackout collections completed: five lost no echoes, radio
@@ -1648,3 +1653,12 @@ run 3 lost three/two, and whole-run receive gaps stayed below 97 ms. Maximum
 guest observer wake delay was 25.68 ms. Those are observations of delivery
 and scheduling, not complete latency gate verdicts; independent idle
 references are still required.
+
+Observed model-fidelity correction: the new adaptive model marked every TCP
+ACK eligible for coalescing, including its SACK reports. The production
+classifier already excludes SACK. A three-ACK reproduction retained only
+two reports (`model-sack-red-three.txt`); after correcting the model metadata
+it retained all three (`model-sack-green.txt`). A preliminary two-ACK fixture
+passed because coalescing requires three advancing ACKs and did not exercise
+that precondition. This changes the simulated TCP input, not wanbond policy.
+Baseline scenario results need remeasurement with the corrected model.

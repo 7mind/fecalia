@@ -256,6 +256,13 @@ encapsulation costs; phase calibration and complete gate evaluation remain
 pending. One-way outages use the same fully surviving-lane reference as
 two-way outages. This reference changes no transport decision.
 
+All 26 healthy phase profiles now pass their direct UDP capacity calibration;
+complete phase-goodput and idle-latency reference assembly remains pending.
+The adaptive TCP model also excludes SACK reports from ACK coalescing, as the
+production classifier does. Its failing reproduction preserved only two of
+three reports before that model-input correction; baseline model gates are
+being remeasured. No lane policy was changed by either correction.
+
 **Paths and epochs.** An unpadded challenge-protected PROBE carries a 22-byte
 capability record: `bond`, version 1, physical path ID, process Boot ID and Bind
 Open generation. Padded PMTU probes retain their original size. A logical lane
