@@ -2177,5 +2177,14 @@ tests remain tagged `adaptivepolicy`; they do not implement or prove stage 1.
 
 The full non-privileged gate passed after the slot-count and cold-origin
 changes (`stage0-current-nonprivileged-v9.txt`), and `nix build` subsequently
-passed (`stage0-current-nix-build-v12.txt`). These precede the receiver-coverage,
-SSH-session and progression-test additions; their handover build is pending.
+passed (`stage0-current-nix-build-v12.txt`). Those earlier runs preceded the receiver-coverage,
+SSH-session and progression-test additions. The full non-privileged gate and
+`nix build --cores 2 --max-jobs 1` now also pass after those additions
+(`stage0-current-nonprivileged-v10.txt`, `stage0-current-nix-build-v13.txt`).
+The instrumented executable is retained separately as
+`stage0-policy-baseline-diagnostic-v13`, with source revision and hashes;
+it is not relabelled as the untouched original executable.
+The gigaradio smoke also used 100 ms receiver reports and 9.6 ms clock
+uncertainty; all four outage progress checks proved delivery in all 14
+required seconds. Its overall gate still fails
+(`stage0-receiver-resolution-mux-gigaradio.txt`).
