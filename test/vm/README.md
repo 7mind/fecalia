@@ -1931,3 +1931,13 @@ samples with both root and policer counters; its maximum read duration was
 2c pass. Collections lacking these counters retain an inconclusive loss
 component. Sampler failures now invalidate collection rather than silently
 leaving missing egress evidence.
+
+A Go AST audit observes 32 declared constant names in `control.go` on both
+`f75668e` and the stage 0 branch, with 24 in the first block
+(`count-control-constants.go`, `control-constant-baseline.jsonl`). The plan's
+recorded count of 25 was incorrect. Use the full-file count of 32 as the
+baseline for policy removal; moving declarations between blocks is not a
+reduction. The `window-bound` and `cold-start` branches remain unmerged:
+retained field evidence does not justify the former as an urgent stopgap,
+and no field benefit of the latter has been measured. Their replacement
+remains in stages 2 and 3.

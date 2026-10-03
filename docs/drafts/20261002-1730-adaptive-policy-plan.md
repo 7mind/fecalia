@@ -3,7 +3,8 @@
 State: `main` = `f75668e`, deployed on the edge (`pi.mo`) and on `raspi5l`
 (both daemons restarted 13:47, idle since). This plan follows
 [the improvement plan](20261001-0820-wanbond-improvement-plan.md) and replaces
-its item-by-item tuning as the way forward. Nothing here is implemented.
+its item-by-item tuning as the way forward. Stage 0 measurement infrastructure
+is partly implemented; stages 1–3 have not begun.
 
 Provenance of each claim is marked: **observed** (run or read in this session),
 **inferred** (from reading the code, not executed), **recorded** (taken from the
@@ -54,7 +55,12 @@ hours after the restart. A download therefore starts from the floor.
 
 Every field run since 2026-10-01 found a regime in which a rule written for
 another regime misfires, and each was answered with one more rule
-(`control.go` has 25 constants and the lane 90 fields). The common cause is
+(`control.go` was recorded as having 25 constants and the lane 90 fields).
+Observed subsequently with Go's parser: `control.go` has 32 declared constant
+names on `f75668e` and on the stage 0 branch, including 24 in its first block.
+The recorded count of 25 is wrong; the full-file baseline for the required
+reduction is 32 (`control-constant-baseline.jsonl` in the stage 0 evidence).
+The common cause is
 structural: **the lane's picture of its link is a set of values latched under
 one condition and used under another.** Read in the code at `f75668e`:
 
@@ -104,6 +110,15 @@ reported host CPU spikes to 100% during those measurements and directed that
 the field be the behavioral reference (section 7). Stage 0 resumed with host
 and guest scheduler observations; the earlier timing verdict is inconclusive.
 Stages 1–3 have not begun.
+
+**Stage 0 stopgap decisions, inferred from the retained evidence.** Leave
+`window-bound` and `cold-start` unmerged for now. The measured field delay
+rise collapsed targets and windows; it did not demonstrate the expanded-window
+defect that would justify the window stopgap. Earlier `w1` throughput pairs
+remain inconclusive. The cold-transfer model still fails its gate, but the
+first-discovery special case has no measured field benefit here. Stages 2 and
+3 remain responsible for replacing these mechanisms. This does not assert
+that either stopgap is incorrect or waive their scenario gates.
 
 **Stage 0 finding, observed 2026-10-03.** The corrected model 3a gate rejects
 a fixture recovering at 2.5 seconds, which the old post-deadline measurement
