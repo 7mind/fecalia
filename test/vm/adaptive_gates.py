@@ -214,6 +214,56 @@ def receipt_gate(name, samples, begin, end, lane):
     return unknown(name, "counter intervals cannot place a physical bulk receipt inside the deadline")
 
 
+@dataclass(frozen=True)
+class Egress:
+    offered: int
+    accepted: int
+    identity: tuple
+
+
+def egress(sample, device):
+    if "tc" not in sample or device not in sample["tc"]:
+        return None
+    tc = sample["tc"][device]
+    roots = [item for item in tc["qdisc"] if item.get("root")]
+    police = [action for rule in tc["filter"] for action in rule.get("options", {}).get("actions", []) if action["kind"] == "police"]
+    if len(roots) != 1 or roots[0]["kind"] != "htb" or len(police) != 1:
+        return None
+    root, action = roots[0], police[0]
+    return Egress(action["stats"]["bytes"], root["bytes"] + root["backlog"], (root["handle"], action["index"]))
+
+
+def egress_loss_gate(name, samples, begin, end, device):
+    if not samples or any("bounds" not in sample for sample in samples):
+        return unknown(name, "missing egress-read completion bounds")
+    before = [sample for sample in samples if sample["bounds"].latest <= begin.earliest]
+    after = [sample for sample in samples if sample["bounds"].earliest >= end.latest]
+    if not before or not after:
+        return unknown(name, "egress counters do not cover the whole bounded phase")
+    covered = [before[-1]] + [sample for sample in samples if sample["bounds"].latest >= begin.earliest and sample["bounds"].earliest <= end.latest] + [after[0]]
+    counters = [egress(sample, device) for sample in covered]
+    if any(value is None for value in counters):
+        return unknown(name, "missing root HTB and policer byte counters")
+    if len({value.identity for value in counters}) != 1 or any(right.offered < left.offered or right.accepted < left.accepted for left, right in zip(counters, counters[1:])):
+        return unknown(name, "egress counters reset or changed identity during measurement")
+    inside = [value for sample, value in zip(covered, counters) if sample["bounds"].earliest >= begin.latest and sample["bounds"].latest <= end.earliest]
+    if len(inside) < 2 or inside[-1].offered == inside[0].offered:
+        return unknown(name, "no traffic certainly inside the loss measurement window")
+    offered_lower, offered_upper = inside[-1].offered - inside[0].offered, counters[-1].offered - counters[0].offered
+    accepted_lower, accepted_upper = inside[-1].accepted - inside[0].accepted, counters[-1].accepted - counters[0].accepted
+    if accepted_lower > offered_upper:
+        raise ValueError("egress byte conservation violated")
+    # Backlog belongs to accepted bytes: draining an old queue is not new delivery.
+    lower = max(0, offered_lower - accepted_upper) / offered_upper
+    upper = (offered_upper - accepted_lower) / offered_lower
+    evidence = f"{device} byte-loss bounds {100 * lower:.3f}..{100 * upper:.3f}%; offered {offered_lower}..{offered_upper} bytes"
+    if upper < .05:
+        return gate(name, True, evidence)
+    if lower >= .05:
+        return gate(name, False, evidence)
+    return unknown(name, evidence + "; boundary uncertainty changes the verdict")
+
+
 def evaluate(directory, references):
     directory = Path(directory)
     manifest = json.loads((directory / "scenario.json").read_text())
@@ -329,7 +379,7 @@ def evaluate(directory, references):
                         lane = "0" if returned == {1} else "1" if guest == "hub" else "256"
                         checks.append(receipt_gate(name + "/lane-bulk", samples[guest], start_bounds, start_bounds.shifted(2), lane))
                 if row == "2c" and phase == 2:
-                    checks.append(unknown(name + "/lane-loss", "physical loss after three seconds needs phase-bounded qdisc/filter counters"))
+                    checks.append(egress_loss_gate(name + "/lane-loss", samples[guest], start_bounds.shifted(3), end_bounds, "eth1"))
     return checks
 
 

@@ -65,7 +65,7 @@ print(json.dumps({"epoch": epoch, "sent": sent, "sent_at": sent_at, "samples": s
 '''
 
 SAMPLER = r'''
-import json, sys, time, urllib.request
+import json, subprocess, sys, time, urllib.request
 keep = ("wanbond_adaptive_", "wanbond_path_up", "wanbond_path_rtt", "wanbond_resequencer_skipped", "wanbond_resequencer_hol_holds")
 def counters(device):
     base = "/sys/class/net/" + device + "/statistics/"
@@ -84,7 +84,9 @@ with open("/root/samples.jsonl", "w") as out:
                 name, value = line.rsplit(" ", 1)
                 series[name] = float(value)
         interfaces = {d: counters(d) for d in ("wanbond0", "eth1", "eth2")}
-        out.write(json.dumps({"t": at, "t_complete": time.time(), "if": interfaces, "m": series}) + "\n")
+        tc = {device: {kind: json.loads(subprocess.check_output(["tc", "-s", "-j", kind, "show", "dev", device] + (["parent", "1:"] if kind == "filter" else []), text=True))
+                      for kind in ("qdisc", "filter")} for device in ("eth1", "eth2")}
+        out.write(json.dumps({"t": at, "t_complete": time.time(), "if": interfaces, "m": series, "tc": tc}) + "\n")
         time.sleep(max(0, 0.1 - (time.time() - at)))
 '''
 
@@ -342,6 +344,10 @@ def run(args):
         time.sleep(6)
         for guest in GUESTS:
             (output / f"{guest}-samples.jsonl").write_text(lab.execute(guest, "cat /root/samples.jsonl", capture_output=True).stdout)
+            sampler_log = lab.execute(guest, "cat /root/sampler.log", capture_output=True).stdout
+            (output / f"{guest}-sampler.log").write_text(sampler_log)
+            if sampler_log:
+                raise RuntimeError(f"{guest} metrics/egress sampler failed; see its log")
             (output / f"{guest}-daemon.log").write_text(lab.execute(guest, "cat /root/wanbond.log", capture_output=True).stdout)
             (output / f"{guest}-timing.jsonl").write_text(lab.execute(guest, "cat /root/timing.jsonl", capture_output=True).stdout)
             (output / f"{guest}-timing.log").write_text(lab.execute(guest, "cat /root/timing.log", capture_output=True).stdout)

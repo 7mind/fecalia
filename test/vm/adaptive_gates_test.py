@@ -5,10 +5,51 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from adaptive_gates import Interval, TimeBounds, bounded_latency, bulk_gate, evaluate, event_bounds, latency, receiver_intervals, route_gate, voice_continuity, voice_rtts
+from adaptive_gates import Interval, TimeBounds, bounded_latency, bulk_gate, egress_loss_gate, evaluate, event_bounds, latency, receiver_intervals, route_gate, voice_continuity, voice_rtts
 
 
 class GateTests(unittest.TestCase):
+    def test_egress_loss_does_not_count_old_backlog_as_newly_accepted_bytes(self):
+        samples = [{"bounds": TimeBounds(at, at), "tc": {"eth1": {
+            "qdisc": [{"kind": "htb", "root": True, "handle": "1:", "bytes": delivered, "backlog": backlog}],
+            "filter": [{"options": {"actions": [{"kind": "police", "index": 1, "stats": {"bytes": offered}}]}}]}}}
+            for at, offered, delivered, backlog in ((53, 1000, 900, 100), (65, 1100, 1050, 50))]
+        check = egress_loss_gate("loss", samples, TimeBounds(53, 53), TimeBounds(65, 65), "eth1")
+        self.assertEqual(check.status, "pass", "an old queue drained while only 100 new bytes were offered")
+
+    def test_plan_down_loss_uses_phase_bounded_wire_bytes(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            manifest = {"scenario": "plan", "start_host": 0, "seconds": 65, "voice": False, "tcp": True,
+                        "clock_offsets": {guest: [0, 0] for guest in ("edge", "hub")}, "events": [
+                            {"name": name, "changes": [{"guest": guest, "lane": 1, "submitted_host": at, "at_guest": at} for guest in ("edge", "hub")]}
+                            for name, at in (("satellite roam", 20), ("satellite standby", 50))]}
+            (directory / "scenario.json").write_text(json.dumps(manifest))
+            tcp = {"start": {"timestamp": {"timemillisecs": 0}}, "test_started_guest": 0,
+                   "intervals": [{"streams": [{"sender": False, "omitted": False, "start": second, "end": second + 1, "bytes": 100}]} for second in range(65)]}
+            (directory / "tcp.json").write_text(json.dumps({**tcp, "server_output_json": tcp}))
+
+            def loss_checks(points):
+                samples = []
+                for at, offered, accepted, index in points:
+                    samples.append(json.dumps({"t": at, "t_complete": at, "m": {}, "tc": {"eth1": {
+                        "qdisc": [{"kind": "htb", "root": True, "handle": "1:", "bytes": 1000000000 + accepted, "backlog": 0, "drops": 1000},
+                                  {"kind": "netem", "parent": "1:10", "bytes": 1000000000 + accepted, "backlog": 0, "drops": 1000}],
+                        "filter": [{"options": {"actions": [{"kind": "police", "index": index, "stats": {"bytes": offered, "drops": 1000}}]}}]}}}))
+                for guest in ("edge", "hub"):
+                    (directory / f"{guest}-samples.jsonl").write_text("\n".join(samples))
+                return [check.status for check in evaluate(directory, {"phases": {"1": {"payload_bps": [100, 100]}}}) if check.name.endswith("/lane-loss")]
+
+            self.assertEqual(loss_checks([(52.8, 0, 0, 1), (53.2, 100, 100, 1), (64.8, 120000, 120000, 1), (65.2, 120100, 120100, 1)]), ["pass", "pass"],
+                             "root and child drop counts do not establish the phase's byte loss")
+            self.assertEqual(loss_checks([(53, 0, 0, 1), (65, 120000, 114000, 1)]), ["fail", "fail"], "under-five-percent is strict")
+            self.assertEqual(loss_checks([(53, 0, 0, 1), (65, 120000, 118000, 1)]), ["pass", "pass"])
+            self.assertEqual(loss_checks([(52.8, 0, 0, 1), (53.2, 10000, 10000, 1), (64.8, 110000, 110000, 1), (65.2, 120000, 120000, 1)]), ["inconclusive", "inconclusive"],
+                             "unobserved boundary traffic cannot be assumed delivered")
+            self.assertEqual(loss_checks([(53, 0, 0, 1), (65, 120000, 120000, 2)]), ["inconclusive", "inconclusive"])
+            self.assertEqual(loss_checks([(53, 100000, 100000, 1), (65, 0, 0, 1)]), ["inconclusive", "inconclusive"])
+            self.assertEqual(loss_checks([(53, 0, 0, 1), (65, 0, 0, 1)]), ["inconclusive", "inconclusive"])
+
     def test_return_lane_requires_receipts_bounded_by_the_two_second_deadline(self):
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)
