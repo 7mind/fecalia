@@ -6,7 +6,8 @@ unless the scenario says otherwise, one TCP flow in each direction, changes the 
 a timeline and records, ten times a second in each guest, the interface counters and the
 transport's lane series. The display uses tunnel interface bytes, including voice and
 headers; raw iperf3 receiver reports are retained separately. Section 4 throughput
-gates need independent references and are not evaluated by this collection tool yet.
+gates use receiver intervals and independent references through the check action.
+Missing evidence is inconclusive; a successful collection is not a policy pass.
 
   python3 test/vm/adapt.py run result/bin/wanbond blackout
   python3 test/vm/adapt.py show <result directory>
@@ -24,7 +25,8 @@ import sys
 import time
 
 from lab import GUESTS, Lab  # noqa: E402
-from benchmark import provision, profile_from, start_iperf_server  # noqa: E402
+from benchmark import provision, profile_from  # noqa: E402
+from adaptive_gates import write_report  # noqa: E402
 
 VOICE = r'''
 import json, select, socket, struct, sys, time
@@ -39,11 +41,12 @@ seconds = float(sys.argv[3])
 sock.connect((address, 5202))
 sock.setblocking(False)
 epoch, start = time.time(), time.monotonic()
-next_send, sent, samples, seen, end = start, 0, [], set(), start + seconds
+next_send, sent, sent_at, samples, seen, end = start, 0, [], [], set(), start + seconds
 while time.monotonic() < end + 1:
     now = time.monotonic()
     if now >= next_send and now < end:
         sock.send(struct.pack("!Qd", sent, now) + bytes(144))
+        sent_at.append(now - start)
         sent += 1
         next_send += 0.020
     readable, _, _ = select.select([sock], [], [], max(0, min(0.020, next_send - now)) if now < end else 0.020)
@@ -58,7 +61,7 @@ while time.monotonic() < end + 1:
             continue
         seen.add(seq)
         samples.append([seq, received - start, (received - stamp) * 1000])
-print(json.dumps({"epoch": epoch, "sent": sent, "samples": samples}))
+print(json.dumps({"epoch": epoch, "sent": sent, "sent_at": sent_at, "samples": samples}))
 '''
 
 SAMPLER = r'''
@@ -232,6 +235,24 @@ def daemon_started(lab, guest):
     return float(lab.execute(guest, "python3 -c '" + code + "'", capture_output=True).stdout)
 
 
+def start_captured_tcp(lab):
+    for guest in GUESTS:
+        lab.put(guest, Path(__file__).with_name("tcp_capture.py"), "/root/tcp_capture.py")
+    lab.execute("hub", """set -eu
+test -z "$(ss -H -ltn sport = :5201)"
+nohup python3 /root/tcp_capture.py --timing /root/tcp-timing.jsonl --pid-file /root/captured-iperf.pid -- iperf3 -s -1 -B 10.77.0.1 > /root/iperf-5201.log 2>&1 < /dev/null &
+for n in $(seq 1 50); do
+  if test -f /root/captured-iperf.pid; then
+    iperf_pid=$(cat /root/captured-iperf.pid)
+    if ss -H -ltnp sport = :5201 | grep -Fq "pid=$iperf_pid,"; then exit 0; fi
+  fi
+  sleep 0.1
+done
+cat /root/iperf-5201.log
+exit 1
+""")
+
+
 def run(args):
     scenario = scenario_from(args.scenario, args.profile)
     lab = Lab()
@@ -265,7 +286,7 @@ def run(args):
         record_seconds = seconds + 6 + (math.ceil(max(0, traffic_deadline - time.time())) if cold else 0)
         lab.execute("hub", "killall -q iperf3 || true")
         if scenario["tcp"]:
-            start_iperf_server(lab, "10.77.0.1", 5201)
+            start_captured_tcp(lab)
         for guest in GUESTS:
             lab.execute(guest, f"nohup python3 /root/sampler.py {record_seconds} > /root/sampler.log 2>&1 < /dev/null &")
             lab.execute(guest, f"nohup python3 /root/observe.py --seconds {record_seconds} --output /root/timing.jsonl --pid $(cat /root/wanbond.pid) > /root/timing.log 2>&1 < /dev/null &")
@@ -280,7 +301,7 @@ def run(args):
             time.sleep(traffic_deadline - time.time())
         manifest["start_host"] = time.time()
         start = time.monotonic()
-        tcp = pool.submit(lab.execute, "edge", f"iperf3 -c 10.77.0.1 --bidir -l 1K -t {seconds} -J --get-server-output", capture_output=True) if scenario["tcp"] else None
+        tcp = pool.submit(lab.execute, "edge", f"python3 /root/tcp_capture.py --timing /root/tcp-timing.jsonl --pid-file /root/captured-iperf.pid -- iperf3 -c 10.77.0.1 --bidir -l 1K -t {seconds} --get-server-output", capture_output=True) if scenario["tcp"] else None
         voices = {guest: pool.submit(lab.execute, guest, f"python3 /root/voice2.py client 10.77.0.{2 if guest == 'hub' else 1} {seconds}", capture_output=True) for guest in GUESTS} if scenario.get("voice", True) else {}
         for offset, name, changes in scenario["events"]:
             time.sleep(max(0, start + offset - time.monotonic()))
@@ -302,7 +323,13 @@ def run(args):
                 (output / "hub-iperf.log").write_text(lab.execute("hub", "cat /root/iperf-5201.log", capture_output=True).stdout)
                 raise
             (output / "tcp.json").write_text(result.stdout)
-            (output / "hub-iperf.log").write_text(lab.execute("hub", "cat /root/iperf-5201.log", capture_output=True).stdout)
+            server_log = lab.execute("hub", "cat /root/iperf-5201.log", capture_output=True).stdout
+            (output / "hub-iperf.log").write_text(server_log)
+            server = json.loads(server_log)
+            (output / "hub-tcp.json").write_text(json.dumps(server, indent=2))
+            manifest["tcp_test_started_guest"] = {"edge": json.loads(result.stdout)["test_started_guest"], "hub": server["test_started_guest"]}
+            for guest in GUESTS:
+                (output / f"{guest}-tcp-timing.jsonl").write_text(lab.execute(guest, "cat /root/tcp-timing.jsonl", capture_output=True).stdout)
         time.sleep(6)
         for guest in GUESTS:
             (output / f"{guest}-samples.jsonl").write_text(lab.execute(guest, "cat /root/samples.jsonl", capture_output=True).stdout)
@@ -322,6 +349,7 @@ def run(args):
         (output / "scenario.json").write_text(json.dumps(manifest, indent=2))
     print(output, flush=True)
     show(output)
+    return output
 
 
 def quantile(values, q):
@@ -434,17 +462,26 @@ def main():
     runner.add_argument("--label", default="")
     runner.add_argument("--profile", type=Path, help="initial radio or gigaradio profile")
     runner.add_argument("--idle", type=float, default=0, help="seconds to leave the tunnel idle before the traffic starts")
+    runner.add_argument("--references", type=Path, help="evaluate section 4 gates after collection with independent phase references")
     shower = sub.add_parser("show")
     shower.add_argument("directory", type=Path)
+    checker = sub.add_parser("check")
+    checker.add_argument("directory", type=Path)
+    checker.add_argument("--references", type=Path, help="independent phase payload and idle-latency references")
     args = parser.parse_args()
     if args.action == "run":
         if args.scenario in POLICY_SCENARIOS and args.profile is None:
             parser.error("this scenario requires --profile")
         if args.profile is not None and args.scenario in ("rate", "upgrade", "blackout-upgraded", "latency-field", "field-baseline-voice"):
             parser.error("choose a profile-family scenario: rate-deep, rate-shallow, rise, plan, blackout or latency")
-        run(args)
-    else:
+        directory = run(args)
+        if args.references is not None:
+            raise SystemExit(write_report(directory, json.loads(args.references.read_text())))
+    elif args.action == "show":
         show(args.directory)
+    else:
+        references = json.loads(args.references.read_text()) if args.references is not None else {}
+        raise SystemExit(write_report(args.directory, references))
 
 
 if __name__ == "__main__":

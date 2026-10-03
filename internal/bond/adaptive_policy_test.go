@@ -5,7 +5,10 @@ package bond_test
 import (
 	"fmt"
 	"math/rand/v2"
+	"os"
+	"os/exec"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 )
@@ -121,9 +124,32 @@ func checkPolicyVoice(t *testing.T, o policyOutcome, from, until int, latency ti
 		if strictLoss && lost != 0 || !strictLoss && lost*100 >= sent {
 			t.Errorf("direction %d voice loss %d/%d violates gate", side, lost, sent)
 		}
-		if latency > 0 && p99 > latency {
-			t.Errorf("direction %d voice RTT p99 %s > %s", side, p99, latency)
+		if latency > 0 && p99 >= latency {
+			t.Errorf("direction %d voice RTT p99 %s >= %s", side, p99, latency)
 		}
+	}
+}
+
+func TestAdaptiveLatencyGateRejectsExactly150Milliseconds(t *testing.T) {
+	const marker = "WANBOND_LATENCY_GATE_CHILD"
+	if os.Getenv(marker) == "1" {
+		var outcome policyOutcome
+		for side := range outcome.voice {
+			for tick := 0; tick < 2000; tick += 20 {
+				outcome.voice[side] = append(outcome.voice[side], policyVoice{sent: tick, arrived: tick + 150, rtt: 150 * time.Millisecond})
+			}
+		}
+		checkPolicyVoice(t, outcome, 0, 2, 150*time.Millisecond, false)
+		return
+	}
+	child := exec.Command(os.Args[0], "-test.run=^TestAdaptiveLatencyGateRejectsExactly150Milliseconds$")
+	child.Env = append(os.Environ(), marker+"=1")
+	output, err := child.CombinedOutput()
+	if err == nil {
+		t.Fatal("voice RTT p99 exactly 150ms passed an under-150ms gate")
+	}
+	if !strings.Contains(string(output), "voice RTT p99 150ms >= 150ms") {
+		t.Fatalf("gate failed for another reason: %s", output)
 	}
 }
 
