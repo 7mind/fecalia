@@ -65,6 +65,7 @@ class Lab:
         meta = json.loads(self.manifest.read_text())[guest]
         return ["ssh", "-F", "/dev/null", "-i", str(self.key), "-p", str(meta["port"]),
                 "-o", "BatchMode=yes", "-o", "IdentitiesOnly=yes", "-o", "ConnectTimeout=5",
+                "-o", "ControlMaster=auto", "-o", "ControlPersist=60", "-o", f"ControlPath={self.state}/mux-%C",
                 "-o", "StrictHostKeyChecking=accept-new", "-o", f"UserKnownHostsFile={self.state}/known_hosts",
                 "root@127.0.0.1"]
 

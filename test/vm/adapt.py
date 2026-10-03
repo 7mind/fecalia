@@ -248,7 +248,7 @@ def start_captured_tcp(lab):
         lab.put(guest, Path(__file__).with_name("tcp_capture.py"), "/root/tcp_capture.py")
     lab.execute("hub", """set -eu
 test -z "$(ss -H -ltn sport = :5201)"
-nohup python3 /root/tcp_capture.py --timing /root/tcp-timing.jsonl --pid-file /root/captured-iperf.pid -- iperf3 -s -1 -B 10.77.0.1 > /root/iperf-5201.log 2>&1 < /dev/null &
+nohup python3 /root/tcp_capture.py --timing /root/tcp-timing.jsonl --pid-file /root/captured-iperf.pid -- iperf3 -s -1 -i 0.1 -B 10.77.0.1 > /root/iperf-5201.log 2>&1 < /dev/null &
 for n in $(seq 1 50); do
   if test -f /root/captured-iperf.pid; then
     iperf_pid=$(cat /root/captured-iperf.pid)
