@@ -159,6 +159,40 @@ def bulk_gate(name, intervals, begin, end, deadline, reference, share, sustain, 
     return checks
 
 
+def covers(intervals, begin, end):
+    reached = begin
+    for item in sorted(intervals, key=lambda value: value.begin):
+        if item.end <= reached:
+            continue
+        if item.begin > reached:
+            return False
+        reached = item.end
+        if reached >= end:
+            return True
+    return False
+
+
+def progress_gate(name, intervals, begin, end, origin_uncertainty):
+    seconds = math.floor(end.latest - begin.earliest)
+    if seconds <= 0:
+        return unknown(name, "no full required second with bounded receiver observations")
+    unresolved = 0
+    for second in range(seconds):
+        start = begin.shifted(second)
+        finish = start.shifted(1)
+        certain = [item for item in intervals if item.begin - origin_uncertainty >= start.latest
+                   and item.end + origin_uncertainty <= min(finish.earliest, end.earliest)]
+        if any(item.bytes > 0 for item in certain):
+            continue
+        possible = [item for item in intervals if item.begin - origin_uncertainty < finish.latest
+                    and item.end + origin_uncertainty > start.earliest]
+        if finish.latest <= end.earliest and possible and all(item.bytes == 0 for item in possible) and covers(possible, start.earliest - origin_uncertainty, finish.latest + origin_uncertainty):
+            return gate(name, False, f"no receiver delivery in required second {second + 1}")
+        unresolved += 1
+    evidence = f"{seconds - unresolved}/{seconds} required seconds have certain positive receiver delivery"
+    return unknown(name, evidence + "; missing intervals or timestamp resolution leave progress unresolved") if unresolved else gate(name, True, evidence)
+
+
 def bulk_reduction(name, intervals, at, end):
     before = [item.rate for item in intervals if item.begin >= at - 5 and item.end <= at]
     after = [item for item in intervals if item.begin >= at and item.end <= end]
@@ -169,7 +203,10 @@ def bulk_reduction(name, intervals, at, end):
     for item in after:
         run = run + item.end - item.begin if item.rate < limit else 0.0
         longest = max(longest, run)
-    return gate(name, longest <= 2, f"longest measured cut >25%: {longest:.3f}s; pre-change {statistics.mean(before):.0f} B/s")
+    evidence = f"longest measured cut >25%: {longest:.3f}s; pre-change {statistics.mean(before):.0f} B/s"
+    if longest > 2:
+        return gate(name, False, evidence)
+    return gate(name, True, evidence) if covers(intervals, at, end) else unknown(name, evidence + "; receiver intervals do not cover the change window")
 
 
 def metric(sample, name, lane):
@@ -368,8 +405,7 @@ def evaluate(directory, references):
                     deadline_bounds = None if deadline is None else start_bounds.shifted(deadline)
                     checks.extend(bulk_gate(name + "/bulk", tcp[guest], begin, end, deadline_bounds, None if rates is None else rates[side], .6 if row == "0" else .7 if row == "2d" else .75, row != "0", tcp_uncertainty[guest]))
                 if row in ("1a", "1c"):
-                    intervals = [item for item in tcp[guest] if item.begin >= begin + 1 and item.end <= end]
-                    checks.append(gate(name + "/progress", all(item.bytes > 0 for item in intervals), f"{len(intervals)} complete receiver intervals") if intervals else unknown(name + "/progress", "missing time-aligned TCP receiver intervals"))
+                    checks.append(progress_gate(name + "/progress", tcp[guest], start_bounds.shifted(1), end_bounds, tcp_uncertainty[guest]))
                 if row in ("3a", "3c"):
                     checks.append(bulk_reduction(name + "/bulk", tcp[guest], begin, end))
                 if row == "3b":

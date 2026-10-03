@@ -309,7 +309,7 @@ def run(args):
             time.sleep(traffic_deadline - time.time())
         manifest["start_host"] = time.time()
         start = time.monotonic()
-        tcp = pool.submit(lab.execute, "edge", f"python3 /root/tcp_capture.py --timing /root/tcp-timing.jsonl --pid-file /root/captured-iperf.pid -- iperf3 -c 10.77.0.1 --bidir -l 1K -t {seconds} --get-server-output", capture_output=True) if scenario["tcp"] else None
+        tcp = pool.submit(lab.execute, "edge", f"python3 /root/tcp_capture.py --timing /root/tcp-timing.jsonl --pid-file /root/captured-iperf.pid -- iperf3 -c 10.77.0.1 --bidir -i 0.1 -l 1K -t {seconds} --get-server-output", capture_output=True) if scenario["tcp"] else None
         voices = {guest: pool.submit(lab.execute, guest, f"python3 /root/voice2.py client 10.77.0.{2 if guest == 'hub' else 1} {seconds}", capture_output=True) for guest in GUESTS} if scenario.get("voice", True) else {}
         for offset, name, changes in scenario["events"]:
             time.sleep(max(0, start + offset - time.monotonic()))

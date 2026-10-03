@@ -5,10 +5,44 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from adaptive_gates import Interval, TimeBounds, bounded_latency, bulk_gate, egress_loss_gate, evaluate, event_bounds, latency, receiver_intervals, route_gate, voice_continuity, voice_rtts
+from adaptive_gates import Interval, TimeBounds, bounded_latency, bulk_gate, bulk_reduction, egress_loss_gate, evaluate, event_bounds, latency, progress_gate, receiver_intervals, route_gate, voice_continuity, voice_rtts
 
 
 class GateTests(unittest.TestCase):
+    def test_missing_receiver_intervals_cannot_prove_unchanged_bulk(self):
+        intervals = [Interval(second, second + 1, 100) for second in range(5, 10)]
+        intervals += [Interval(second, second + 1, 100) for second in range(13, 20)]
+        self.assertEqual(bulk_reduction("bulk", intervals, 10, 20).status, "inconclusive",
+                         "three unobserved seconds after the change cannot establish continuity")
+
+    def test_progress_retains_phase_and_receiver_clock_uncertainty(self):
+        intervals = [Interval(second / 10, (second + 1) / 10, 10) for second in range(110, 150)]
+        self.assertEqual(progress_gate("progress", intervals, TimeBounds(11, 11.02), TimeBounds(15, 15), .01).status, "pass")
+        self.assertEqual(progress_gate("progress", [Interval(11, 15, 100)], TimeBounds(11, 11), TimeBounds(15, 15), 0).status, "inconclusive",
+                         "one arrival somewhere in a four-second report does not prove delivery in each second")
+        self.assertEqual(progress_gate("progress", [Interval(11, 15, 0)], TimeBounds(11, 11), TimeBounds(15, 15), 0).status, "fail")
+        intervals = [Interval(second, second + 1, 100) for second in range(11, 15)]
+        self.assertEqual(progress_gate("progress", intervals, TimeBounds(11, 11), TimeBounds(15, 15), .1).status, "inconclusive",
+                         "coarse reports can straddle a required second throughout clock uncertainty")
+
+    def test_progress_requires_observations_in_every_required_second(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            manifest = {"scenario": "blackout", "start_host": 0, "seconds": 15, "voice": False, "tcp": True,
+                        "clock_offsets": {guest: [0, 0] for guest in ("edge", "hub")}, "events": [
+                            {"name": "mobile dark", "changes": [{"guest": "edge", "lane": 2,
+                                                                "submitted_host": 10, "at_guest": 10}]}]}
+            (directory / "scenario.json").write_text(json.dumps(manifest))
+            tcp = {"start": {"timestamp": {"timemillisecs": 0}}, "test_started_guest": 0,
+                   "intervals": [{"streams": [{"sender": False, "omitted": False, "start": second,
+                                               "end": second + 1, "bytes": 100}]} for second in (11, 13, 14)]}
+            (directory / "tcp.json").write_text(json.dumps({**tcp, "server_output_json": tcp}))
+            for guest in ("edge", "hub"):
+                (directory / f"{guest}-samples.jsonl").write_text("")
+            checks = [check for check in evaluate(directory, {}) if check.name.endswith("/progress")]
+            self.assertEqual([check.status for check in checks], ["inconclusive", "inconclusive"],
+                             "a missing second is not evidence of progress")
+
     def test_cold_deadline_starts_with_the_transfer_instead_of_dispatch(self):
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)
