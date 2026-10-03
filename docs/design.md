@@ -234,6 +234,16 @@ Each impairment event retains separate host submission and guest completion
 times for every changed lane. A simultaneous two-lane change has four guest
 application records; completion times alone do not establish when the change
 first took effect.
+The lab sampler also records root qdisc and policer statistics on each WAN.
+For the policed plan-change phase, loss is a byte balance: bytes offered to
+the match-all policer minus root-dequeued bytes and the change in backlog.
+Root and child drop counts are not summed: a live accounting reproduction
+observed root drops already including the policer's drops. The gate bounds
+loss and offered bytes over the entire uncertain phase after three seconds;
+it passes only when the upper loss bound is below 5%. Insufficient boundary
+resolution or changed counter identity remains inconclusive. These counters
+observe WAN egress frames, including feedback and probes, rather than inner
+TCP delivery. Sampler command failures invalidate collection explicitly.
 The evaluator uses earliest submission for a deadline pass and latest guest
 completion for its failure bound. Voice quantiles retain both certain and
 possible membership near a phase boundary. A verdict that depends on that

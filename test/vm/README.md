@@ -1909,3 +1909,25 @@ eligible for coalescing. Its public transport reproduction delivered reports
 reports carrying SACK ranges, matching the production classifier. All bond
 tests pass with the corrected metadata (`tcp-model-sack-bond-tests.txt`,
 79.267 seconds). This changes test inputs, not the deployed controller.
+
+The plan-change collector now records qdisc and filter statistics at each
+bounded sample. Observed in a real policer accounting check: root drops
+increased by 888, including 887 policer drops and one child-netem drop
+(`lab-police-root-drop-accounting.txt`). Summing root, child and policer drops
+would count losses repeatedly. The loss evaluator instead balances offered
+policer bytes against root-dequeued bytes and the backlog change. It observes
+all WAN egress frames, including feedback and probes; it does not count TCP
+delivery. The whole window from three seconds after the downshift through
+phase end is bracketed conservatively. A pass requires its upper byte-loss
+bound below 5%; exactly 5% fails, and unresolved boundaries or counter resets
+remain inconclusive.
+
+The missing-gate reproduction failed before implementation
+(`plan-loss-gate-red.txt`); all 26 Python checks now pass, including byte-loss
+boundaries, strict 5%, counter identity changes and draining an old backlog
+(`plan-loss-gate-green.txt`). A real two-second collector check recorded 20
+samples with both root and policer counters; its maximum read duration was
+99 ms (`egress-sampler-lab.txt`). This validates collection, not a scenario
+2c pass. Collections lacking these counters retain an inconclusive loss
+component. Sampler failures now invalidate collection rather than silently
+leaving missing egress evidence.
