@@ -3,6 +3,7 @@ package bond_test
 import (
 	"container/heap"
 	"encoding/binary"
+	"fmt"
 	"math"
 	"math/rand/v2"
 	"net/netip"
@@ -184,6 +185,43 @@ func TestAdaptiveModelPreservesSACKReports(t *testing.T) {
 	}
 }
 
+func (m policyRun) renewPaths(t *testing.T, peer *bond.Transport, side int, elapsed time.Duration, now time.Time) {
+	t.Helper()
+	for lane, link := range m.lanes {
+		if link.at(1-side, elapsed).dark {
+			continue
+		}
+		if err := peer.Path(bond.PathID(lane), bond.PathID(lane), link.at(side, elapsed).delay+link.at(1-side, elapsed).delay, now); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func TestAdaptiveModelDoesNotRenewHelloLeasesThroughADarkDirection(t *testing.T) {
+	for _, direction := range []int{-1, 0, 1} {
+		t.Run(fmt.Sprint(direction), func(t *testing.T) {
+			m := policyRun{lanes: []modelLane{{condition: func(side int, at time.Duration) modelCondition {
+				return modelCondition{rate: 62500, delay: 20 * time.Millisecond, dark: at >= 20*time.Second && (direction == -1 || side == direction)}
+			}}, {rate: 1250000, delay: 40 * time.Millisecond}}}
+			start := time.Unix(100, 0)
+			for side := range 2 {
+				peer := bond.New(bond.Epoch{Boot: uint64(side + 1), Generation: 1})
+				peer.SetRemote(bond.Epoch{Boot: uint64(2 - side), Generation: 1}, true)
+				m.renewPaths(t, peer, side, 19*time.Second, start.Add(19*time.Second))
+				if !peer.Snapshot(start.Add(19 * time.Second)).Paths[0].Up {
+					t.Fatal("reproduction requires a healthy lane before the blackout")
+				}
+				m.renewPaths(t, peer, side, 22*time.Second, start.Add(22*time.Second))
+				paths := peer.Snapshot(start.Add(22 * time.Second)).Paths
+				want := direction != -1 && direction != 1-side
+				if paths[0].Up != want || !paths[1].Up {
+					t.Errorf("side %d hello lease alive=%v, want %v; unfailed lane alive=%v", side, paths[0].Up, want, paths[1].Up)
+				}
+			}
+		})
+	}
+}
+
 // policyRun exercises both transports, two echo streams and one TCP flow in
 // each direction. Measurements are payload delivery, never pacing targets.
 func (m policyRun) run(t *testing.T) policyOutcome {
@@ -230,12 +268,7 @@ func (m policyRun) run(t *testing.T) policyOutcome {
 		now := start.Add(time.Duration(tick) * time.Millisecond)
 		clock.now = now
 		for side, p := range peers {
-			for lane, l := range m.lanes {
-				// Authenticated hellos keep their lease even across a one-way
-				// outage: only progress feedback can establish that direction.
-				c := l.at(side, now.Sub(start))
-				p.Path(bond.PathID(lane), bond.PathID(lane), c.delay+l.at(1-side, now.Sub(start)).delay, now)
-			}
+			m.renewPaths(t, p, side, now.Sub(start), now)
 			if tick >= m.trafficAt*1000 && tick < m.seconds*1000 {
 				if m.bulk {
 					tcp[side].offer(now, func(seq uint64) { send(side, now, seq) })
