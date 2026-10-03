@@ -210,6 +210,10 @@ The first 84 baseline collections did not record actual TCP test starts:
 iperf's JSON timestamp belongs to connection setup, so their absolute TCP
 adaptation deadlines remain inconclusive. These are measurement changes;
 the adaptive lane policy has not been replaced yet.
+Deadline checks also retain the uncertainty between connection setup and the
+captured start, plus guest clock-exchange uncertainty. Insufficient receiver
+interval resolution is reported as inconclusive, rather than filling partial
+intervals with an assumed arrival rate.
 
 Stage 0 initially stopped on an observed lab/field disagreement: a voice-only 15-second
 mobile-egress outage lost no echoes in the field, but lost 10 and 40 in the lab,

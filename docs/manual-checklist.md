@@ -34,6 +34,15 @@ Prerequisites (all phases):
 
 - [ ] Run the [KVM lab procedure](../test/vm/README.md): calibrate each WAN before
       interpreting tunnel throughput; save the profile and binary hash.
+- [ ] For adaptive-policy scenarios, retain actual voice send stamps and TCP
+      test-start events. Iperf's connection timestamp does not establish the
+      measurement origin. Use `adapt.py check` with independent phase goodput
+      and idle-latency references; inconclusive checks do not satisfy a gate.
+- [ ] Interleave baseline and candidate field rounds on the 5G/Starlink links,
+      retaining contemporaneous lane and scheduler observations. Arm and verify
+      removal timers before each qdisc change; report mobile RX+TX bytes.
+      Before a WAN blackout, establish the management WAN. An observed Linux
+      reply route alone does not establish the physical provider carrying it.
 - [ ] Benchmark upload and download, confirming bulk bytes on both WANs and
       goodput above the profile's acceptance threshold.
 - [ ] Repeat with opposite upload/download capacities and seeded jitter.
