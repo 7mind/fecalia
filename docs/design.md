@@ -230,6 +230,15 @@ intervals with an assumed arrival rate.
 An interval contributes to a deadline pass only when it remains inside the
 phase and before the deadline throughout its timestamp uncertainty. Failure
 bounds include every interval that could overlap the final second.
+Progress checks require certain positive receiver bytes in every required
+second; missing intervals and a positive multi-second aggregate cannot prove
+that condition. Bulk-continuity checks likewise cannot pass across missing
+receiver coverage. The collector now requests 100 ms TCP reports on both
+peers and reuses local SSH control sessions for 60 seconds of idle time to
+reduce clock-exchange and application bounds. A live radio reproduction
+resolved both a full 14-second progress pass and an explicit zero-delivery
+second; the overall scenario still fails. These changes refine observations,
+not the lane controller.
 Each impairment event retains separate host submission and guest completion
 times for every changed lane. A simultaneous two-lane change has four guest
 application records; completion times alone do not establish when the change

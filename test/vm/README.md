@@ -2084,3 +2084,98 @@ adapters for its void `Path` API. The full non-privileged gate and Nix build
 passed after those restatements (`stage0-current-nonprivileged-v8.txt`,
 `stage0-current-nix-build-v10.txt`); those checks preceded the subsequent
 slot-count and cold-evaluator changes.
+
+### Completed baseline collection and bounded field comparisons — 2026-10-03
+
+Observed: the refreshed original-`f75668e` series completed all 84 collections
+with exit status zero, three runs per family/scenario, interleaving radio and
+gigaradio (`f75668e-lab-matrix-20261003-202919`). Its executable SHA-256 is
+`59df1fbe9eed338b122ceab3cf4e512208631d7feaf849290b01135e78537987`.
+`gate-summary.json` retains the individual checks against the same fixed
+phase references. The evaluated results are:
+
+| Scenario | Radio runs 1/2/3 | Gigaradio runs 1/2/3 |
+|---|---|---|
+| blackout, voice only | pass/pass/pass | pass/pass/pass |
+| blackout, with TCP | fail/fail/fail | fail/fail/fail |
+| one-way, voice only | fail/fail/fail | fail/fail/fail |
+| one-way, with TCP | fail/fail/fail | fail/fail/fail |
+| shallow rate fall | inconclusive/inconclusive/inconclusive | fail/fail/fail |
+| deep rate fall | fail/inconclusive/fail | fail/fail/fail |
+| rate rise | inconclusive/inconclusive/inconclusive | fail/fail/fail |
+| plan change | fail/fail/fail | fail/inconclusive/fail |
+| cellular grants | pass/pass/pass | fail/fail/fail |
+| call-lane delay, voice only | inconclusive/inconclusive/inconclusive | inconclusive/inconclusive/inconclusive |
+| call-lane delay, with TCP | fail/fail/fail | fail/fail/fail |
+| both-lane delay, voice only | fail/fail/fail | fail/fail/fail |
+| both-lane delay, with TCP | fail/fail/fail | fail/fail/fail |
+| cold transfer | inconclusive/fail/inconclusive | fail/fail/fail |
+
+These are evaluator results, not established controller causes. Observed in
+this series: host aggregate CPU reached 100%; maximum observer wake delays
+were 24.5 ms on the host, 136.8 ms on edge and 118.1 ms on hub; guest steal
+reached 67.6% and 64.4% over sampled intervals. Per-thread scheduler accounting
+was disabled. The complete `scheduler-summary.json` and raw observations are
+retained. They establish contention, not attribution of an individual failed
+gate. Original binaries also lack the new primary-route and physical-receipt
+counters, and all 60 TCP collections used one-second receiver reports
+(`receiver-resolution-audit.json`). Those missing observations remain
+inconclusive. The three qualitative definitions remain unresolved; this table
+cannot establish the full goal or completion of stages 1–3.
+
+Two evaluator reproductions wrongly passed a three-second hole in receiver
+coverage, and a missing outage second (`receiver-coverage-red.txt`). They now
+remain inconclusive. Progress needs certain positive receiver bytes in every
+required second, retaining phase and TCP-origin uncertainty. A four-second
+aggregate with positive bytes cannot prove that; a covered zero-byte interval
+still fails. Future TCP collection uses 100 ms reports on both peers. Lab SSH
+sessions reuse a task-local control socket with a 60-second idle lifetime;
+this reduces the clock and change bounds without assuming synchronized clocks.
+Observed radio smoke: clock uncertainty fell from 66/70 ms to 13/16 ms,
+both receiver intervals were 100 ms, one outage direction proved delivery in
+all 14 required seconds and another proved a second with no delivery
+(`stage0-receiver-resolution-mux-radio.txt`). The scenario still fails other
+gates. All 30 Python checks pass (`stage0-python-tests-v10.txt`).
+
+The operator's direct-before-tunnel method was exercised with bounded SSH
+TCP payloads to the same OCI worker, in Starlink/5G/tunnel order. Source and
+output-interface routing were observed separately. Local host policy routes
+an unbound `10.77.0.2` source through `end0`; the benchmark therefore binds its
+socket to `wanbond0`. The first attempt stopped on that route precondition,
+restored the exit policy and sent no tunnel bulk. No WAN qdisc was changed.
+Temporary restricted worker keys and the runtime `raspi5l` exit override had
+removal timers; each cleanup removed its exact key and restored `auto`.
+
+Three rounds then completed at a 1 Mbit/s offered ceiling, 750,000 bytes per
+direction and path. Their upload receiver spans excluded payload buffered
+during SSH startup: some implied more than the offered rate. That reproduced
+measurement defect is retained (`field-reference-startup-red.txt`), and those
+spans are not capacity evidence. A corrected round waits for receiver readiness
+before pacing. Observed payload rates were Starlink 0.522/0.535, 5G
+0.997/1.002 and tunnel 1.004/1.001 Mbit/s (upload/download). A 1 Mbit/s ceiling
+establishes a bounded workload and a capacity lower bound, not full RF capacity
+or an aggregation percentage. All per-transfer times and immediate idle
+measurements remain in `field-direct-before-tunnel-20261003-223105`.
+The three helper intervals used 19.63 MB on the mobile VLAN; the complete
+first-to-last interval used 23.26 MB, including setup gaps and background
+traffic (`field-direct-before-tunnel-summary.json`). The deployment was not
+changed. Final observation: both WANs have `noqueue`, the exit policy is
+`auto`, and no benchmark removal timer remains active.
+
+Two additional public-transport reproductions prepare stage 1. With fresh
+hello leases but no peer progress, the unchanged controller stays live at
+two sparse ACK intervals and silently cuts 125,000 B/s to 87,500 B/s. Its
+uncopied real-time datagram also receives no alternate delivery by that
+cadence plus alternate transit (`stage1-liveness-outcomes-red-v2.txt`). The
+receiver is polled after its delayed-ACK interval and a physical receipt is
+required before asserting recovery. The same rate and copy outcomes also fail on the exact original production
+source (`stage1-liveness-original-red-v2.txt`), with only test adapters for
+its void `Path` API. The rate proof omits liveness diagnostics absent from
+that original API; its 125,000-to-87,500 cut is still observed. An earlier
+adapter compile failure is retained as no behavioral proof. These progression
+tests remain tagged `adaptivepolicy`; they do not implement or prove stage 1.
+
+The full non-privileged gate passed after the slot-count and cold-origin
+changes (`stage0-current-nonprivileged-v9.txt`), and `nix build` subsequently
+passed (`stage0-current-nix-build-v12.txt`). These precede the receiver-coverage,
+SSH-session and progression-test additions; their handover build is pending.
