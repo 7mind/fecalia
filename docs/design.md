@@ -308,6 +308,15 @@ unfailed direction and lane independently; it changes no transport rule.
 Three repeated runs on the original controller now give five passes and
 three failures for 1a, four failures for 1b, and five passes and eleven
 failures for 1c. Current stage 0 outcomes match the original controller.
+Before replacing liveness mechanisms, the interactive failover test now
+checks public transport deliveries: the encrypted datagram arrives exactly
+once over a healthy alternate within the applicable deadline, or expires
+when no lane can reach the receiver. A low-rate physical alternate checks
+the bounded datagram lifetime rather than setting a private pacing rate
+below the controller's minimum. The idle keepalive test likewise verifies
+bulk delivery over the healthy lane and preservation of the idle pacing
+rate, instead of asserting the private stall mechanism. Both restatements
+pass with the existing controller; no liveness rule has been removed yet.
 
 **Paths and epochs.** An unpadded challenge-protected PROBE carries a 22-byte
 capability record: `bond`, version 1, physical path ID, process Boot ID and Bind

@@ -1985,3 +1985,74 @@ speedtest. Bounded field comparisons use that ordering and retain spread;
 unbounded speedtests and its exit-peer selection are not needed for the
 voice baseline. Fixed numerical definitions for the qualitative gates
 remain unresolved where a measured comparison cannot establish them.
+
+### Three single-VLAN field blackout repetitions
+
+Observed on the deployed executables with SHA-256
+`f0cb62b2e221b413436c76a428e58dc177110deace3d70d87ee7db08eeec1375`:
+three interleaved voice-only egress blackouts of each VLAN, 60 seconds per
+round, 3000 echo requests per source. Both adaptive lanes were live
+immediately before each run. Each 100% loss qdisc had a verified 15-second
+removal timer with 100 ms accuracy. Recorded application and removal
+completion bounds give minimum outage durations of 15.026–15.141 seconds;
+these are measured bounds, not exact 15.000-second impairments.
+
+| Blacked-out egress | Run | Lost echoes edge / hub | Largest loss run edge / hub | Maximum receive gap edge / hub, ms | Direct ICMP p99 Starlink / 5G, ms | Mobile MB |
+| --- | --- | --- | --- | --- | --- | --- |
+| 5G | 1 | 53 / 81 | 11 / 13 | 156 / 280 | 82.6 / 49.9 | 3.283 |
+| Starlink | 1 | 6 / 6 | 6 / 6 | 254 / 244 | 53.7 / 48.9 | 5.723 |
+| 5G | 2 | 0 / 1 | 0 / 1 | 103 / 77 | 44.7 / 55.1 | 2.931 |
+| Starlink | 2 | 4 / 4 | 2 / 2 | 97 / 138 | 38.0 / 197.0 | 4.644 |
+| 5G | 3 | 4 / 12 | 1 / 2 | 98 / 93 | 46.1 / 41.9 | 2.731 |
+| Starlink | 3 | 37 / 40 | 16 / 16 | 154 / 174 | 45.9 / 55.7 | 5.280 |
+
+The first 5G round and first/third Starlink rounds fail the specified voice
+continuity limits. The other rounds satisfy their loss, consecutive-loss
+and gap components; this does not establish their full latency gate.
+The 5G survivor briefly lost adaptive eligibility during Starlink run 1
+(one of 151 samples on each peer). In every other round, every sampled
+surviving adaptive lane remained eligible throughout the certain blackout
+window. Adaptive eligibility is a controller observation, not an independent
+proof of uninterrupted physical service or the cause of the losses.
+
+Each direct reference used 100 source-bound ICMP requests to the concentrator
+immediately before tunnel collection, after recording its source-policy
+route. ICMP p99 describes a separate protocol and packet size; it does not
+substitute for equivalent-size direct UDP voice calibration or prove the
+survivor's voice latency gate. The spread is retained rather than treating
+one reference as a constant property of either RF link. These are original
+baseline rounds, not a candidate comparison or a matched lab replay.
+
+All six removal services reported success and exit status zero. Both VLANs
+returned to noqueue; a final read observed edge PID 2798, no runtime drop-ins
+and no remaining test timers. The mobile counter advanced 24.592 MB across
+the six individual measurement intervals and 27.470 MB from the first setup
+through the final receipt, including intervening background traffic.
+Evidence: `field-voice-baseline-{mobile,satellite}-r{1,2,3}-20261003-*`,
+`field-single-wan-three-run-summary.json` and
+`field-single-wan-final-restoration.txt` under the evidence directory.
+
+Before removing stage 1 mechanisms, two existing tests were restated in a
+separate code commit. `TestInteractiveFailoverDelivery` drives two public
+transports over timed physical lanes, drops one outgoing direction, and
+checks exactly-once unchanged payload delivery, its deadline, or bounded
+expiry without an alternate. It replaces private feedback-timer and
+below-minimum pacing-rate setup. Its slow alternate carries 8000 wire B/s;
+that one-datagram fixture checks the 250 ms lifetime, not a claim that it
+can carry both 50 Hz streams. The initial 150 ms expectation for that
+fixture observed delivery at 150 ms and is retained in
+`stage1-outcome-restatement-first.txt`; the continuous voice gates were
+not changed. `TestLostIdleKeepalivePreservesRateAndBulkUsesTheHealthyLane`
+checks healthy-lane bulk receipt and unchanged idle pacing rather than a
+stall flag. Its receiver is polled through the delivery window instead of
+assuming delivery from a single scheduling call. Both restatements pass on
+the unchanged controller (`stage1-outcome-restatement-idle-and-delivery-v2.txt`).
+
+The complete non-privileged gate and `nix build` passed after the hello-input
+correction (`stage0-current-nonprivileged-v7.txt`,
+`stage0-current-nix-build-v9.txt`). All 26 Python checks passed
+(`stage0-python-tests-v8.txt`). Those runs preceded the test restatements;
+their full verification is still pending. The refreshed 84-collection lab
+series started with the exact original executable and the current timing
+and egress collector (`f75668e-lab-matrix-20261003-202919/manifest.json`).
+A collection's exit status is not its section 4 gate verdict.
