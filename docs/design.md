@@ -214,6 +214,10 @@ Deadline checks also retain the uncertainty between connection setup and the
 captured start, plus guest clock-exchange uncertainty. Insufficient receiver
 interval resolution is reported as inconclusive, rather than filling partial
 intervals with an assumed arrival rate.
+Direct-link UDP calibration initiates each transfer at its sender, including
+downlink transfers from hub to edge. This avoids iperf's reverse-UDP startup
+failure when data arrives before its acceptance reply; it changes the lab
+measurement procedure, not the transport.
 
 Stage 0 initially stopped on an observed lab/field disagreement: a voice-only 15-second
 mobile-egress outage lost no echoes in the field, but lost 10 and 40 in the lab,
