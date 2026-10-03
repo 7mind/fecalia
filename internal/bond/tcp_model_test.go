@@ -72,6 +72,20 @@ type tcpTransfer struct {
 	seconds int
 }
 
+func tcpModelACKMetadata(acknowledgement uint64, ranges [][2]uint64) bond.PacketMetadata {
+	return bond.PacketMetadata{Flow: bond.FlowID{4, 6, 2}, ACK: bond.TCPACK{Eligible: len(ranges) == 0, Sequence: 1, Acknowledgement: uint32(acknowledgement), Window: 4096}}
+}
+
+func TestTCPModelPreservesSACKReports(t *testing.T) {
+	checkACKSequence(t, func(i byte, metadata *bond.PacketMetadata) {
+		var ranges [][2]uint64
+		if i == 3 {
+			ranges = [][2]uint64{{1000, 2000}}
+		}
+		*metadata = tcpModelACKMetadata(uint64(i)*100, ranges)
+	}, []byte{1, 2, 3}, 0, 0)
+}
+
 type tcpOutcome struct {
 	// delivered is the in-order payload reaching the receiver's TCP in each
 	// second, in bytes; windowMB the congestion window at its end.
@@ -425,7 +439,7 @@ func (m tcpTransfer) run(t *testing.T) tcpOutcome {
 				binary.BigEndian.PutUint64(ack[8+16*block:], r[0])
 				binary.BigEndian.PutUint64(ack[16+16*block:], r[1])
 			}
-			metadata := bond.PacketMetadata{Flow: bond.FlowID{4, 6, 2}, ACK: bond.TCPACK{Eligible: true, Sequence: 1, Acknowledgement: uint32(receiverNext), Window: 4096}}
+			metadata := tcpModelACKMetadata(receiverNext, receiverRanges)
 			_ = peers[1].Enqueue(ack, metadata, now)
 		}
 		if second := tick/1000 - 1; second >= 0 && tick%1000 == 999 {
