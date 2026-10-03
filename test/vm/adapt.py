@@ -235,6 +235,11 @@ def daemon_started(lab, guest):
     return float(lab.execute(guest, "python3 -c '" + code + "'", capture_output=True).stdout)
 
 
+def completed_changes(applied):
+    return [{"guest": guest, "lane": lane, "submitted_host": submitted, "at_guest": future.result()}
+            for guest, lane, submitted, future in applied]
+
+
 def start_captured_tcp(lab):
     for guest in GUESTS:
         lab.put(guest, Path(__file__).with_name("tcp_capture.py"), "/root/tcp_capture.py")
@@ -308,8 +313,11 @@ def run(args):
             applied = []
             for guest, lane, change in changes:
                 conditions[guest][lane] = {**conditions[guest][lane], **change}
-                applied.append((guest, pool.submit(impair, lab, guest, lane, **conditions[guest][lane])))
-            manifest["events"].append({"name": name, "planned": offset, "at_host": time.time(), "at_guest": {guest: future.result() for guest, future in applied},
+                submitted = time.time()
+                applied.append((guest, lane, submitted, pool.submit(impair, lab, guest, lane, **conditions[guest][lane])))
+            completed = completed_changes(applied)
+            manifest["events"].append({"name": name, "planned": offset, "at_host": time.time(), "changes": completed,
+                                       "at_guest": {guest: max(item["at_guest"] for item in completed if item["guest"] == guest) for guest in GUESTS if any(item["guest"] == guest for item in completed)},
                                        "conditions": json.loads(json.dumps(conditions))})
             (output / "scenario.json").write_text(json.dumps(manifest, indent=2))
             print(f"{time.monotonic() - start:6.1f} s  {name}", flush=True)
