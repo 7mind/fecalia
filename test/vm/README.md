@@ -1741,8 +1741,10 @@ the concentrator to that address timed out during banner exchange
 (`field-hub-tunnel-contact.txt`, `field-tunnel-ssh-contact.txt`). These
 observations establish that neither tested SSH route worked; they do not
 establish whether the edge is powered off. No candidate or qdisc change ran.
-The physical WAN carrying management `192.168.222.15` remains unestablished;
-the earlier Linux reply-route observation is insufficient for another blackout.
+At that point, the physical WAN carrying management `192.168.222.15` remained
+unestablished; the Linux reply-route observation alone was insufficient for
+another blackout. The operator subsequently confirmed ZeroTier safety for
+either single wanbond VLAN, as recorded below.
 
 The current non-privileged AGENTS gate and `nix build` passed after the ACK
 model, diagnostic-counter and evaluator changes (`stage0-current-nonprivileged-v3.txt`,
@@ -1757,7 +1759,7 @@ SSH checks observed both hosts reachable, both deployed executables at
 `/nix/store/zkkqlgm2jpg2s0klyiq5z6ixkcyfwxg5-wanbond-0.0.0/bin/wanbond`
 with SHA-256 `f0cb62b2e221b413436c76a428e58dc177110deace3d70d87ee7db08eeec1375`,
 and no runtime drop-ins. Both edge WAN metrics reported up. The physical
-management WAN remains unknown; no blackout was performed.
+management WAN was unknown at that point; no blackout was performed.
 
 Observed deployed-baseline voice-only measurements, 60 seconds each:
 
@@ -1941,3 +1943,45 @@ reduction. The `window-bound` and `cold-start` branches remain unmerged:
 retained field evidence does not justify the former as an urgent stopgap,
 and no field benefit of the latter has been measured. Their replacement
 remains in stages 2 and 3.
+
+### Corrected hello inputs and single-WAN field access basis
+
+Observed: the model renewed both hello leases every tick even when the
+incoming direction was dark. Its failing reproduction kept that lease up
+without incoming evidence (`model-hello-dark-red.txt`). The correction stops
+only that incoming renewal, preserving the live direction and other lane
+(`model-hello-dark-green.txt`). It changes model inputs, not transport policy.
+
+The remeasured 28 outage cases produced identical outcomes and measurements
+in three repetitions on both the original `f75668e` production code and the
+current stage 0 code (`{f75668e,current}-model-hello-matrix-v7.jsonl` and
+`model-hello-matrix-v7-summary.json`). This supersedes their earlier matrix:
+
+| Row | Pass / fail cases | Passing variants |
+| --- | --- | --- |
+| 1a | 5 / 3 | all four voice-only; radio lane 0 with bulk |
+| 1b | 0 / 4 | none |
+| 1c | 5 / 11 | voice-only: radio lane 0 direction 1, radio lane 1 either direction, gigaradio either lane direction 0 |
+
+The previous inference of universal bulk failure for 1a is wrong. The radio
+lane 0 bulk pass is retained; several earlier 1c verdicts also change with
+the corrected hello evidence. Baseline production files are unchanged;
+its test adapter only accommodates the original void-returning `Path` API.
+The other 24 scenario cases retain their earlier three-run evidence.
+
+Operator evidence: edge management uses ZeroTier and survives either single
+wanbond VLAN blackout. The authorized test scope is one of `end0.231`
+(Starlink) or `end0.232` (5G) at a time, with verified automatic removal.
+Fresh observed prechecks found both deployed daemons without runtime
+replacement drop-ins, both adaptive lanes up, noqueue on both VLANs, and the
+edge's management replies routed via untagged `end0` and `192.168.222.1`.
+That Linux route alone does not identify the upstream provider; management
+safety for this scope comes from the operator's network explanation.
+
+The operator also directed immediate direct-uplink measurements before the
+tunnel, rather than treating an RF rate or latency as stationary. Observed
+`/home/pavel/wbtest` runs Starlink speedtest, 5G speedtest, then tunnel
+speedtest. Bounded field comparisons use that ordering and retain spread;
+unbounded speedtests and its exit-peer selection are not needed for the
+voice baseline. Fixed numerical definitions for the qualitative gates
+remain unresolved where a measured comparison cannot establish them.

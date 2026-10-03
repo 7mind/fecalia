@@ -129,6 +129,16 @@ these cases too. The bulk variants still fail because delivery falls by more
 than a quarter for over two seconds. Neither observation proves that the
 primary route moves; the tests retain those distinct outcomes.
 
+**Stage 0 finding, observed 2026-10-03.** The scenario model had renewed
+hello leases even through a dark incoming direction. After a failing
+reproduction and that input correction, three repetitions on `f75668e`
+give 1a five passes/three failures, 1b four failures, and 1c five
+passes/eleven failures; the current stage 0 controller matches these results.
+In particular, radio lane 0 with bulk passes 1a. The table's predicted
+caller-visible failure is wrong for that case. Some earlier voice-only 1c
+passes become failures and others become passes, so the newer evidence
+supersedes those earlier outage verdicts without changing their gates.
+
 ## 3. Target: one link model per lane, continuously measured, with ages
 
 A lane keeps a **link model**: a few estimates, each fed by every
@@ -376,6 +386,17 @@ delay model is also what stage 3's congestion signal reads.
    field links are 5G and Starlink and may vary widely (operator evidence):
    retain their contemporaneous conditions and interleave baseline/candidate
    rounds; a single field RTT or rate is not a stationary reference.
+5. Management safety: the operator confirms ZeroTier access survives a
+   blackout of either single wanbond VLAN (`end0.231` or `end0.232`). This is
+   operator evidence for one-VLAN tests. Observe the current Linux reply
+   route separately and verify an automatic removal timer before each change.
+6. For variable field conditions, measure the direct uplinks immediately
+   before the tunnel, following the ordering of the edge's `/home/pavel/wbtest`.
+   Observed script order is Starlink, 5G, tunnel. Use bounded measurements
+   and retain their spread; the operator cannot currently supply fixed
+   numerical meanings for the qualitative gates. Those comparisons must
+   expose uncertainty rather than inventing a tolerance. The existing
+   numerical gates and deadlines remain unchanged.
 
 Open: the video gates of row 4 (300 ms gap, 2% loss) are a proposal; and how a
 video call is told from a QUIC download.

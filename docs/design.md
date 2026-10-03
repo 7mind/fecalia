@@ -301,6 +301,13 @@ was changed by either correction.
 The older one-flow TCP model now preserves SACK reports too. Its separate
 three-report reproduction likewise delivered only two before correction;
 the complete bond test suite passes with the corrected model input.
+The adaptive scenario model also stops renewing a hello lease when its
+incoming direction is dark. A reproduction observed the old model keeping
+that lease live without incoming traffic. The corrected input renews the
+unfailed direction and lane independently; it changes no transport rule.
+Three repeated runs on the original controller now give five passes and
+three failures for 1a, four failures for 1b, and five passes and eleven
+failures for 1c. Current stage 0 outcomes match the original controller.
 
 **Paths and epochs.** An unpadded challenge-protected PROBE carries a 22-byte
 capability record: `bond`, version 1, physical path ID, process Boot ID and Bind

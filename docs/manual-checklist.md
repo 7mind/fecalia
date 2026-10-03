@@ -41,8 +41,12 @@ Prerequisites (all phases):
 - [ ] Interleave baseline and candidate field rounds on the 5G/Starlink links,
       retaining contemporaneous lane and scheduler observations. Arm and verify
       removal timers before each qdisc change; report mobile RX+TX bytes.
-      Before a WAN blackout, establish the management WAN. An observed Linux
-      reply route alone does not establish the physical provider carrying it.
+      Before a WAN blackout, establish management access safety. The operator
+      confirms ZeroTier access survives either single wanbond VLAN blackout
+      on the field edge; keep that scope and check its current reply route.
+      An observed Linux reply route alone does not establish the provider.
+      Measure direct Starlink and 5G properties immediately before tunnel
+      properties, preserving raw variation and imposing field rate caps.
 - [ ] Record the removal timer's accuracy and actual firing time. For a
       latency-rise measurement, remove netem after receipt collection:
       deleting it while voice packets are queued can contaminate the loss
