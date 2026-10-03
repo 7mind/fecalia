@@ -105,6 +105,15 @@ the field be the behavioral reference (section 7). Stage 0 resumed with host
 and guest scheduler observations; the earlier timing verdict is inconclusive.
 Stages 1–3 have not begun.
 
+**Stage 0 finding, observed 2026-10-03.** The corrected model 3a gate rejects
+a fixture recovering at 2.5 seconds, which the old post-deadline measurement
+accepted. With independent better-lane median references, the latency checks
+pass on `f75668e` both with and without bulk, identically in three repetitions
+on both families. Thus the table's caller-latency consequence is wrong in
+these cases too. The bulk variants still fail because delivery falls by more
+than a quarter for over two seconds. Neither observation proves that the
+primary route moves; the tests retain those distinct outcomes.
+
 ## 3. Target: one link model per lane, continuously measured, with ages
 
 A lane keeps a **link model**: a few estimates, each fed by every

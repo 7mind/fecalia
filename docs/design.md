@@ -230,6 +230,10 @@ possible membership near a phase boundary. A verdict that depends on that
 uncertainty is inconclusive. The 3a latency deadline also checks its final
 second separately; a median over the later phase cannot establish recovery
 within two seconds.
+The deterministic 3a gate checks the final second before that deadline too:
+a fixture recovering at 2.5 seconds passed its previous post-deadline window
+and is now rejected. Its better-lane median comes from an independent
+voice-only baseline on that lane, separately for each family and direction.
 Direct-link UDP calibration initiates each transfer at its sender, including
 downlink transfers from hub to edge. This avoids iperf's reverse-UDP startup
 failure when data arrives before its acceptance reply; it changes the lab

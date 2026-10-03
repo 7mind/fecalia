@@ -1749,3 +1749,55 @@ model, diagnostic-counter and evaluator changes (`stage0-current-nonprivileged-v
 `stage0-current-nix-build-v3.txt`). The policy's `control.go`, `schedule.go`
 and `queue.go` remain byte-identical to `f75668e` (observed git comparison).
 Stages 1–3 and their validation remain unstarted.
+
+### Field contact restored; delay measurement and model deadline
+
+The operator identified a discharged battery and reported it fixed. Fresh
+SSH checks observed both hosts reachable, both deployed executables at
+`/nix/store/zkkqlgm2jpg2s0klyiq5z6ixkcyfwxg5-wanbond-0.0.0/bin/wanbond`
+with SHA-256 `f0cb62b2e221b413436c76a428e58dc177110deace3d70d87ee7db08eeec1375`,
+and no runtime drop-ins. Both edge WAN metrics reported up. The physical
+management WAN remains unknown; no blackout was performed.
+
+Observed deployed-baseline voice-only measurements, 60 seconds each:
+
+| Conditions | Lost echoes, edge / hub, of 3000 each | Maximum receive gap, edge / hub | Mobile interface counter delta |
+| --- | --- | --- | --- |
+| Native links | 0 / 0 | 60 / 80 ms | 3.915 MB |
+| Both WAN VLANs gain 100 ms egress delay; timer removes during collection | 5 / 4 | 95 / 120 ms | 4.022 MB |
+| Same added delay held until collection finishes | 66 / 68 | 124 / 76 ms | 4.315 MB |
+
+Native p99 RTT was 67/76 ms. The first delay run lost no echoes during
+the rise; its nine losses coincide with qdisc removal. Observed timer
+`AccuracyUSec=1min` and journal times establish that the nominal 15-second
+removal ran about 40 seconds after application. That run does not isolate
+controller loss from removal of queued packets. The repeat arms 75-second
+removal timers with 100 ms accuracy before either change, and removes the
+qdiscs after voice collection. Its losses occur in the post-rise window
+`[17,28)` seconds while both netem qdiscs are still present; neither qdisc
+reports drops before cleanup. That is an observed failure of the 3c zero-loss
+gate on the deployed build. It does not establish the loss's internal cause.
+Both final qdisc checks report `noqueue`. The 12.253 MB sum includes
+background traffic in these windows; helper transfers and preflights outside
+them are excluded, so this is not a provider billing total.
+
+Evidence is under `/srv/nvme/tmp/wanbond-adaptive-evidence/`:
+`field-voice-restored-native-20261003-165940`,
+`field-voice-restored-both-delay-20261003-170151`,
+`field-voice-restored-both-delay-held-20261003-170835`,
+`field_resumed_voice.py`, and `field-resumed-delay-timer-precision.txt`.
+Field and lab interventions differ: the field adds 100 ms only on edge
+egress; the standard lab adds 50 ms in both directions. Equal added RTT does
+not establish equal queueing, lane state or physical-link conditions.
+
+The model's 3a deadline reproduction accepted recovery at 2.5 seconds before
+correction (`model-shift-deadline-red.txt`); it now rejects that fixture.
+Independent voice-only better-lane median references on `f75668e`, measured
+in `[5,19)` seconds, are 90/91 ms on radio and 83/82 ms on gigaradio
+(`f75668e-model-idle-median.txt`). The model checks `[21,22)` seconds for a
+change at 20 seconds, then checks the later phase separately. All four
+baseline 3a variants pass latency in three repetitions; both bulk variants
+still fail their delivery-cut gate (`f75668e-model-3a-deadline-v6.txt`). This
+supersedes the arbitrary 80 ms reference and the old `[22,24)` deadline
+claim. Baseline caller-latency passes are retained as findings, not converted
+into failures.
