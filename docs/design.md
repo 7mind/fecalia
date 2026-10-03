@@ -224,6 +224,12 @@ Each impairment event retains separate host submission and guest completion
 times for every changed lane. A simultaneous two-lane change has four guest
 application records; completion times alone do not establish when the change
 first took effect.
+The evaluator uses earliest submission for a deadline pass and latest guest
+completion for its failure bound. Voice quantiles retain both certain and
+possible membership near a phase boundary. A verdict that depends on that
+uncertainty is inconclusive. The 3a latency deadline also checks its final
+second separately; a median over the later phase cannot establish recovery
+within two seconds.
 Direct-link UDP calibration initiates each transfer at its sender, including
 downlink transfers from hub to edge. This avoids iperf's reverse-UDP startup
 failure when data arrives before its acceptance reply; it changes the lab

@@ -1548,16 +1548,31 @@ one timestamp. Its four-change reproduction retained only two records
 (`applied-times-red.txt`). It now retains each guest/lane's host submission
 and guest completion separately; all nineteen Python checks pass
 (`stage0-python-current.txt`). These bound application time rather than
-asserting that completion was its exact instant. Integration of those bounds
-into the gate evaluator remains pending.
+asserting that completion was its exact instant.
 
 A second clock-bound reproduction found a false pass: an interval stamped
 inside the deadline could belong wholly before the impairment under its
 recorded start uncertainty (`uncertain-origin-red.txt`). The evaluator now
 uses only provably contained intervals for passes and includes every possible
 overlap in failure bounds. That case is inconclusive after correction; all
-twenty Python checks pass (`uncertain-origin-green.txt`). Event-application
-bounds and qualitative gates remain unfinished.
+twenty Python checks pass (`uncertain-origin-green.txt`).
+
+The event bounds are now integrated: passes use earliest submission plus the
+deadline, failure bounds extend through latest guest completion plus clock
+uncertainty, and TCP phase samples must be certainly contained. A reproduction
+showed that delayed host collection could otherwise postpone the deadline by
+twenty seconds. Another showed that excluding an uncertain boundary sample
+could falsely pass a latency gate (`event-bounds-red.txt`). Voice quantiles
+now bound certain/possible membership; unresolved results are inconclusive.
+Older collections lacking submission bounds remain inconclusive for those
+phase checks.
+
+A separate 3a reproduction recovered 2.5 seconds after the impairment but
+passed a median over the rest of the phase (`latency-deadline-red.txt`). The
+collector now checks the final second before the two-second deadline as well
+as the later phase. All twenty-three Python checks pass
+(`latency-deadline-green.txt`). Other gate observations, qualitative
+definitions and the model deadline audit remain unfinished.
 
 The resumed calibration sweep completed fifteen profile states, each passing
 its independent UDP capacity gate, then stopped during stream setup on the
