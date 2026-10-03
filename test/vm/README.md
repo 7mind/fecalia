@@ -1664,8 +1664,8 @@ with their 42-byte IP/UDP/Ethernet overhead, capped at the configured rate.
 The helper rejects a failed 85% UDP calibration or insufficient service for
 required traffic. Five tests prove the directional conservation constraints,
 the voice cost, survivor equivalence and calibration rejection. This is a
-budget helper; matched phase calibration and the complete section 4 evaluator
-are still pending. Cold and existing benchmark gates retain their specified
+budget helper; matched phase calibration is complete while the complete section 4 evaluator
+remains unfinished. Cold and existing benchmark gates retain their specified
 wire-rate percentages; the voice amendment does not change those gates.
 
 The original baseline collector series completed with the original
@@ -1692,13 +1692,43 @@ references of 2,030,443/288,205 B/s. Gigaradio 2d still fails. The previous
 151 ms radio verdict is superseded; this passing finding is retained and
 the plan's section 2 corrected. Qualitative gate definitions and the
 remaining gate-fidelity audit are still unfinished.
+The 2d voice window is `[10,40)` seconds and its mean bulk window `[20,40)`;
+the finding is confined to those measurements.
 
 Independent phase references have also been assembled for all 106 phases
 of the 28 family/scenario combinations from the successful calibrations.
 `phase-goodput-references-v1` retains each calibration path, directional wire
 service and protocol budget; no candidate estimate or delivery is an input.
 A one-way-dark WAN is excluded entirely, as required by 1c. Independent
-idle-latency collection remains in progress.
+idle-latency collection subsequently completed all eighteen runs in
+`f75668e-idle-references-20261003-022301`: each WAN and the pair, three runs
+on both families, with voice only on the original binary. Quantiles use
+actual send times in `[10,29)` seconds. Fixed lab references use the maximum
+of the three p99 measurements and median of the three p50 measurements;
+every raw run remains available. These are lab references, not stationary
+5G/Starlink values.
+
+| Family | Enabled WANs | Idle p99 edge / hub (ms) | Idle p50 edge / hub (ms) |
+|---|---|---:|---:|
+| radio | WAN1 | 59.114 / 58.833 | 40.695 / 40.428 |
+| radio | WAN2 | 133.065 / 133.686 | 81.617 / 80.698 |
+| radio | pair | 72.179 / 74.122 | 39.041 / 39.048 |
+| gigaradio | WAN1 | 59.187 / 145.580 | 40.967 / 40.435 |
+| gigaradio | WAN2 | 134.708 / 134.655 | 81.988 / 80.241 |
+| gigaradio | pair | 78.599 / 73.422 | 38.621 / 38.701 |
+
+Observed maximum recorder wake delays across these runs were 7.519 ms on
+the host, 15.196 ms on edge and 17.911 ms on hub. The WAN1 gigaradio outlier
+round recorded maxima of 0.925/0.500/0.204 ms; wake delay alone does not
+explain its 145.580 ms p99. Its cause remains unknown. Scheduler observations
+are retained in `scheduler-summary.json` beside the reference index.
+
+The assembled phase files now include the idle references and their raw
+evidence paths. No new TCP scenario series has been claimed as acceptance:
+the original 84 runs lack the new timing evidence, and several gate
+observations and definitions remain unfinished. Edge SSH still reported
+`No route to host` on the subsequent read-only recheck
+(`field-access-recheck.txt`); no field candidate or impairment ran.
 
 The current non-privileged AGENTS gate and `nix build` passed after the ACK
 model and diagnostic-counter changes (`stage0-current-nonprivileged-v2.txt`,

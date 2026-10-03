@@ -86,7 +86,8 @@ those cases. The full scenario and lab gates remain to be proved.
 
 **Stage 0 finding, observed 2026-10-03.** After correcting the model's ACK
 metadata to preserve SACK as the production classifier does, radio 2d passes
-on `f75668e`: voice p99 is 136/141 ms and both bulk directions exceed 70%
+on `f75668e`: voice p99 is 136/141 ms in `[10,40)` seconds and both bulk
+directions exceed 70% in `[20,40)` seconds
 of the independent reference. All 52 model cases produced identical
 measurements and verdicts in three repetitions. An inference that the old
 model necessarily fails this radio grant pattern is wrong; the pass is

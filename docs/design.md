@@ -261,13 +261,13 @@ measurements and interleaved baseline/candidate rounds.
 The stage 0 lab reference budgets TCP payload independently of the candidate:
 calibrated UDP wire service minus required voice, feedback, keepalives and
 the reverse TCP ACK stream. It uses the observed lab MTU/MSS and inferred
-encapsulation costs; phase calibration and complete gate evaluation remain
-pending. One-way outages use the same fully surviving-lane reference as
+encapsulation costs. One-way outages use the same fully surviving-lane reference as
 two-way outages. This reference changes no transport decision.
 
 All 26 healthy phase profiles now pass their direct UDP capacity calibration;
-independent goodput references cover all 106 scenario phases. Idle-latency
-reference collection and complete gate evaluation remain pending.
+independent goodput references cover all 106 scenario phases. Independent
+idle-latency references include three runs on each WAN and the pair on both
+families; their raw spread is retained. Complete gate evaluation remains pending.
 The adaptive TCP model also excludes SACK reports from ACK coalescing, as the
 production classifier does. Its failing reproduction preserved only two of
 three reports before that model-input correction. The remeasured baseline
