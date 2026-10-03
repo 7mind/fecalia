@@ -9,6 +9,30 @@ from adaptive_gates import Interval, TimeBounds, bounded_latency, bulk_gate, egr
 
 
 class GateTests(unittest.TestCase):
+    def test_cold_deadline_starts_with_the_transfer_instead_of_dispatch(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            manifest = {"scenario": "cold", "start_host": 0, "seconds": 10, "voice": False, "tcp": True,
+                        "profile": {guest: {"1": {"rate": 1}} for guest in ("edge", "hub")},
+                        "clock_offsets": {guest: [0, 0] for guest in ("edge", "hub")}, "events": []}
+            (directory / "scenario.json").write_text(json.dumps(manifest))
+            tcp = {"start": {"timestamp": {"timemillisecs": 2000}}, "test_started_guest": 2,
+                   "intervals": [{"streams": [{"sender": False, "omitted": False, "start": second, "end": second + 1,
+                                               "bytes": 100000 if second >= 6 else 0}]} for second in range(8)]}
+            (directory / "tcp.json").write_text(json.dumps({**tcp, "server_output_json": tcp}))
+            for guest in ("edge", "hub"):
+                (directory / f"{guest}-samples.jsonl").write_text("")
+            checks = evaluate(directory, {})
+            self.assertEqual([check.status for check in checks], ["pass", "pass"],
+                             "delivery reached 60% in the transfer's seventh second; dispatch was two seconds earlier")
+            for interval in tcp["intervals"]:
+                interval["streams"][0]["bytes"] = 0
+            (directory / "tcp.json").write_text(json.dumps({**tcp, "server_output_json": tcp}))
+            self.assertEqual([check.status for check in evaluate(directory, {})], ["fail", "fail"])
+            tcp.pop("test_started_guest")
+            (directory / "tcp.json").write_text(json.dumps({**tcp, "server_output_json": tcp}))
+            self.assertTrue(all(check.status == "inconclusive" for check in evaluate(directory, {})))
+
     def test_egress_loss_does_not_count_old_backlog_as_newly_accepted_bytes(self):
         samples = [{"bounds": TimeBounds(at, at), "tc": {"eth1": {
             "qdisc": [{"kind": "htb", "root": True, "handle": "1:", "bytes": delivered, "backlog": backlog}],

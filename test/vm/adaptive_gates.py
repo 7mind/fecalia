@@ -279,7 +279,7 @@ def evaluate(directory, references):
             if "t_complete" in sample:
                 uncertainty = manifest["clock_offsets"][guest][1]
                 sample["bounds"] = TimeBounds(sample["at"] - uncertainty, sample["t_complete"] - offsets[guest] - origin + uncertainty)
-    tcp, tcp_uncertainty = {}, {}
+    tcp, tcp_uncertainty, tcp_starts = {}, {}, {}
     if manifest["tcp"]:
         report = json.loads((directory / "tcp.json").read_text())
         server = report["server_output_json"]
@@ -290,6 +290,10 @@ def evaluate(directory, references):
         tcp["hub"] = receiver_intervals(server, offsets["hub"], origin) if "test_started_guest" in server else []
         for guest, data in (("edge", report), ("hub", server)):
             tcp_uncertainty[guest] = max(0, data["test_started_guest"] - data["start"]["timestamp"]["timemillisecs"] / 1000) + 2 * manifest["clock_offsets"][guest][1] if "test_started_guest" in data else 0
+            if "test_started_guest" in data:
+                uncertainty = manifest["clock_offsets"][guest][1]
+                tcp_starts[guest] = TimeBounds(data["start"]["timestamp"]["timemillisecs"] / 1000 - offsets[guest] - origin - uncertainty,
+                                              data["test_started_guest"] - offsets[guest] - origin + uncertainty)
     events = manifest["events"]
     bounds = [TimeBounds(0, 0)] + [event_bounds(event, manifest["clock_offsets"], origin) for event in events] + [TimeBounds(manifest["seconds"], manifest["seconds"])]
     case = manifest["scenario"]
@@ -305,6 +309,7 @@ def evaluate(directory, references):
         row, deadline = None, None
         if case == "cold":
             row, deadline = "0", 7
+            start_bounds = TimeBounds(min(value.earliest for value in tcp_starts.values()), max(value.latest for value in tcp_starts.values())) if len(tcp_starts) == 2 else None
         elif case.startswith(("blackout", "oneway")) and phase:
             row, deadline = ("1c", 3) if case.startswith("oneway") and "dark" in event else (("1a", 3) if "dark" in event else ("1b", 5))
         elif case.startswith("rate-") and phase:
