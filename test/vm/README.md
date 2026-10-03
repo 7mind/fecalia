@@ -1801,3 +1801,55 @@ still fail their delivery-cut gate (`f75668e-model-3a-deadline-v6.txt`). This
 supersedes the arbitrary 80 ms reference and the old `[22,24)` deadline
 claim. Baseline caller-latency passes are retained as findings, not converted
 into failures.
+
+Observed subsequent diagnostic candidate `adapt-s0-d2d831f` had executable
+SHA-256 `7ebe1d705a9ed354a5c5f6cda65f747b974447b913d4a7790ed3b1b94cc8d1fb`.
+Its policy source remained unchanged. The fresh held-delay round lost 66/80
+echoes, with maximum gaps 218/217 ms; the warm round lost 63/73, with gaps
+166/150 ms. These are not clean 3c comparisons: retained edge samples show
+Starlink down throughout fresh voice collection, and down in warm windows
+`[9.257,13.360)` and `[16.562,64.696)` relative to voice start. Logs record
+liveness transitions but do not establish their cause. Both deployed
+executables were restored, runtime drop-ins removed, and both final VLAN
+qdiscs were `noqueue`. No permanent deployment occurred.
+
+Before the deployed held-delay rise, both WANs remained up throughout the
+retained samples. Its edge targets fell to 16 kB/s on both lanes and its
+interactive queue-drop counter increased by 134, equal to the 66+68 lost
+echoes. That supports the delay-model diagnosis by inference; aggregate
+counters do not identify individual datagrams. The later diagnostic rounds
+retain their differing lane states rather than treating their larger gaps
+as an implementation regression.
+
+Across the interval from the native run's initial counters through final
+candidate restoration, the mobile VLAN's RX+TX counters advanced by
+39.538 MB, including background traffic and gaps between measurements.
+The gzip artifact sent to the edge was 4.693 MB on the management path,
+whose physical WAN is still unknown; it cannot be assumed included in that
+VLAN total. Evidence includes `field_diagnostic_voice.py`,
+`field-voice-s0-d2d831f-held-{fresh,warm}-20261003-*`,
+`field-diagnostic-{edge,hub}-lane-check.txt`, and
+`field-candidate-mobile-{before.json,after-and-restoration.txt}`.
+
+The candidate runner's simulated timer-failure reproduction observed both
+runtime override attempts despite failed timer commands. Its local
+`/srv/nvme/tmp/wanbond-field/candidate.sh` now stops on an arm failure and
+verifies timer activity before writing an override. The corrected fake-SSH
+reproduction stops before any override (`candidate-arm-repro/{red,green}.txt`).
+Real starts verified the timers and executable hashes; artifacts were gzip
+compressed by the same runner.
+
+The observed one-minute default timer accuracy also leaves the exact duration
+of earlier nominal 15-second field impairments unproved. Their whole-run
+echo receipts remain observations; nominal timer delays do not establish
+phase boundaries or a matched 15-second lab replay.
+
+Stage 0 now exports `received_bulk_packets_total` per destination lane. The
+complete reproduction failed for the missing counter before implementation
+(`received-bulk-red-complete-fixture.txt`). It passes with actual transport
+receipts, repeated physical attempts, frame replays, small datagrams and
+keepalives exercised (`received-bulk-green.txt`). This count establishes
+physical bulk receipt, including a duplicate datagram in a new attempt;
+it does not establish inner or TCP delivery. It changes no control rule or
+wire field. The full non-privileged gate passed with this diagnostic
+(`stage0-current-nonprivileged-v5.txt`); lab gate integration remains pending.

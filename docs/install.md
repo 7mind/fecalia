@@ -363,7 +363,10 @@ and small TCP datagrams. Its increments identify the selected primary lane;
 transport submissions, not confirmed socket writes or delivery. Receive
 latency alone can reflect a faster redundant copy.
 `bulk_original_packets_total` counts first bulk submissions per lane, excluding
-copies, repairs and small datagrams; it identifies bulk use after recovery.
+copies, repairs and small datagrams. `received_bulk_packets_total` counts
+authenticated physical bulk DATA receipts on each destination lane, including
+repeated datagrams in new attempts; frame replays, small datagrams and empty
+keepalives are excluded. Receipt does not establish inner-engine delivery.
 `discovering` is 1 until a lane's first
 congestion signal ends its capacity discovery. `window_bytes` reports the current in-flight
 allowance, including its initial delivery-credit limit; compare it with

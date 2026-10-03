@@ -43,6 +43,11 @@ Prerequisites (all phases):
       removal timers before each qdisc change; report mobile RX+TX bytes.
       Before a WAN blackout, establish the management WAN. An observed Linux
       reply route alone does not establish the physical provider carrying it.
+- [ ] Record the removal timer's accuracy and actual firing time. For a
+      latency-rise measurement, remove netem after receipt collection:
+      deleting it while voice packets are queued can contaminate the loss
+      measurement. Preserve lane-up samples; a round with an unplanned WAN
+      outage does not isolate the two-live-lane delay scenario.
 - [ ] Benchmark upload and download, confirming bulk bytes on both WANs and
       goodput above the profile's acceptance threshold.
 - [ ] Repeat with opposite upload/download capacities and seeded jitter.

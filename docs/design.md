@@ -204,6 +204,11 @@ transport's selected route. They do not alter scheduling or the wire format.
 `bulk_original_packets_total` likewise counts first bulk submissions per lane,
 excluding copies, repairs and small datagrams. It distinguishes restored-lane
 bulk use from its ongoing ACKs and keepalives.
+`received_bulk_packets_total` instead observes authenticated physical bulk
+DATA receipts on the destination lane. It counts a repeated datagram arriving
+in a new physical attempt, but excludes replayed attempts, small datagrams
+and empty keepalives. This proves receipt on a lane; it does not establish
+delivery through the inner engine or TCP goodput.
 
 The stage 0 scenario collector records actual voice send times and captures
 iperf's test-start events in each guest. Its gate evaluator uses TCP receiver
