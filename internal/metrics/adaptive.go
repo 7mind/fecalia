@@ -76,6 +76,7 @@ func newAdaptiveCollector(source AdaptiveSource) *adaptiveCollector {
 		makeMetric("sent_bytes_total", "Wire bytes submitted by the adaptive sender.", prometheus.CounterValue, func(p bond.PathStats) float64 { return float64(p.Sent) }),
 		makeMetric("interactive_sent_bytes_total", "Wire bytes of small datagrams submitted on this lane, including copies; included in sent_bytes_total.", prometheus.CounterValue, func(p bond.PathStats) float64 { return float64(p.InteractiveSent) }),
 		makeMetric("realtime_original_packets_total", "First submissions of real-time datagrams to this lane; excludes copies, repairs and small TCP datagrams.", prometheus.CounterValue, func(p bond.PathStats) float64 { return float64(p.RealtimeOriginals) }),
+		makeMetric("bulk_original_packets_total", "First submissions of bulk datagrams to this lane; excludes copies, repairs and small datagrams.", prometheus.CounterValue, func(p bond.PathStats) float64 { return float64(p.BulkOriginals) }),
 		makeMetric("acked_bytes_total", "Wire bytes acknowledged by the peer.", prometheus.CounterValue, func(p bond.PathStats) float64 { return float64(p.ACKed) }),
 		makeMetric("repair_packets_total", "Additional copies, including small-packet replication.", prometheus.CounterValue, func(p bond.PathStats) float64 { return float64(p.Retransmits) }),
 		makeMetric("discovering", "Lane has not yet observed a congestion signal and follows measured delivery.", prometheus.GaugeValue, func(p bond.PathStats) float64 {

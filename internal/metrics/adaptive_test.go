@@ -26,11 +26,17 @@ func TestRealtimeOriginalsExcludeCopiesAndTCPACKs(t *testing.T) {
 		t.Fatal(err)
 	}
 	var repairs uint64
+	bulkTransmissions := 0
 	tcpSent := false
-	for tick := 0; tick < 160; tick++ {
+	for tick := 0; tick < 400; tick++ {
 		now := start.Add(time.Duration(tick) * time.Millisecond)
 		if tick == 70 {
 			if err := p.Enqueue(make([]byte, 96), bond.PacketMetadata{Flow: bond.FlowID{4, 6}}, now); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if tick == 90 {
+			if err := p.Enqueue(make([]byte, 1280), bond.PacketMetadata{Flow: bond.FlowID{4, 6}}, now); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -48,9 +54,15 @@ func TestRealtimeOriginalsExcludeCopiesAndTCPACKs(t *testing.T) {
 			if sent.Frame.ControlType == bond.DataType && len(sent.Frame.Payload) == bond.Overhead-frame.ControlOverhead+96 {
 				tcpSent = true
 			}
+			if sent.Frame.ControlType == bond.DataType && len(sent.Frame.Payload) == bond.Overhead-frame.ControlOverhead+1280 {
+				bulkTransmissions++
+			}
 		}
 	}
-	state := p.Snapshot(start.Add(160 * time.Millisecond))
+	state := p.Snapshot(start.Add(400 * time.Millisecond))
+	if bulkTransmissions < 2 {
+		t.Fatalf("only %d bulk transmissions; no bulk copy or repair exercised the exclusion", bulkTransmissions)
+	}
 	for _, lane := range state.Paths {
 		repairs += lane.Retransmits
 	}
@@ -68,7 +80,7 @@ func TestRealtimeOriginalsExcludeCopiesAndTCPACKs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	originals, moves := false, false
+	originals, moves, bulk := false, false, false
 	for _, family := range families {
 		switch family.GetName() {
 		case "wanbond_adaptive_realtime_original_packets_total":
@@ -86,10 +98,19 @@ func TestRealtimeOriginalsExcludeCopiesAndTCPACKs(t *testing.T) {
 			if len(family.Metric) != 1 || family.Metric[0].GetCounter().GetValue() != 1 {
 				t.Fatalf("primary route counter = %v, want one move", family.Metric)
 			}
+		case "wanbond_adaptive_bulk_original_packets_total":
+			bulk = true
+			total := 0.0
+			for _, metric := range family.Metric {
+				total += metric.GetCounter().GetValue()
+			}
+			if total != 1 {
+				t.Fatalf("bulk originals = %v, want 1 excluding small TCP and copies", total)
+			}
 		}
 	}
-	if !originals || !moves {
-		t.Fatalf("real-time primary counters missing: originals=%t moves=%t", originals, moves)
+	if !originals || !moves || !bulk {
+		t.Fatalf("primary counters missing: originals=%t moves=%t bulk=%t", originals, moves, bulk)
 	}
 }
 

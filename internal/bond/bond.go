@@ -134,6 +134,7 @@ type PathStats struct {
 	Retransmits          uint64
 	InteractiveSent      uint64
 	RealtimeOriginals    uint64
+	BulkOriginals        uint64
 	Up                   bool
 	Discovering          bool
 	// Threshold is the queue delay above which the lane is taken to queue.
@@ -311,6 +312,7 @@ type lane struct {
 	sent               uint64
 	interactiveSent    uint64
 	realtimeOriginals  uint64
+	bulkOriginals      uint64
 	acked              uint64
 	retries            uint64
 }
@@ -759,6 +761,9 @@ func (t *Transport) transmit(p *packet, path *lane, now time.Time) Transmission 
 				t.realtimeMoves++
 			}
 			t.realtimePath, t.realtimePathKnown = path.id, true
+		}
+		if p.class == classBulk {
+			path.bulkOriginals++
 		}
 		if p.class != classBulk {
 			t.demand[p.class].add(now, float64(size))
@@ -1415,7 +1420,7 @@ func (t *Transport) Snapshot(now time.Time) Snapshot {
 			IdleForwardVariation: p.idleForwardVariation,
 			FeedbackRTT:          p.feedbackRTT, FeedbackRTTVariation: p.feedbackRTTVariation,
 			BaseRTT: p.baseRTT, QueueDelay: p.queueDelay,
-			InFlight: p.inflight, Window: p.window(), Sent: p.sent, ACKed: p.acked, Retransmits: p.retries, InteractiveSent: p.interactiveSent, RealtimeOriginals: p.realtimeOriginals,
+			InFlight: p.inflight, Window: p.window(), Sent: p.sent, ACKed: p.acked, Retransmits: p.retries, InteractiveSent: p.interactiveSent, RealtimeOriginals: p.realtimeOriginals, BulkOriginals: p.bulkOriginals,
 			Up:          p.up(now) && !p.stalled,
 			Discovering: p.startup,
 			Threshold:   p.congestionThreshold(),
