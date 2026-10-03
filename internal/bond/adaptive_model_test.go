@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/7mind/wanbond/internal/bond"
+	"github.com/7mind/wanbond/internal/frame"
 	"github.com/7mind/wanbond/internal/reseq"
 )
 
@@ -154,6 +155,33 @@ func (p *policyTCP) receive(seq uint64) (int, []byte) {
 		binary.BigEndian.PutUint64(ack[16+16*block:], r[1])
 	}
 	return delivered, ack
+}
+
+func (p *policyTCP) metadata(side int) bond.PacketMetadata {
+	return bond.PacketMetadata{Flow: bond.FlowID{4, 6, byte(3 + side)}, ACK: bond.TCPACK{Eligible: len(p.ranges) == 0, Sequence: 1, Acknowledgement: uint32(p.next), Window: 4096}}
+}
+
+func TestAdaptiveModelPreservesSACKReports(t *testing.T) {
+	now := time.Unix(100, 0)
+	transport := bond.New(bond.Epoch{Boot: 1, Generation: 1})
+	transport.SetRemote(bond.Epoch{Boot: 2, Generation: 1}, true)
+	transport.Path(0, 0, 20*time.Millisecond, now)
+	receiver := newPolicyTCP()
+	for _, seq := range []uint64{5, 1, 2} {
+		_, ack := receiver.receive(seq)
+		if err := transport.Enqueue(ack, receiver.metadata(0), now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	reports := 0
+	for _, tx := range poll(transport, now) {
+		if tx.Frame.ControlType == bond.DataType && len(tx.Frame.Payload) == bond.Overhead-frame.ControlOverhead+tcpACKBytes {
+			reports++
+		}
+	}
+	if reports != 3 {
+		t.Fatalf("only %d of three SACK reports retained; model metadata let coalescing remove TCP information", reports)
+	}
 }
 
 // policyRun exercises both transports, two echo streams and one TCP flow in
@@ -311,7 +339,7 @@ func (m policyRun) run(t *testing.T) policyOutcome {
 				if tick/1000 < m.seconds {
 					outcome.bulk[1-side][tick/1000] += float64(delivered)
 				}
-				meta := bond.PacketMetadata{Flow: bond.FlowID{4, 6, byte(3 + side)}, ACK: bond.TCPACK{Eligible: true, Sequence: 1, Acknowledgement: uint32(tcp[1-side].next), Window: 4096}}
+				meta := tcp[1-side].metadata(side)
 				if err := peers[side].Enqueue(ack, meta, now); err != nil {
 					t.Fatal(err)
 				}
