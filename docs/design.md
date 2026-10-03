@@ -333,6 +333,17 @@ bulk delivery over the healthy lane and preservation of the idle pacing
 rate, instead of asserting the private stall mechanism. Both restatements
 pass with the existing controller; no liveness rule has been removed yet.
 
+A stage 1 attempt was tested and rejected on 2026-10-03. Observed: its
+ACK-progress liveness and suspect-copy reproductions pass, but all bulk
+outage/recovery model variants fail and a bursty-link goodput regression
+remains. Removing the legacy single-survivor bulk restriction also regresses
+voice latency. The attempt was never installed in the lab or field; the
+repository's stage 0 controller was restored. See the
+[stage 1 checkpoint](drafts/20261003-2245-adaptive-stage1-checkpoint.md) for
+the measured outcomes, the direction-specific scheduler bound and retained
+source. Stages 1–3 remain unproved; later estimator replacements are not
+treated as evidence that these failures are resolved.
+
 **Paths and epochs.** An unpadded challenge-protected PROBE carries a 22-byte
 capability record: `bond`, version 1, physical path ID, process Boot ID and Bind
 Open generation. Padded PMTU probes retain their original size. A logical lane

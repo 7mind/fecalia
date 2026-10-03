@@ -2188,3 +2188,42 @@ The gigaradio smoke also used 100 ms receiver reports and 9.6 ms clock
 uncertainty; all four outage progress checks proved delivery in all 14
 required seconds. Its overall gate still fails
 (`stage0-receiver-resolution-mux-gigaradio.txt`).
+
+### Rejected stage 1 model attempt — 2026-10-03
+
+Observed on the attempted ACK-progress liveness replacement: the two new
+rate-preservation and suspect-copy reproductions pass. After correcting a
+copy pacing-slot regression, the existing two-lane voice test delivers
+500/500 at one-way p99 59 ms against its unchanged 70 ms gate. The complete
+bond suite still fails the bursty-link bulk outcome: schedule 2 delivers
+3,031,500 B/s, below 75% of 4,562,500 B/s mean service.
+
+One full stage 1 model run gives 1a four passes/four failures, 1b four
+failures, and 1c eight passes/eight failures. All twelve voice-only cases
+pass; all sixteen bulk cases fail. These are not three-run results. The
+radio lane 0 bulk case regresses relative to its corrected original baseline
+pass. No gate or reference was changed to obtain these outcomes.
+
+The radio survivor trace and scheduler code explain one restriction: while
+voice activates the single-lane bulk cap, direction 0 allows only 5% of its
+70,514.7 B/s target (3,525.7 wire B/s), below the required 6,385.5 TCP payload
+B/s at the retained 8,514 B/s reference. Inferred: removing that restriction
+is necessary at that held target. It is insufficient as a fix: the removal
+still fails TCP progress and regresses single-lane voice to 494/500 delivered
+and p99 116 ms against 99% / 75 ms. The earlier 2,181 B/s reference belongs
+to direction 1 and must not be paired with direction 0's target.
+
+These deterministic failures cannot be attributed to lab-host CPU spikes.
+No attempt was installed in either VM or production, and no field data was
+used. Under the operator's stop rule, the failed code was retained outside
+the repository and the stage 0 policy restored. The
+[checkpoint](../../docs/drafts/20261003-2245-adaptive-stage1-checkpoint.md)
+lists exact source, artifacts, observations and limits. Stages 2–3 remain
+unstarted; the fixed numeric gates and direct-before-tunnel field method
+remain unchanged.
+
+Observed after restoration: the full AGENTS.md non-privileged gate and
+`nix build --cores 2 --max-jobs 1` pass
+(`stage1-restored-nonprivileged-v1.txt`,
+`stage1-restored-nix-build-v1.txt`). These results validate the restored
+stage 0 source, not the rejected attempt.
