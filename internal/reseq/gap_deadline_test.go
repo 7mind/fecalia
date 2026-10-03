@@ -420,9 +420,9 @@ func TestGapStaysHeldWhileSuccessorsKeepArriving(t *testing.T) {
 // socket's receive queue 2 MB deep, 5.1 MB/s read of 7.5 MB/s offered).
 func TestGapFillsBehindAnEarlyFrameDoNotScanTheWindow(t *testing.T) {
 	const window, frames, lead = 32768, 100000, 100
-	// run delivers the frames and returns how long that took. With early set,
+	// run delivers the frames and counts ring slots inspected to arm holds. With early set,
 	// every hundredth frame arrives before the ninety-nine ahead of it.
-	run := func(early bool) time.Duration {
+	run := func(early bool) uint64 {
 		r := reseq.New(window, gapTimeout, newFakeClock())
 		r.RebaselineAt(1)
 		released, expected := 0, uint64(1)
@@ -443,7 +443,6 @@ func TestGapFillsBehindAnEarlyFrameDoNotScanTheWindow(t *testing.T) {
 			r.Observe(seq, binary.BigEndian.AppendUint64(nil, seq), testSrc)
 			drain()
 		}
-		began := time.Now()
 		for first := uint64(1); first <= frames; first += lead {
 			last := first + lead - 1
 			if early {
@@ -459,12 +458,12 @@ func TestGapFillsBehindAnEarlyFrameDoNotScanTheWindow(t *testing.T) {
 		if released != frames {
 			t.Fatalf("%d of %d frames released", released, frames)
 		}
-		return time.Since(began)
+		return r.Stats().HoldSlotVisits
 	}
 	inOrder, withEarly := run(false), run(true)
-	t.Logf("%d frames: %s in order, %s with every %dth early", frames, inOrder, withEarly, lead)
-	// The scan made it several hundred times the work of in-order delivery.
-	if withEarly > 20*inOrder {
-		t.Fatalf("frames behind an early one took %s, in order %s", withEarly, inOrder)
+	t.Logf("%d frames: %d ring visits in order, %d with every %dth early", frames, inOrder, withEarly, lead)
+	const maximumVisits = 2 * frames
+	if inOrder != 0 || withEarly == 0 || withEarly > maximumVisits {
+		t.Fatalf("hold lookup inspected %d ring cells in order, %d with early arrivals; bound %d", inOrder, withEarly, maximumVisits)
 	}
 }

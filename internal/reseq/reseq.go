@@ -175,6 +175,7 @@ type Resequencer struct {
 	holdNanos       uint64
 	deadlineWakeups uint64
 	gapFills        uint64
+	holdSlotVisits  uint64
 
 	// holdBound is the per-gap hold (T241): the bind installs it via SetHoldBound,
 	// already clamped to [holdBoundFloor, timeout]. Zero means "unset" — arm() then
@@ -656,6 +657,7 @@ func (r *Resequencer) smallestBuffered() (uint64, bool) {
 func (r *Resequencer) oldestBufferedObservation() (time.Time, bool) {
 	for ; r.heldPos < len(r.held); r.heldPos++ {
 		seq := r.held[r.heldPos]
+		r.holdSlotVisits++
 		if cell := &r.ring[seq%r.window]; cell.occupied && cell.seq == seq && seq >= r.next {
 			if r.heldPos > len(r.held)/2 {
 				// What was passed over is dropped once it is most of the list,
@@ -709,6 +711,7 @@ type Stats struct {
 	ArmedWindow     time.Duration
 	DeadlineWakeups uint64
 	GapFills        uint64
+	HoldSlotVisits  uint64 // ring cells inspected while finding the oldest buffered observation
 }
 
 // Stats returns a snapshot of the cumulative counters.
@@ -728,6 +731,7 @@ func (r *Resequencer) Stats() Stats {
 		HoldNanos:       r.holdNanos,
 		DeadlineWakeups: r.deadlineWakeups,
 		GapFills:        r.gapFills,
+		HoldSlotVisits:  r.holdSlotVisits,
 	}
 	if r.waiting {
 		stats.ArmedDeadline = r.deadline
