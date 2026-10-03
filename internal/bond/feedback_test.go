@@ -110,18 +110,65 @@ func TestIdleJitterDoesNotCollapsePacingRate(t *testing.T) {
 	runJitterCapacity(t, false, 15, 30, 1250000, 0)
 }
 
-func TestIdleKeepaliveTimeoutPreservesPacingTarget(t *testing.T) {
+func TestLostIdleKeepalivePreservesRateAndBulkUsesTheHealthyLane(t *testing.T) {
 	start := time.Unix(100, 0)
 	a := bond.New(bond.Epoch{Boot: 1, Generation: 1})
-	a.SetRemote(bond.Epoch{Boot: 2, Generation: 1}, true)
-	a.Path(0, 0, 80*time.Millisecond, start)
-	initial := a.Snapshot(start).Paths[0].Rate
-	poll(a, start.Add(200*time.Millisecond)) // Drop the idle keepalive.
-	poll(a, start.Add(500*time.Millisecond))
-	state := a.Snapshot(start.Add(500 * time.Millisecond)).Paths[0]
-	if state.Up {
-		t.Fatal("missing keepalive ACK must still stall the path")
+	b := bond.New(bond.Epoch{Boot: 2, Generation: 1})
+	a.SetRemote(b.Epoch(), true)
+	b.SetRemote(a.Epoch(), true)
+	for path := bond.PathID(0); path < 2; path++ {
+		if err := a.Path(path, path, 80*time.Millisecond, start); err != nil {
+			t.Fatal(err)
+		}
 	}
+	if err := b.Path(1, 1, 80*time.Millisecond, start); err != nil {
+		t.Fatal(err)
+	}
+	initial := a.Snapshot(start).Paths[0].Rate
+	for _, tx := range poll(a, start.Add(200*time.Millisecond)) {
+		if tx.Path == 1 {
+			if _, err := b.Receive(1, tx.Frame, start.Add(240*time.Millisecond)); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	for _, tx := range poll(b, start.Add(260*time.Millisecond)) {
+		if _, err := a.Receive(1, tx.Frame, start.Add(300*time.Millisecond)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := a.Enqueue(make([]byte, 1200), bond.PacketMetadata{}, start.Add(500*time.Millisecond)); err != nil {
+		t.Fatal(err)
+	}
+	var delivered int
+	queue := &events{}
+	heap.Init(queue)
+	for tick := 500; tick < 650; tick++ {
+		now := start.Add(time.Duration(tick) * time.Millisecond)
+		for side, peer := range [2]*bond.Transport{a, b} {
+			for _, tx := range poll(peer, now) {
+				if side == 0 && tx.Path == 0 {
+					continue
+				}
+				heap.Push(queue, event{now.Add(40 * time.Millisecond), 1 - side, tx.Path, tx.Frame})
+			}
+		}
+		for queue.Len() > 0 && !(*queue)[0].at.After(now) {
+			e := heap.Pop(queue).(event)
+			peer := [2]*bond.Transport{a, b}[e.to]
+			items, err := peer.Receive(e.path, e.frame, now)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if e.to == 1 {
+				delivered += len(items)
+			}
+		}
+	}
+	if delivered != 1 {
+		t.Fatalf("healthy lane delivered %d of one bulk datagram after the idle keepalive loss", delivered)
+	}
+	state := a.Snapshot(start.Add(650 * time.Millisecond)).Paths[0]
 	if state.Rate != initial {
 		t.Fatalf("no application traffic was offered, but a keepalive timeout changed pacing: %.0f -> %.0f", initial, state.Rate)
 	}
