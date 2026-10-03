@@ -1902,3 +1902,10 @@ Evidence: `f75668e-existing-gates-20261003-183828/{index,scheduler-summary}.json
 `f75668e-existing-benchmark-observer-v2-summary.json`, under the evidence
 directory above. The lane controller remains unchanged. Stage 0 and stages
 1–3 remain incomplete.
+
+The older one-flow model in `tcp_model_test.go` also marked SACK reports
+eligible for coalescing. Its public transport reproduction delivered reports
+1 and 3, discarding report 2 (`tcp-model-sack-red.txt`). The model now excludes
+reports carrying SACK ranges, matching the production classifier. All bond
+tests pass with the corrected metadata (`tcp-model-sack-bond-tests.txt`,
+79.267 seconds). This changes test inputs, not the deployed controller.

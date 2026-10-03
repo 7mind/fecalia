@@ -288,6 +288,9 @@ three reports before that model-input correction. The remeasured baseline
 produced identical measurements across three runs of all 52 cases; radio 2d
 passes its voice and bulk checks and that finding is retained. No lane policy
 was changed by either correction.
+The older one-flow TCP model now preserves SACK reports too. Its separate
+three-report reproduction likewise delivered only two before correction;
+the complete bond test suite passes with the corrected model input.
 
 **Paths and epochs.** An unpadded challenge-protected PROBE carries a 22-byte
 capability record: `bond`, version 1, physical path ID, process Boot ID and Bind
