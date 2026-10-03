@@ -201,6 +201,9 @@ diagnostic distinguishes a moving primary from delivery by an existing copy;
 `realtime_original_path_moves_total` counts changes of lane between these
 submissions. Neither counter establishes socket delivery; both observe the
 transport's selected route. They do not alter scheduling or the wire format.
+`bulk_original_packets_total` likewise counts first bulk submissions per lane,
+excluding copies, repairs and small datagrams. It distinguishes restored-lane
+bulk use from its ongoing ACKs and keepalives.
 
 The stage 0 scenario collector records actual voice send times and captures
 iperf's test-start events in each guest. Its gate evaluator uses TCP receiver

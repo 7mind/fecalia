@@ -361,7 +361,10 @@ first submissions in the real-time class, excluding copies, repairs
 and small TCP datagrams. Its increments identify the selected primary lane;
 `realtime_original_path_moves_total` counts changes of that lane. These count
 transport submissions, not confirmed socket writes or delivery. Receive
-latency alone can reflect a faster redundant copy. `discovering` is 1 until a lane's first
+latency alone can reflect a faster redundant copy.
+`bulk_original_packets_total` counts first bulk submissions per lane, excluding
+copies, repairs and small datagrams; it identifies bulk use after recovery.
+`discovering` is 1 until a lane's first
 congestion signal ends its capacity discovery. `window_bytes` reports the current in-flight
 allowance, including its initial delivery-credit limit; compare it with
 `in_flight_bytes` when a target rate is high but sending remains low.

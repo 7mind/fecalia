@@ -1470,6 +1470,14 @@ sufficient time resolution. Both counters observe the transport's selected
 route, not successful socket writes or delivery. Transport and metrics tests
 passed (`realtime-moves-green.txt`).
 
+`wanbond_adaptive_bulk_original_packets_total` also counts first bulk
+submissions per lane. Its transport-to-metrics reproduction failed with the
+counter absent, then passed with one original despite multiple bulk
+transmissions. Small TCP packets and repairs are exercised and excluded;
+the counter observes route selection, not delivery. The metrics suite passed
+(`bulk-originals-full-green.txt`). This is stage 0 instrumentation for 1b;
+the original `f75668e` binary does not export it.
+
 The original `f75668e` binary completed all 84 scenario collections: fourteen
 scenarios, three runs on each family. The manifest is
 `f75668e-lab-matrix-20261002-223350/manifest.json` in the evidence directory;
