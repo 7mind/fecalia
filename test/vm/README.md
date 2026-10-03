@@ -1551,6 +1551,14 @@ and guest completion separately; all nineteen Python checks pass
 asserting that completion was its exact instant. Integration of those bounds
 into the gate evaluator remains pending.
 
+A second clock-bound reproduction found a false pass: an interval stamped
+inside the deadline could belong wholly before the impairment under its
+recorded start uncertainty (`uncertain-origin-red.txt`). The evaluator now
+uses only provably contained intervals for passes and includes every possible
+overlap in failure bounds. That case is inconclusive after correction; all
+twenty Python checks pass (`uncertain-origin-green.txt`). Event-application
+bounds and qualitative gates remain unfinished.
+
 The resumed calibration sweep completed fifteen profile states, each passing
 its independent UDP capacity gate, then stopped during stream setup on the
 gigaradio standby profile. The retained client error was `unable to read from
