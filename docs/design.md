@@ -217,6 +217,10 @@ Deadline checks also retain the uncertainty between connection setup and the
 captured start, plus guest clock-exchange uncertainty. Insufficient receiver
 interval resolution is reported as inconclusive, rather than filling partial
 intervals with an assumed arrival rate.
+Each impairment event retains separate host submission and guest completion
+times for every changed lane. A simultaneous two-lane change has four guest
+application records; completion times alone do not establish when the change
+first took effect.
 Direct-link UDP calibration initiates each transfer at its sender, including
 downlink transfers from hub to edge. This avoids iperf's reverse-UDP startup
 failure when data arrives before its acceptance reply; it changes the lab

@@ -1543,6 +1543,14 @@ it produced a false failure; after correction it reports inconclusive
 (`partial-deadline-{red,green}.txt`). Eighteen Python checks passed.
 Event-application timing and all qualitative gates still require completion.
 
+The event collector previously collapsed two changes in the same guest into
+one timestamp. Its four-change reproduction retained only two records
+(`applied-times-red.txt`). It now retains each guest/lane's host submission
+and guest completion separately; all nineteen Python checks pass
+(`stage0-python-current.txt`). These bound application time rather than
+asserting that completion was its exact instant. Integration of those bounds
+into the gate evaluator remains pending.
+
 The resumed calibration sweep completed fifteen profile states, each passing
 its independent UDP capacity gate, then stopped during stream setup on the
 gigaradio standby profile. The retained client error was `unable to read from
