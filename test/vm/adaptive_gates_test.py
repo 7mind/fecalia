@@ -57,6 +57,11 @@ class GateTests(unittest.TestCase):
         checks = bulk_gate("bulk", intervals, 0, 3, 2, 150, .75, False, 0)
         self.assertEqual(checks[0].status, "inconclusive")
 
+    def test_uncertain_receiver_origin_cannot_create_a_deadline_pass(self):
+        intervals = [Interval(2, 3, 100)]
+        checks = bulk_gate("bulk", intervals, 2, 5, 3, 100, .75, False, 1)
+        self.assertEqual(checks[0].status, "inconclusive", "receiver interval might belong entirely before the change")
+
     def test_route_needs_originals_on_the_correct_guest_lane_ids(self):
         samples = [{"at": at, "m": {f'wanbond_adaptive_realtime_original_packets_total{{peer="hub",lane="{lane}"}}': count
                                      for lane, count in (("0", 0), ("256", at * 50))}} for at in (0, 1, 2)]

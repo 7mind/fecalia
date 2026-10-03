@@ -89,11 +89,13 @@ def receiver_intervals(data, clock_offset, origin):
 
 
 def bulk_gate(name, intervals, begin, end, deadline, reference, share, sustain, origin_uncertainty):
+    if not math.isfinite(origin_uncertainty) or origin_uncertainty < 0:
+        raise ValueError("receiver-origin uncertainty must be finite and nonnegative")
     if reference is None or not math.isfinite(reference) or reference <= 0:
         return [unknown(name, "missing successful independent phase calibration")]
     # Use complete receiver intervals, without inventing within-interval arrival times.
-    early = [item for item in intervals if item.begin >= begin and item.end <= deadline] if deadline is not None else []
-    steady = [item for item in intervals if item.begin >= (begin if deadline is None else deadline) and item.end <= end]
+    early = [item for item in intervals if item.begin - origin_uncertainty >= begin and item.end + origin_uncertainty <= deadline] if deadline is not None else []
+    steady = [item for item in intervals if item.begin - origin_uncertainty >= (begin if deadline is None else deadline) and item.end + origin_uncertainty <= end]
     checks = []
     if deadline is None:
         pass
@@ -104,7 +106,7 @@ def bulk_gate(name, intervals, begin, end, deadline, reference, share, sustain, 
         if item.rate >= share * reference:
             checks.append(gate(name + "/deadline", True, f"[{item.begin:.3f},{item.end:.3f}) {item.rate:.0f} B/s; requires {share * reference:.0f}"))
         else:
-            upper = sum(part.bytes for part in intervals if part.begin < deadline + origin_uncertainty and part.end > deadline - 1)
+            upper = sum(part.bytes for part in intervals if part.begin - origin_uncertainty < deadline and part.end + origin_uncertainty > deadline - 1)
             checks.append(gate(name + "/deadline", False, f"final-second upper bound {upper} bytes < required {share * reference:.0f}")
                           if upper < share * reference else unknown(name + "/deadline", "partial intervals and start-time uncertainty cannot resolve deadline"))
     if not sustain:
