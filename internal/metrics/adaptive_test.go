@@ -13,6 +13,96 @@ import (
 
 type fixedAdaptive []AdaptiveSnapshot
 
+func TestReceivedBulkExcludesSmallPacketsAndFrameReplays(t *testing.T) {
+	start := time.Unix(100, 0)
+	sender, receiver := bond.New(bond.Epoch{Boot: 1, Generation: 1}), bond.New(bond.Epoch{Boot: 2, Generation: 1})
+	sender.SetRemote(bond.Epoch{Boot: 2, Generation: 1}, true)
+	receiver.SetRemote(bond.Epoch{Boot: 1, Generation: 1}, true)
+	for lane := range 2 {
+		for _, transport := range []*bond.Transport{sender, receiver} {
+			if err := transport.Path(bond.PathID(lane), bond.PathID(lane), 40*time.Millisecond, start); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	for _, packet := range []struct{ size, protocol int }{{224, 17}, {96, 6}, {1280, 6}} {
+		if err := sender.Enqueue(make([]byte, packet.size), bond.PacketMetadata{Flow: bond.FlowID{4, byte(packet.protocol)}}, start); err != nil {
+			t.Fatal(err)
+		}
+	}
+	expected := [2]uint64{}
+	small, keepalives := 0, 0
+	for tick := 0; tick < 400; tick++ {
+		now := start.Add(time.Duration(tick) * time.Millisecond)
+		transmissions, err := sender.Poll(now)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, transmission := range transmissions {
+			size := len(transmission.Frame.Payload) - (bond.Overhead - frame.ControlOverhead)
+			switch {
+			case size > 384:
+				expected[transmission.Path]++
+			case size == 0:
+				keepalives++
+			default:
+				small++
+			}
+			for range 2 {
+				if _, err := receiver.Receive(transmission.Path, transmission.Frame, now); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if size > 384 {
+				// A new physical attempt retains the original delivery sequence.
+				repeated := transmission.Frame
+				const repeatedAttemptOffset = 1000
+				repeated.Seq += repeatedAttemptOffset
+				for range 2 {
+					deliveries, err := receiver.Receive(transmission.Path, repeated, now)
+					if err != nil || len(deliveries) != 0 {
+						t.Fatalf("repeated datagram returned deliveries=%v error=%v", deliveries, err)
+					}
+				}
+				expected[transmission.Path]++
+			}
+		}
+	}
+	if expected[0]+expected[1] < 2 || small == 0 || keepalives == 0 {
+		t.Fatalf("incomplete receipt fixture: bulk=%v small=%d keepalives=%d", expected, small, keepalives)
+	}
+	registry := prometheus.NewRegistry()
+	registry.MustRegister(newAdaptiveCollector(fixedAdaptive{{State: receiver.Snapshot(start.Add(400 * time.Millisecond))}}))
+	families, err := registry.Gather()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, family := range families {
+		if family.GetName() != "wanbond_adaptive_received_bulk_packets_total" {
+			continue
+		}
+		if len(family.Metric) != 2 {
+			t.Fatalf("received bulk has %d lanes, want 2", len(family.Metric))
+		}
+		for _, metric := range family.Metric {
+			lane := ""
+			for _, label := range metric.Label {
+				if label.GetName() == "lane" {
+					lane = label.GetValue()
+				}
+			}
+			if lane != "0" && lane != "1" {
+				t.Fatalf("unexpected received bulk lane %q", lane)
+			}
+			if got := metric.GetCounter().GetValue(); got != float64(expected[lane[0]-'0']) {
+				t.Fatalf("lane %s received bulk = %v, want %d physical attempts excluding frame replays", lane, got, expected[lane[0]-'0'])
+			}
+		}
+		return
+	}
+	t.Fatal("no exported physical bulk receipt counter")
+}
+
 func TestRealtimeOriginalsExcludeCopiesAndTCPACKs(t *testing.T) {
 	start := time.Unix(100, 0)
 	p := bond.New(bond.Epoch{Boot: 1, Generation: 1})
