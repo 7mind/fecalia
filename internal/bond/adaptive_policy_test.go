@@ -405,7 +405,16 @@ func TestAdaptivePolicy2dCellularGrants(t *testing.T) {
 	}
 }
 
-func checkPolicyShift(t *testing.T, o policyOutcome, betterRTT time.Duration, from, until int) {
+func policyBetterLaneLatency(family string) [2]time.Duration {
+	// Observed on f75668e with voice only on lane 1, in [5,19)s.
+	measured, ok := map[string][2]int{"radio": {90, 91}, "gigaradio": {83, 82}}[family]
+	if !ok {
+		panic("no measured better-lane reference for " + family)
+	}
+	return [2]time.Duration{time.Duration(measured[0]) * time.Millisecond, time.Duration(measured[1]) * time.Millisecond}
+}
+
+func checkPolicyShift(t *testing.T, o policyOutcome, betterRTT [2]time.Duration, from, until int) {
 	t.Helper()
 	for side, stream := range o.voice {
 		var rtts []time.Duration
@@ -418,9 +427,41 @@ func checkPolicyShift(t *testing.T, o policyOutcome, betterRTT time.Duration, fr
 			t.Fatalf("direction %d has no samples", side)
 		}
 		median := policyQuantile(rtts, 50)
-		if median > betterRTT+20*time.Millisecond {
-			t.Errorf("direction %d RTT median %s > better lane %s + 20ms", side, median, betterRTT)
+		if median > betterRTT[side]+20*time.Millisecond {
+			t.Errorf("direction %d RTT median %s > better lane %s + 20ms", side, median, betterRTT[side])
 		}
+	}
+}
+
+func checkPolicyShiftDeadline(t *testing.T, o policyOutcome, betterRTT [2]time.Duration, changedAt, deadline int) {
+	t.Helper()
+	checkPolicyShift(t, o, betterRTT, changedAt+deadline-1, changedAt+deadline)
+}
+
+func TestAdaptiveShiftGateRejectsRecoveryAfterDeadline(t *testing.T) {
+	const marker = "WANBOND_SHIFT_GATE_CHILD"
+	if os.Getenv(marker) == "1" {
+		var outcome policyOutcome
+		for side := range outcome.voice {
+			for tick := 20000; tick < 26000; tick += 20 {
+				rtt := 80 * time.Millisecond
+				if tick < 22500 {
+					rtt = 220 * time.Millisecond
+				}
+				outcome.voice[side] = append(outcome.voice[side], policyVoice{sent: tick, arrived: tick + int(rtt/time.Millisecond), rtt: rtt})
+			}
+		}
+		checkPolicyShiftDeadline(t, outcome, [2]time.Duration{80 * time.Millisecond, 80 * time.Millisecond}, 20, 2)
+		return
+	}
+	child := exec.Command(os.Args[0], "-test.run=^TestAdaptiveShiftGateRejectsRecoveryAfterDeadline$")
+	child.Env = append(os.Environ(), marker+"=1")
+	output, err := child.CombinedOutput()
+	if err == nil {
+		t.Fatal("recovery after 2.5 seconds passed the two-second deadline")
+	}
+	if !strings.Contains(string(output), "RTT median 220ms > better lane 80ms + 20ms") {
+		t.Fatalf("gate failed for another reason: %s", output)
 	}
 }
 
@@ -458,7 +499,8 @@ func TestAdaptivePolicy3aCallLaneGainsDelay(t *testing.T) {
 				})
 				m := policyRun{lanes: changed, seconds: 35, trafficAt: 2, bulk: bulk, voice: true}
 				o := m.run(t)
-				checkPolicyShift(t, o, 80*time.Millisecond, 22, 24)
+				checkPolicyShiftDeadline(t, o, policyBetterLaneLatency(family), 20, 2)
+				checkPolicyShift(t, o, policyBetterLaneLatency(family), 22, 35)
 				if bulk {
 					checkPolicyBulkReduction(t, o, 20, 35)
 				}
@@ -479,7 +521,7 @@ func TestAdaptivePolicy3bOtherLaneBecomesBetter(t *testing.T) {
 				})
 				m := policyRun{lanes: changed, seconds: 40, trafficAt: 2, bulk: bulk, voice: true}
 				o := m.run(t)
-				checkPolicyShift(t, o, 18*time.Millisecond, 25, 30)
+				checkPolicyShift(t, o, [2]time.Duration{18 * time.Millisecond, 18 * time.Millisecond}, 25, 30)
 				checkPolicyRoute(t, o, 25, 40, 1, 0)
 				checkPolicyRoute(t, o, 5, 40, -1, 5*time.Second)
 				if bulk {
