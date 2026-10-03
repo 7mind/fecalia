@@ -2056,3 +2056,31 @@ their full verification is still pending. The refreshed 84-collection lab
 series started with the exact original executable and the current timing
 and egress collector (`f75668e-lab-matrix-20261003-202919/manifest.json`).
 A collection's exit status is not its section 4 gate verdict.
+
+The resequencer's cost regression now counts `Stats.HoldSlotVisits`, the
+ring cells inspected while locating the oldest buffered observation.
+Observed: 100,000 frames, every hundredth arriving early, require 99,999
+visits with the existing indexed lookup; in-order arrivals require zero.
+An isolated reproduction replacing only that lookup with `7b84ca5^`'s
+full scan requires 3,244,032,000 visits and fails the 200,000-visit bound
+(`reseq-slot-work-{green,red-scan}.txt`). All resequencer tests pass
+(`reseq-slot-work-all-tests.txt`). This replaces the wall-clock ratio
+assertion and adds a diagnostic count; it changes no resequencing decision.
+The reproduction is separate from the untouched `f75668e` production code.
+
+A cold-gate reproduction dispatched at zero but started the transfer at
+two seconds. It reached the required goodput in its seventh transfer
+second, yet the previous evaluator failed both directions by measuring
+from dispatch (`cold-deadline-origin-red.txt`). The gate now brackets its
+origin between connection setup and captured test start on both peers,
+retaining clock uncertainty. Missing start evidence remains inconclusive;
+a zero-delivery fixture still fails. All 27 Python checks pass
+(`cold-deadline-origin-green.txt`). The seven-second and 60% requirements
+are unchanged; this corrects observation timing, not transport behavior.
+
+The liveness outcome restatements also pass against the original `f75668e`
+production code (`stage1-outcome-restatement-original.txt`), with test-only
+adapters for its void `Path` API. The full non-privileged gate and Nix build
+passed after those restatements (`stage0-current-nonprivileged-v8.txt`,
+`stage0-current-nix-build-v10.txt`); those checks preceded the subsequent
+slot-count and cold-evaluator changes.

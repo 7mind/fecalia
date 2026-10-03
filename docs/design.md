@@ -282,6 +282,12 @@ corrections establish neither the adaptive-policy gates nor a stationary
 field rate: the operator's 5G/Starlink links require contemporaneous lane
 measurements and interleaved baseline/candidate rounds.
 
+The cold gate starts its seven-second deadline from bounded TCP startup
+evidence, between connection setup and captured test start on the two peers,
+rather than host command dispatch. A delayed-dispatch reproduction was
+incorrectly failed before that evaluator correction. Missing start evidence
+remains inconclusive; the seven-second limit is unchanged.
+
 The stage 0 lab reference budgets TCP payload independently of the candidate:
 calibrated UDP wire service minus required voice, feedback, keepalives and
 the reverse TCP ACK stream. It uses the observed lab MTU/MSS and inferred
