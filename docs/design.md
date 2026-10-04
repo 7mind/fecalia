@@ -456,11 +456,25 @@ three runs; radio 1c lane 0 direction 0 with bulk now passes and that
 finding is retained. The corrected `c8` survivor still fails bulk and
 recovery gates. Warm deployed → candidate → deployed field voice rounds
 all pass loss/gap checks, without establishing a repeatable gain. The
-24 kB/s TCP field comparison is incomplete because Starlink availability
-and management SSH became intermittent; no bulk verdict follows. Both
+initial 24 kB/s TCP field comparison was incomplete because Starlink
+availability and management SSH became intermittent; no bulk verdict follows. Both
 deployed binaries, empty candidate overrides and absent test qdiscs were
 verified afterwards. Detailed observations and input provenance remain in
 the trial record above.
+
+After the operator reported the environment fixed and the office parked,
+three deployed → `c8` → deployed field comparisons completed at matched
+startup ages. Observed during the 15-second mobile-egress blackout with
+24 kB/s TCP offered each way: candidate uplink delivery is 15.3–15.9 kB/s,
+against deployed rounds' 1.4–9.3. All loss/gap checks pass and all submitted
+TCP bytes arrive, but candidate voice p99 reaches 131–144 ms in two rounds
+and downlink results vary. This establishes an uplink gain for that bounded
+workload. Independent survivor idle-latency and residual-goodput references
+remain unmeasured, so it does not establish all section 4 gates. All deployed
+binaries and cleanup postconditions were verified afterwards; mobile VLAN
+counters increased 100.24 MB across the test interval, including background
+traffic. The unchanged model failures still reject stage 1's retained attempt;
+stages 1–3 remain unaccepted. See the trial record for raw provenance and spread.
 
 **Paths and epochs.** An unpadded challenge-protected PROBE carries a 22-byte
 capability record: `bond`, version 1, physical path ID, process Boot ID and Bind

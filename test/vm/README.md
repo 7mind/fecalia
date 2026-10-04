@@ -138,6 +138,18 @@ it contributes no policy evidence. Static build SHA is
 See the [trial record](../../docs/drafts/20261004-1105-adaptive-stage1-trial.md)
 for the matching field rounds, input-model corrections and limitations.
 
+Observed after the office was parked: three matched field series, each
+deployed → `c8` → deployed, complete with 24 kB/s TCP offered each direction
+and a 15-second 5G-egress blackout. Candidate uplink outage delivery is
+15.3–15.9 kB/s versus deployed rounds' 1.4–9.3. All loss/gap checks pass,
+but candidate voice p99 reaches 131–144 ms in two rounds and downlink results
+are mixed. These bounded field observations do not supply the unmeasured
+independent survivor idle/residual-goodput references or replace the required
+radio/gigaradio lab gates. Restoration and cleanup were verified; the full
+test interval's mobile VLAN increase is 100.24 MB including background.
+The [parked field record](../../docs/drafts/20261004-1105-adaptive-stage1-trial.md#parked-field-resumption--2026-10-04)
+contains the three repeats, exact sources, receiver data and outstanding gates.
+
 Continuity accepts `--profile`, defaulting to `profiles/basic.json`. At 15
 seconds WAN1 is capped at 0.5 Mbit/s in each direction; lower profile rates are
 preserved. At 25 seconds it loses all packets, and at 30 seconds its profile

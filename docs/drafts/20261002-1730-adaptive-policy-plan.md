@@ -590,3 +590,17 @@ this approval authorizes the work, not a claim that the earlier goal passed.
 
 The next deliverable is the matching field comparison and a reproducible
 account of the next bottleneck. Existing failed gates remain outstanding.
+
+**Observed checkpoint, parked field resumption, 2026-10-04:** three
+deployed → `c8` → deployed comparisons complete with matched startup ages
+and fresh Starlink/5G/tunnel references. Under the bounded 24 kB/s-per-direction
+workload and 15-second mobile-egress blackout, candidate uplink delivery is
+15.3–15.9 kB/s versus deployed rounds' 1.4–9.3. Loss/gap checks pass, but
+candidate voice p99 reaches 131–144 ms in two rounds and downlink results
+are mixed. **Inference:** an uplink gain for this workload is established;
+an overall policy improvement and full section 4 verdict are not. Independent
+survivor idle/residual-goodput references remain unmeasured. Deployed binaries
+and cleanup were verified afterwards; the mobile VLAN interval increased
+100.24 MB including background traffic. The unchanged model failures still
+reject the retained stage 1 attempt. The [trial record](20261004-1105-adaptive-stage1-trial.md#parked-field-resumption--2026-10-04)
+keeps all nine rounds and their limitations; no gate or stage order changes.

@@ -447,3 +447,157 @@ pass with the corrected models. `main` retains stage 0 production behavior;
 the approved stages 1–3, their three-run lab gates and candidate regression
 series remain incomplete. The stage 1 attempt is still stopped at an
 explained gate failure; later estimators are not folded into it.
+
+## Parked field resumption — 2026-10-04
+
+**Operator evidence:** the environment faults are fixed and the mobile office
+is parked. **Observed preflight at 17:53 UTC:** both production hosts are
+reachable, both adaptive lanes are UP, deployed executable hashes match,
+runtime overrides are empty and the edge's WAN qdiscs are `noqueue`.
+Management replies to `192.168.10.15` use the untagged `end0` interface.
+The retained `c8-s1-share` binary hash matches on both hosts. Its outstanding
+model failures remain unchanged; this resumes a bounded field comparison,
+not acceptance of stage 1.
+
+The completed first series uses deployed → `c8` → deployed. Each round
+measures direct Starlink, direct 5G and tunnel first, then begins collection
+with both daemons aged 210–225 seconds. Two 50 Hz, 160-byte echo streams run
+for 60 seconds. Each direction offers 24,000 TCP payload B/s for 35 seconds,
+starting ten seconds into voice. A verified timer removes the 15-second
+5G-egress blackout. Receiver timestamps and payload-prefix hashes establish
+application delivery; sender backpressure lowers submitted bytes and creates
+no catch-up burst. All submitted TCP bytes arrive in all three rounds.
+
+**Observed first comparison:** the following TCP means use the full outage
+window after the first second, anchored to recorded impairment/removal times.
+The last-five-second window separately exposes late deterioration. Directions
+are down/up; voice p99 is the corresponding edge/hub echo stream.
+
+| Round | Outage TCP, B/s down/up | Last 5 s TCP, B/s down/up | Outage voice RTT p99, ms edge/hub | Lost echoes edge/hub |
+|---|---:|---:|---:|---:|
+| Deployed A | 12,948 / 2,220 | 2,717 / 2,574 | 76 / 72 | 0 / 1 |
+| `c8` | 21,117 / 15,855 | 19,656 / 15,604 | 144 / 78 | 0 / 0 |
+| Deployed B | 24,113 / 2,669 | 24,000 / 2,831 | 74 / 75 | 1 / 0 |
+
+All loss/consecutive-loss/gap checks pass. The maximum receive gaps are
+106/91, 99/72 and 100/78 ms respectively. **Inference:** the candidate has
+an uplink gain in this interleaved comparison; downlink results are mixed
+and its downlink voice latency is higher. These are workload-specific
+observations, not a repeatable overall improvement or full gate verdict.
+The survivor's independent voice-only idle p99 and TCP residual-service
+reference have not been calibrated for this series. The direct measurements
+have no concurrent voice or encapsulation overhead, so they cannot establish
+those two references. The additional deterministic fixture and lab diagnostic
+also use different startup, traffic demand and blackout directions; matching
+caps alone does not make their outcomes contradictory.
+
+**Observed diagnostics:** the candidate's satellite DATA target is
+101,078 B/s before blackout, 67,918 B/s three seconds after, and 107,510 B/s
+ten seconds after on the edge. Its loss-signal count rises to six. The
+operator's nominal wire cap is 62,500 B/s; direct measurements and RF
+variability remain separate evidence. **Inference:** overdriving the
+survivor is a hypothesis for the higher voice RTT, not an established
+causal explanation. In the deployed source, the single-survivor voice rule
+can restrict bulk to 5% of the target; at 62,500 B/s that is 3,125 wire B/s.
+The measured deployed uplink payload is consistent with this restriction,
+but private reservation state was not measured in the field.
+
+Scheduler observations cover all three collections. Maximum observer wake
+delay is 3.21 ms on the edge and 0.94 ms on the concentrator, with no observed
+steal. This does not establish the absence of RF disturbances. Both deployed
+hashes, empty runtime overrides and no test WAN qdiscs were verified after
+restoration. Continuous mobile VLAN increase is 33.794588 MB, including
+references, restarts, voice, TCP, management and background traffic. It is
+not a billing total. No binary was transferred again.
+
+A collection-analysis reproduction fails before correction: asymmetric
+complete TCP transfers were compared with the local sender instead of the
+opposite host's sender, falsely reporting incomplete delivery. The corrected
+analyzer passes both complete-transfer and missing-byte cases. Raw receiver
+measurements are unchanged. The original analyzer, failing reproduction,
+corrected source and green output are preserved under the evidence root;
+the corrected analyzer and reproduction are also copied into each series.
+No production controller or scenario threshold changes.
+
+Evidence: `field-resume-preflight-20261004-185302/` and
+`field-matched-series-parked-bulk24k-20261004-185339/`, including
+`manifest.json`, `analysis.json`, the exact collection/analyzer sources,
+and each round's `parked-analysis.json`.
+
+**Observed repeats:** two additional deployed → `c8` → deployed series
+complete without a collection interruption. The same offered workload,
+blackout and startup-age window apply. Across all nine rounds, observed
+startup ages are 213.49–223.37 seconds. Results below use the same outage
+window after the first second as the first table.
+
+| Series / round | Outage TCP, B/s down/up | Outage voice RTT p99, ms edge/hub | Lost echoes edge/hub |
+|---|---:|---:|---:|
+| 2 / Deployed A | 23,952 / 2,591 | 68 / 62 | 0 / 0 |
+| 2 / `c8` | 21,219 / 15,345 | 79 / 78 | 0 / 0 |
+| 2 / Deployed B | 2,793 / 3,046 | 62 / 64 | 1 / 0 |
+| 3 / Deployed A | 2,695 / 9,287 | 73 / 69 | 0 / 3 |
+| 3 / `c8` | 20,288 / 15,511 | 86 / 131 | 0 / 0 |
+| 3 / Deployed B | 24,077 / 1,447 | 62 / 65 | 1 / 0 |
+
+All nine rounds pass the loss/consecutive-loss/gap checks and deliver all
+submitted TCP bytes. All three candidate rounds lose zero of their 6,000
+echoes. Candidate uplink outage delivery is 15,345–15,855 B/s, higher than
+every deployed round's 1,447–9,287 B/s. Ratios against the median of each
+pair of deployed rounds are 6.49, 5.44 and 2.89. **Inference:** this is a
+repeatable uplink gain for the bounded one-way-blackout workload, not a
+general throughput result. Candidate downlink means are 20,288–21,219 B/s;
+deployed downlink ranges from 2,695 to 24,113, so superiority in both
+directions is not established. Candidate voice p99 is higher in some
+rounds, including 144 ms on edge in series 1 and 131 ms on hub in series 3.
+No independent survivor-idle + 50 ms verdict follows without that reference.
+
+The predefined last-five-second window remains useful: candidate uplink
+is 13,200–15,604 B/s; deployed is 1,287–3,089. It was included in the
+analyzer before the two repeats and is reported alongside full outage
+means, not substituted for a section 4 gate. Series 3's first deployed
+uplink has an early burst that raises its full-phase mean before the late
+collapse. Observed physical receipt counters in the first candidate's
+checked blackout interval show 177 bulk receipts on the concentrator's
+satellite lane and zero on mobile. Those counters include repeats; the
+application-delivery figures above come from TCP receivers.
+
+Contemporaneous direct Starlink upload is 0.501–0.522 Mbit/s and download
+0.509–0.538. Direct 5G and tunnel results are 0.973–1.000 Mbit/s across
+directions, at the 1 Mbit/s offered ceiling; they remain lower bounds.
+Across the nine recordings, maximum observer wake delay is 4.34 ms on
+the edge and 1.19 ms on the concentrator, with no observed steal. Maximum
+100 ms aggregate CPU busy samples are 35.71% and 30.23% respectively. This preserves
+the distinction between measured scheduling conditions and unknown RF
+or other traffic effects.
+
+The three disjoint series intervals account for 98.023755 MB on the mobile
+VLAN. The continuous interval from the first series' initial counter to
+the final series' restored counter is **100.238526 MB**, including the gaps
+between series, management and background traffic. These are nested
+accountings and must not be added together; neither is a modem billing
+total. No candidate binary was transferred during these nine rounds.
+
+**Observed final verification at 18:47 UTC:** both deployed executable
+hashes match, runtime overrides are empty, both restore timers report
+inactive, both adaptive lanes are UP, task TCP/UDP listeners and task TCP
+firewall rules are absent, and both edge WAN qdiscs are `noqueue`. The
+edge exit policy is `auto`; management replies still use untagged `end0`.
+The first read-only verification incorrectly required inactive timers to
+return status 3; these unloaded transient units return status 4 while
+reporting inactive. The corrected state assertion and remaining checks
+complete successfully. This was a checker failure, not a restoration failure.
+
+Additional evidence: `field-matched-series-parked-bulk24k-r2-20261004-191102/`,
+`field-matched-series-parked-bulk24k-r3-20261004-192758/`,
+`parked-field-three-series-summary.{json,txt}` and
+`field-parked-final-verification-20261004-194700/`. Each series retains exact
+collection/analyzer sources and both raw and summarized recordings. The
+collator checks distinct complete series and monotonic nonoverlapping
+mobile counter intervals.
+
+`main` still retains stage 0 production behavior. The retained `c8` attempt's
+explained model failures remain unchanged; it is not merged or accepted.
+The field experiment establishes a limited gain and latency variation,
+not completion of stages 1–3, the required lab series or candidate regression
+gates. No estimator replacement or acceptance threshold was changed in
+response to these field results.
