@@ -49,7 +49,11 @@ func FromSettings(version, commit, commitTime string, settings []debug.BuildSett
 			}
 			stamp = time.Unix(seconds, 0)
 		}
-		commitTime = stamp.UTC().Format(time.RFC3339)
+		encoded, err := stamp.UTC().MarshalText()
+		if err != nil {
+			return Info{}, fmt.Errorf("buildinfo: invalid source commit time %q: %w", commitTime, err)
+		}
+		commitTime = string(encoded)
 	}
 	return Info{Version: version, Commit: commit, CommitTime: commitTime}, nil
 }

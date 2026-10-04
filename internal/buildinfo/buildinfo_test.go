@@ -21,6 +21,7 @@ func TestSourceIdentity(t *testing.T) {
 		{name: "stamped commit does not borrow another commit time", commit: "123456", settings: settings, want: buildinfo.Info{Version: "test", Commit: "123456"}},
 		{name: "no metadata", want: buildinfo.Info{Version: "test"}},
 		{name: "invalid source time", commit: "123456", stamp: "invalid", invalid: true},
+		{name: "source time outside RFC3339", commit: "123456", stamp: "9223372036854775807", invalid: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got, err := buildinfo.FromSettings("test", tc.commit, tc.stamp, tc.settings)
