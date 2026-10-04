@@ -353,6 +353,40 @@ proposes delivery sampling, a shared lane wire budget and completion-aware
 scheduling. These are unimplemented experiments, not measured improvements
 or changes to the transport described below.
 
+A stage 1 trial draft was built on 2026-10-04 from `04a745d` plus the
+retained `stage1-c4-source.patch` (SHA256
+`5799be7e16dc6279d3101512a419d6980d34289b5062d0921cad2162012c880f`).
+Its ARM64 executable is `c4-s1-share`, SHA256
+`45b28c75b6e66bc2a65c566e7e50c2bbb12d07d5da1ae9df52ff7dd41999c5b4`.
+The draft uses physical ACK progress for live/suspect/dead decisions, removes
+`stalled` and the silent 0.7 pacing cut, and exempts suspect real-time copies
+from the normal copy allowance. A hello does not invent ACK progress.
+Metrics add `liveness_age_seconds` and `ack_progress_known`; `liveness_state`
+is 0 dead, 1 live, 2 suspect. `up` means interactive eligibility; bulk
+requires live state. Monitor reports the same progress evidence and age.
+
+The draft keeps one pacing clock for DATA, copies, repairs, keepalives and
+ACKs. Because ACK v1 reports DATA wire bytes, its pacing target remains a
+DATA budget; measured outgoing ACK demand supplies the feedback reservation
+on the shared clock without changing the cumulative wire-byte field.
+On a sole voice-bearing slow lane, bulk uses residual service with one bulk
+datagram outstanding once capacity is known or voice dominates the budget.
+The legacy fixed 5% survivor restriction is removed. The multi-lane voice
+isolation rule remains. Stall delay is excused only through the flight
+outstanding at recovery, cleared by later physical receipt progress; its
+fixed clearance timeout and declining time envelope are removed. The full
+`control.go` constant count falls from 32 to 31.
+
+Observed in the targeted model: the sole-survivor reproduction delivers
+9,600–10,800 bulk payload B/s, all 500 voice datagrams, and one-way p99
+65 ms, compared with 2,400–3,600 B/s and p99 55 ms on `f75668e`.
+That is a model service improvement with a latency increase. The draft
+still fails complete scenario gates and the held-target assertion in
+`TestLightlyLoadedLaneTargetStaysWithinCapacity`; it is not an accepted
+stage 1 implementation. Stage 2 delay/rank and stage 3 capacity replacement
+remain unimplemented. The [trial record](drafts/20261004-1105-adaptive-stage1-trial.md)
+separates observed behavior, code inferences and unfinished gates.
+
 **Paths and epochs.** An unpadded challenge-protected PROBE carries a 22-byte
 capability record: `bond`, version 1, physical path ID, process Boot ID and Bind
 Open generation. Padded PMTU probes retain their original size. A logical lane

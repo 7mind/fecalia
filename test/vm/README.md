@@ -2268,3 +2268,41 @@ Evidence: `stage1-survivor-budget-{red,original-red}.txt` under
 also still fail for the expected missing suspect-copy and silent rate-cut
 reasons (`stage1-resume-liveness-red-v2.txt`). An earlier mistyped test filter
 ran zero tests and establishes no behavior (`stage1-resume-liveness-red.txt`).
+
+### Stage 1 shared-pacing trial draft — 2026-10-04
+
+The ARM64 draft `c4-s1-share` is identified by executable SHA256
+`45b28c75b6e66bc2a65c566e7e50c2bbb12d07d5da1ae9df52ff7dd41999c5b4`
+and source patch SHA256
+`5799be7e16dc6279d3101512a419d6980d34289b5062d0921cad2162012c880f`
+on `04a745d`. It has not passed the acceptance gates. See the
+[trial record](../../docs/drafts/20261004-1105-adaptive-stage1-trial.md).
+
+Observed: one targeted model run restores sole-survivor bulk from
+2,400–3,600 to 9,600–10,800 B/s, with all 500 voice datagrams delivered
+and one-way p99 65 ms instead of 55 ms. The existing targeted cold,
+jitter, isolation, takeover and bursty catch-up checks pass in that run.
+A separate full bond run still fails the held-target assertion. One complete
+outage model run before the progress-bounded stall change gives 1a five
+passes/three failures, 1b four failures, and 1c nine passes/seven failures.
+These are one-run results and do not establish three-run proof or a field gain.
+
+Before replacing recovery's timeout, the stall/slowdown tests were restated
+as received-bulk outcomes in commit `04a745d`, retaining the existing 70%
+bulk gates. They pass on unchanged stage 0 and on the draft. The cold-stall
+case checks 60% received service over its fixture's measured half; it does
+not establish row 0's seven-second deadline. Commit `46f98fe` separately
+restates isolated loss and counter fixtures with authenticated, responsive
+alternates. The bond fixture passes on `f75668e` after a test-only adapter
+for `Path`'s changed return type; an initial compile failure is not behavior
+evidence. No production adapter was applied.
+
+Field trials remain bounded, temporary and individually identified. A router
+update interrupted preflight: 5G was observed down, later 5G was up while
+Starlink was down, one edge SSH attempt timed out, and both uplinks were
+subsequently observed up. No WAN impairment or candidate had been installed
+at those checks. The corrected TCP collector verifies connectivity before
+offering 8,000 payload B/s per direction for 30 seconds beside voice, at
+most 240,000 bytes per direction. Its TUN-only, exact-peer TCP input rule
+expires after 180 seconds and is removed in cleanup. Candidate builds still
+use `candidate.sh` and its independently verified restoration timers.

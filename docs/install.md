@@ -390,6 +390,14 @@ Stage 0 adds `transit_floor_seconds`, `transit_floor_known`,
 offset and can be negative; use its known flag and age when interpreting it.
 Path delay and rank still describe the legacy idle-only policy.
 `wanbond monitor` displays the same inputs and per-peer rejected-frame counts.
+The temporary stage 1 trial draft additionally exports
+`liveness_age_seconds` and `ack_progress_known`. Its `liveness_state` values
+are 0 dead, 1 live and 2 suspect. `up=1` permits interactive traffic in live
+or suspect state; bulk requires live. A zero progress age with
+`ack_progress_known=0` means no physical ACK progress has been observed in
+the current peer epoch. Fresh hellos do not refresh that evidence.
+See the [trial record](drafts/20261004-1105-adaptive-stage1-trial.md) for
+its outstanding failures and temporary candidate procedure.
 `rejected_frames_total{peer,cause}` distinguishes malformed frames, stale
 epochs, unvalidated paths, mismatched lanes, invalid acknowledgements, unknown
 types and regressing transport time. It counts frames rejected after outer
