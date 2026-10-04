@@ -116,3 +116,42 @@ func TestAdaptiveFieldStandbyOutage(t *testing.T) {
 		}
 	}
 }
+
+// Performance-Blackbox-Group: separate directional service from duplex contention.
+func TestAdaptiveFieldStandbyDirectionalService(t *testing.T) {
+	for _, direction := range []struct {
+		name string
+		mode policyBulkDirection
+		side int
+	}{{"downlink", policyBulkDownlink, 0}, {"uplink", policyBulkUplink, 1}} {
+		for _, voice := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/voice%t", direction.name, voice), func(t *testing.T) {
+				m := policyRun{lanes: policyFieldLinks(t), seconds: 50, trafficAt: 5,
+					bulk: true, voice: voice, bulkDirection: direction.mode}
+				o := m.run(t)
+				for _, delivered := range o.bulk[1-direction.side] {
+					if delivered != 0 {
+						t.Fatal("the inactive bulk direction delivered payload")
+					}
+				}
+				var delivered float64
+				for second := 45; second < 50; second++ {
+					delivered += o.bulk[direction.side][second]
+				}
+				delivered /= 5
+				reference := m.reference(45 * time.Second)
+				if reference[1-direction.side] != 0 || reference[direction.side] <= 0 {
+					t.Fatalf("directional reference is invalid: %v", reference)
+				}
+				t.Logf("direction %s in [45,50): %.0f B/s, independent reference %.0f B/s",
+					direction.name, delivered, reference[direction.side])
+				if delivered < .75*reference[direction.side] {
+					t.Errorf("bulk %.0f B/s < 75%% of independent reference %.0f B/s", delivered, reference[direction.side])
+				}
+				if voice {
+					checkPolicyVoice(t, o, 5, 50, 150*time.Millisecond, false)
+				}
+			})
+		}
+	}
+}

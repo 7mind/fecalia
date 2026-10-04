@@ -27,10 +27,32 @@ const (
 	policyACKCadence      = 25 * time.Millisecond
 )
 
+type policyBulkDirection uint8
+
+const (
+	policyBulkBoth policyBulkDirection = iota
+	policyBulkDownlink
+	policyBulkUplink
+)
+
+func (d policyBulkDirection) includes(side int) bool {
+	switch d {
+	case policyBulkBoth:
+		return true
+	case policyBulkDownlink:
+		return side == 0
+	case policyBulkUplink:
+		return side == 1
+	default:
+		panic("invalid model bulk direction")
+	}
+}
+
 type policyRun struct {
 	lanes              []modelLane
 	seconds, trafficAt int
 	bulk, voice        bool
+	bulkDirection      policyBulkDirection
 }
 
 type policyVoice struct {
@@ -314,8 +336,8 @@ func TestAdaptiveModelDoesNotRenewHelloLeasesThroughADarkDirection(t *testing.T)
 	}
 }
 
-// policyRun exercises both transports, two echo streams and one TCP flow in
-// each direction. Measurements are payload delivery, never pacing targets.
+// policyRun exercises both transports, optional echo streams and the selected
+// TCP directions. Measurements are payload delivery, never pacing targets.
 func (m policyRun) run(t *testing.T) policyOutcome {
 	t.Helper()
 	start := time.Unix(100, 0)
@@ -362,7 +384,7 @@ func (m policyRun) run(t *testing.T) policyOutcome {
 		for side, p := range peers {
 			m.renewPaths(t, p, side, now.Sub(start), now)
 			if tick >= m.trafficAt*1000 && tick < m.seconds*1000 {
-				if m.bulk {
+				if m.bulk && m.bulkDirection.includes(side) {
 					tcp[side].offer(now, func(seq uint64) { send(side, now, seq) })
 				}
 				if m.voice && tick%20 == 0 {
@@ -481,7 +503,7 @@ func (m policyRun) run(t *testing.T) policyOutcome {
 // 25 ms lane feedback, 200 ms keepalives and one reverse TCP ACK per segment.
 // Bulk and ACK encapsulation are included. Repairs and extra copies never
 // lower the reference. Equal utilization of the available directional wire
-// budgets leaves room for both flows even on an asymmetric pair. An outage
+// budgets leaves room for the selected flows even on an asymmetric pair. An outage
 // uses only the bidirectional survivors, as required by scenarios 1a/1c.
 func (m policyRun) reference(at time.Duration) [2]float64 {
 	var available [2]float64
@@ -500,6 +522,11 @@ func (m policyRun) reference(at time.Duration) [2]float64 {
 	dataWire := float64(policyTCPEncrypted + bond.Overhead + policyLinkOverhead)
 	ackWire := float64(tcpACKBytes+bond.Overhead+policyLinkOverhead) + policyACKWireBytes/64.0
 	desired := [2]float64{available[0] / dataWire, available[1] / dataWire}
+	for side := range desired {
+		if !m.bulkDirection.includes(side) {
+			desired[side] = 0
+		}
+	}
 	gain := 1.0
 	for side := range available {
 		demand := desired[side]*dataWire + desired[1-side]*ackWire
