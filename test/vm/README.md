@@ -2495,3 +2495,56 @@ A subsequent boundary reproduction found numeric times outside RFC3339's
 year range being accepted. Validating UTC text encoding rejects those inputs;
 the reproduction now passes. `timestamp-range-{red,green}.txt` retains both
 results alongside the build-identity evidence.
+
+### Installed C8 baseline and directional investigation — 2026-10-04
+
+**Operator decision:** use `b444920`, including build identity, as the new
+operational baseline. **Observed:** both hosts run that exact revision with
+source time `2026-10-04T21:13:41Z` and executable SHA-256
+`dce5c7e4dae9a13565e04c69aa2ac36a6ab388a51418282a027e14e18f4e5dd9`.
+The investigation does not replace binaries, restart daemons or impair WANs.
+The selected exit remains `raspi5l` after collection and cleanup.
+
+Voice-only preflights precede controlled same-destination TCP. Direct
+Starlink/5G references precede tunnel measurements; receiver timestamps and
+exact payload checks are retained. Offered rates bound usage: 1 Mbit/s
+(1.25 MB/transfer), then 3 Mbit/s uploads (3.75 MB) and a 10 Mbit/s download
+(12.5 MB). **Observed:** tunnel up/down reaches 1.001/1.001 Mbit/s in the
+first sequence; later uploads reach 3.001 and 2.999 Mbit/s, the latter after
+a 9.996 Mbit/s download. Direct 5G uploads bracket both later measurements
+at 2.989–3.000 Mbit/s. These are service lower bounds, not capacity or
+aggregation claims. They do not reproduce the operator's 0.33 Mbit/s upload
+after an uncapped Speedtest. No field policy gain or loaded-voice gate is
+asserted from these baseline-only rounds.
+
+`TestAdaptiveFieldStandbyDirectionalService` measures each bulk direction,
+with and without voice, while retaining real reverse TCP ACK demand. All
+four healthy fixed standby cases pass three identical repetitions on both
+original `f75668e` and C8. This is a finding, not a newly fixed defect or a
+replay of RF conditions. The model change is in `2395c92`; production is
+unchanged. All 52 section 4 model cases have three identical completed
+measurements/verdicts on C8, but many fail. The first full invocation times
+out at ten minutes during repetition three; a separate twenty-minute-limit
+run completes missing subtests. No timed-out case counts as completed.
+
+A narrower gigaradio deadline reproduction observes a live survivor with
+ACK-progress age 33 ms and zero queue delay, paced at 653,342 B/s against
+required payload 20,242,721 B/s. **Inference:** stage 1 cannot prove that
+gate with the legacy estimator retained; the later delay/capacity model is
+a dependency. This is not the field upload cause. Stage acceptance and
+both-family lab/regression completion remain outstanding; none is newly
+claimed here. Full scenario counts, provenance, reproduction commands and
+field tables are in the
+[installed-baseline checkpoint](../../docs/drafts/20261002-1730-adaptive-policy-plan.md#10-installed-baseline-and-upload-investigation--2026-10-04).
+
+Use disk-backed `/var/tmp` for field logs and preserve the observed exit
+policy on failed setup as well as success. This investigation corrects
+collector cleanup and `/run` exhaustion separately from policy. The operator
+requests removal of obsolete edge `/run` artifacts: 453.339 MB is archived,
+verified and removed, with unchanged daemon/config hashes and PID. Completed
+collection intervals account for 53.504 mobile RX+TX MB (first setup and one
+incomplete failure excluded). The enclosing 21:21:40–21:59:46 UTC interval is
+217.118 MB including deployment, management and background; nested counts
+must not be added. Cleanup accounts for another 0.058 MB including background.
+These are VLAN counters, not provider billing. Evidence is retained under
+`/srv/nvme/tmp/wanbond-adaptive-evidence/`; see the checkpoint for exact paths.

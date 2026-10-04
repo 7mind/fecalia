@@ -44,6 +44,17 @@ Prerequisites (all phases):
       Field approval does not establish adaptive stage 1 acceptance.
       Upload and loaded-latency spread remain open; preserve the failed
       model gates and incomplete both-family regression series.
+- [ ] Use observed `b444920` as the new operational baseline, retaining
+      `f75668e` for original failing-test provenance. The 2026-10-04 bounded
+      healthy uploads reach 3 Mbit/s, including after a 10 Mbit/s download;
+      they do not reproduce the earlier 0.33 Mbit/s observation. Capture
+      phase-aligned backpressure and lane samples before proposing its fix.
+      Preserve the observed exit policy on all cleanup paths, including a
+      partially failed setup. Use disk-backed `/var/tmp` for test logs;
+      `/run` exhaustion has interrupted collection. Archive and verify
+      obsolete artifacts before removing them, checking process/timer
+      references and retaining the active runtime config. See the
+      [installed-baseline checkpoint](drafts/20261002-1730-adaptive-policy-plan.md#10-installed-baseline-and-upload-investigation--2026-10-04).
 - [ ] Run the [KVM lab procedure](../test/vm/README.md): calibrate each WAN before
       interpreting tunnel throughput; save the profile and binary hash.
 - [ ] For adaptive-policy scenarios, retain actual voice send stamps and TCP

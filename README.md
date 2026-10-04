@@ -117,6 +117,11 @@ direct-link tests used different servers and do not prove aggregation gain.
 Adaptive stage 1 gates remain unsatisfied; the delay and capacity estimator
 replacements in stages 2–3 remain unfinished. See the
 [release record](docs/drafts/20261004-1105-adaptive-stage1-trial.md#operator-approved-c8-release--2026-10-04).
+The operator's new installed baseline is `b444920`, with build identity.
+Bounded field uploads reach the offered 3 Mbit/s ceiling; the earlier upload
+limit is not reproduced. See the
+[baseline investigation](docs/drafts/20261002-1730-adaptive-policy-plan.md#10-installed-baseline-and-upload-investigation--2026-10-04)
+for limits and the outstanding stage-order dependency.
 
 On Linux the daemon needs `tc` (iproute2) at startup: it inspects the queue
 discipline of `wanbond0` and removes the HTB/`bfifo` rate cap an older build

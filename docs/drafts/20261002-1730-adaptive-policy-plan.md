@@ -463,6 +463,10 @@ delay model is also what stage 3's congestion signal reads.
    (2026-10-04, 20:19 UTC). The agent restores the hosts; the operator handles
    installation. Preserve failed gates and measured limits. This release
    decision does not assert completion of stages 0–3.
+9. The operator selects current main `b444920`, including build identity, as
+   the new operational baseline (2026-10-04). Preserve `f75668e` as the
+   original reproduction reference. This does not waive the section 4 gates
+   or accept an unfinished stage.
 
 Open: the video gates of row 4 (300 ms gap, 2% loss) are a proposal; and how a
 video call is told from a QUIC download.
@@ -711,3 +715,147 @@ paired references and uncertainty rather than an invented tolerance.
 Code/docs commits stay separate; affected design/runbook docs, the full
 non-privileged gate and `nix build` remain part of completion. Stage 4 video
 and agent-managed permanent deployment remain outside this goal.
+
+## 10. Installed baseline and upload investigation — 2026-10-04
+
+### Installation and bounded field observations
+
+**Observed:** both hosts run `b444920c53f689393ea084c349ca496fbd7abd42`,
+source time `2026-10-04T21:13:41Z`, executable SHA-256
+`dce5c7e4dae9a13565e04c69aa2ac36a6ab388a51418282a027e14e18f4e5dd9`.
+Installation was observed during the operator's deployment; the later
+completed rounds preserve edge PID 124929 and concentrator PID 468806.
+The exit is pinned to `raspi5l`. No candidate replacement, daemon restart,
+WAN impairment or Nix deployment change was made in this investigation.
+
+**Observed:** voice-only preflights precede bounded TCP transfers to the same
+OCI endpoint, `89.168.124.91`. Direct sockets are bound to the WAN device;
+tunnel traffic uses `wanbond0` through `raspi5l`. Receivers record actual
+payload arrivals; upload size and digest and download size are checked.
+Rates below are payload Mbit/s over the receiver interval, including stalls.
+SSH transport is used without compression; these are not Ookla measurements.
+
+| Sequence | Offered rate / payload per transfer | Direct references and tunnel result |
+|---|---|---|
+| Starlink up/down → 5G up/down → tunnel up/down | 1 Mbit/s / 1.25 MB each | Starlink 0.522/0.534, 5G 0.995/1.001, tunnel 1.001/1.001 |
+| Starlink upload → 5G upload → tunnel upload → 5G upload | Starlink 1 Mbit/s / 1.25 MB; others 3 Mbit/s / 3.75 MB | Starlink 0.513; 5G before/after 2.989/2.993; tunnel 3.001 |
+| Starlink upload → 5G upload → tunnel download → tunnel upload → 5G upload | Same upload caps; download 10 Mbit/s / 12.5 MB | Starlink 0.523; 5G before/after 3.000/2.989; tunnel down/up 9.996/2.999 |
+
+**Inference:** the reported 0.33 Mbit/s upload limit is not reproduced in
+these bounded workloads, including after the 10 Mbit/s download. Reaching
+an offered ceiling establishes that service lower bound, not link capacity,
+aggregation, a policy gain or behavior after a 66 Mbit/s download. RF
+conditions, TCP implementation, destination and startup history differ from
+the operator's Speedtest. There is no justified production upload fix yet.
+These are baseline rounds, not baseline/candidate comparisons. Warm transport
+state is retained. No independent survivor idle calibration or loaded-voice
+comparison was made, so the section 4 idle-plus-50-ms gates are not claimed.
+
+**Observed accounting:** completed collection intervals plus one failed setup
+advance mobile VLAN RX+TX by 53.504 MB. The first interval omits its initial
+setup, and a separate space-failure interval lacks a complete counter pair.
+The continuous 21:21:40–21:59:46 UTC counter interval is 217.118 MB, including
+operator deployment, management if routed over that VLAN, and background
+traffic. Nested reference intervals must not be added to collector intervals;
+neither figure measures provider billing or test-only mobile usage.
+
+Collection defects are retained separately: embedded-NUL cleanup failed after
+the first payload sequence (bounded jobs expired and logs were recovered);
+a helper incorrectly restored `auto` after rejecting an operator-pinned
+exit (restored to `raspi5l`, then changed to preserve the observed policy);
+and `/run` exhaustion interrupted another setup before TCP payload. Subsequent
+collectors use disk-backed `/var/tmp`, persist setup counters immediately and
+attempt cleanup on both hosts before reporting cleanup errors. Failed setup
+runs carry no policy verdict.
+
+At the operator's request, 62 obsolete test directories under `/run` on the
+edge are archived with verified file hashes to
+`/var/tmp/wanbond-run-archive-20261004-221448.tar.gz` (50.979 MB compressed),
+then removed: 453.339 MB of files. **Observed:** no process or active timer
+references those paths; daemon PID, executable hash and runtime config hash
+are identical before/after. `/run/wanbond/edge.toml` is retained and `/run`
+usage falls to 19.644 MB (4%). This cleanup interval advances mobile RX+TX by
+0.058 MB including background traffic; no archive is transferred over mobile.
+
+### Model findings and the remaining stage dependency
+
+**Built:** `2395c92` adds independent upload/download selection to the existing
+TCP model and four healthy standby cases (each direction, with/without voice).
+The inactive direction offers no bulk but still carries genuine reverse TCP
+ACKs and transport feedback; its independent reference likewise reserves
+that reverse demand. No production policy or constant changes.
+
+**Observed:** all four cases pass with identical measurements in three runs
+on both `f75668e` and C8. They are findings, not newly fixed failures. The
+fixture uses the documented 0.5 Mbit/s symmetric Starlink and 100 down/10 up
+5G caps, fixed propagation delays and no jitter/loss. It is not an RF trace
+or a Linux TCP reproduction.
+
+| Healthy case, last five seconds | Original payload B/s | C8 payload B/s | Independent reference B/s |
+|---|---:|---:|---:|
+| Download only | 9,692,640 | 9,971,280 | 6,412,847 |
+| Download with voice | 9,908,640 | 9,954,720 | 6,231,040 |
+| Upload only | 1,033,200 | 1,012,560 | 1,091,646 |
+| Upload with voice | 985,680 | 987,600 | 1,060,697 |
+
+The reference is the existing conservative model wire-budget calculation,
+not a measured field ceiling. Passing both revisions does not establish a C8
+gain or reproduce the operator's upload observation.
+
+**Observed:** all 52 section 4 model cases now have three completed repetitions
+with identical normalized output and verdicts on C8. The initial `-count=3`
+invocation hit Go's default ten-minute timeout during the third repetition;
+a separate `-count=1 -timeout=20m` run completed the missing 1c/2/3/0 cases.
+Only completed subtests are counted. This is not a three-run lab series.
+
+| Scenario | Passing / failing cases |
+|---|---:|
+| 1a blackout | 5 / 3 |
+| 1b recovery | 1 / 3 |
+| 1c one-way blackout | 9 / 7 |
+| 2a rate falls | 0 / 4 |
+| 2b rate rises | 0 / 2 |
+| 2c plan changes | 0 / 2 |
+| 2d cellular grants | 1 / 1 |
+| 3a call lane gains delay | 2 / 2 |
+| 3b other lane becomes better | 0 / 4 |
+| 3c both lanes gain delay | 1 / 3 |
+| 0 cold transfer | 0 / 2 |
+
+A narrower gigaradio diagnostic records the 1a lane-0 blackout deadline.
+At 22.999 s the failed lane is dead; the survivor is live with ACK-progress
+age 33 ms and queue delay zero, but its legacy pacing target is only
+653,342 B/s. Its capacity is 737,189 B/s after 49 delay signals and nine
+capacity decays. Required payload service is 20,242,721 B/s (75% of the
+26,990,294 B/s independent reference); actual `[22,23)` payload is
+84,000 B/s in that direction and 6,868,800 B/s in reverse.
+**Inference from snapshots and pacing code:** liveness/allocation alone cannot
+meet that deadline while retaining this target. The failing stage 1 gate
+depends on the later delay/capacity replacement. This explains a model
+bottleneck, not the field Speedtest cause or every failing case.
+
+The original stop/report condition and section 9 stage boundary therefore
+remain material: proceeding to the later estimators before proving stage 1
+requires an explicit sequencing amendment. Preserve every failed gate and
+deadline; do not add a capacity heuristic to stage 1 or label it accepted.
+Stages 2–3 have not started, and no new lab/regression series is claimed.
+The full non-privileged gate passes for the directional test change; Nix
+build and packaged source-identity checks remain required at handover.
+
+Evidence under `/srv/nvme/tmp/wanbond-adaptive-evidence/`:
+`new-baseline-upload-20261004-212139/`,
+`new-baseline-upload-3m-disk-20261004-214921/`,
+`new-baseline-post-download-20261004-215337/`, their referenced
+`field-direct-before-tunnel-c8-new-baseline*` directories,
+`edge-run-cleanup-20261004/`,
+`{c8-new-baseline,original-baseline}-directional-reference-three.jsonl`,
+`c8-new-baseline-three-run-provenance.json`,
+`c8-new-baseline-stage1-deadline-diagnostic.txt`, and retained diagnostic
+source/patches. Reproduction commands:
+
+```sh
+nix develop --command go test -tags adaptivepolicy ./internal/bond \
+  -run '^TestAdaptiveFieldStandbyDirectionalService$' -count=3 -timeout=20m
+nix develop --command go test -tags adaptivepolicy ./internal/bond \
+  -run '^TestAdaptivePolicy' -count=3 -timeout=30m
+```

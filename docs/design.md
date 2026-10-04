@@ -498,6 +498,28 @@ timers and unchanged WAN qdiscs verified at 20:22 UTC. The operator window
 advanced mobile RX+TX counters by 213.36 MB, including tests, management and
 background traffic. See the [release record](drafts/20261004-1105-adaptive-stage1-trial.md#operator-approved-c8-release--2026-10-04).
 
+**Installed baseline and upload investigation, 2026-10-04.** The operator
+selects `b444920` (C8 plus build identity) as the operational baseline; both
+running executables are observed on that commit. Original `f75668e` remains
+the reproduction reference. Controlled same-destination field uploads reach
+the offered 1 and 3 Mbit/s ceilings, including after a 10 Mbit/s tunnel
+download. These lower bounds do not reproduce the operator's 0.33 Mbit/s
+observation or establish capacity or a policy gain. No production correction
+is justified by that unreproduced observation.
+
+The model now supports either bulk direction independently while preserving
+reverse TCP ACK and transport-feedback demand. Four healthy standby cases
+pass three identical runs on both original and C8 controllers: findings,
+not new fixes. All 52 section 4 cases have three identical completed C8
+verdicts; failed gates remain. In a gigaradio blackout diagnostic the survivor
+is live at the deadline but paced at 653,342 B/s against required payload
+20,242,721 B/s. Inference: completing liveness alone cannot prove this gate
+with the legacy estimator retained. The stage-order dependency must be
+reported before later estimator work. No estimator, wire or configuration
+changes accompany these tests. See the
+[baseline checkpoint](drafts/20261002-1730-adaptive-policy-plan.md#10-installed-baseline-and-upload-investigation--2026-10-04)
+for measurements, collection defects, accounting and reproducible commands.
+
 **Paths and epochs.** An unpadded challenge-protected PROBE carries a 22-byte
 capability record: `bond`, version 1, physical path ID, process Boot ID and Bind
 Open generation. Padded PMTU probes retain their original size. A logical lane
