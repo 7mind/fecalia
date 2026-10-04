@@ -53,6 +53,17 @@ Prerequisites (all phases):
       Report VLAN counter intervals separately from management transfers
       whose provider is unknown. See the [stage 1 trial record](drafts/20261004-1105-adaptive-stage1-trial.md)
       for the measured comparisons and restoration checks.
+- [ ] For the current standby comparison, preserve the operator's 0.5 Mbit/s
+      symmetric Starlink and 100 down/10 up 5G caps separately from measured
+      service. Use deployed → candidate → deployed rounds with recorded
+      startup ages and fresh direct references. Voice-only comparisons precede
+      TCP. A bounded TCP offer must exceed the survivor's expected residual
+      service to expose it; the earlier 8 kB/s offer hid differences. Retain
+      sender backpressure, receiver byte timestamps and exact payload hashes;
+      pacing must not create a catch-up burst after a blocked write. Hold a
+      single-WAN blackout when either lane is already DOWN or management
+      access is intermittent. Preserve incomplete rounds as collection
+      evidence, without a policy verdict.
 - [ ] Record the removal timer's accuracy and actual firing time. For a
       latency-rise measurement, remove netem after receipt collection:
       deleting it while voice packets are queued can contaminate the loss

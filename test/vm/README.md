@@ -60,6 +60,7 @@ TCP there while the radio profile did not move.
 | `profiles/jitter.json` | 2+6 Mbit/s, 15/40 ms delay, 4/10 ms jitter | Same throughput gates, including a 30-second idle period before load |
 | `profiles/mobile.json` | 0.4+1.25 Mbit/s uplink, 0.5+100 downlink, 4/10 ms jitter | Same throughput gates; stress model for standby Starlink and asymmetric LTE |
 | `profiles/radio.json` | Mobile capacities; Starlink 20±10 ms delay and 0.4% loss, LTE 40±30 ms delay, independently in each direction | Same throughput gates after 60 seconds idle; reproduces the collapse missed by milder jitter |
+| `profiles/field-standby.json` | Starlink 0.5 Mbit/s symmetric, 5G 100 down/10 up; fixed 14/28 ms one-way delays, satellite policing and 300 ms mobile buffer | Additional field-cap fixture for adaptive comparisons; timing, loss and queue behavior are assumptions, not an RF trace |
 | `profiles/gigaradio.json` | 300+300 Mbit/s in each direction with the radio profile's delay, jitter and loss; delay correlation 95% | Same throughput gates; a model of an upgraded Starlink beside 5G |
 | `profiles/gigasteady.json` with `wander.py` | 300+300 Mbit/s with steady netem delays that `wander.py`, run in each guest, moves as measured links' latency moves | Same throughput gates; the only scenario in which latency has memory |
 | `single_lane.py` | One WAN dead from the start; on a cold tunnel a call in both directions, then one TCP flow three seconds later | TCP reaches 50% of the live WAN's rate; each voice stream has <1% loss |
@@ -76,6 +77,66 @@ Field comparisons require current direct uplink measurements before the
 tunnel and independent references after voice and protocol overhead. Prior
 fixture results retain their original conditions and are not relabelled as
 measurements of this field configuration.
+
+The separate `field-standby.json` fixture matches the operator's rate caps.
+Its fixed delays, zero random loss, satellite policing and mobile buffer
+are inherited modeling assumptions from the earlier built-in field fixture.
+It does not replace the radio/gigaradio acceptance families. The deterministic
+model reads this same file; its policer admits two full datagrams, whereas
+the lab uses a 3 kB burst. Matching rate caps alone does not establish
+equivalence to the field.
+
+Observed on the production controller at `f75668e` with corrected TCP-model
+inputs: the field fixture's idle voice p99 is 41/41 ms on satellite,
+59/59 ms on mobile, and 41/41 ms on the pair in `[5,19)` seconds. All 700
+echoes per direction arrive in each topology, identically across three runs
+(`field-standby-f75668e-idle-three.txt`). These independent references supply
+the unchanged idle + 50 ms outage/recovery latency limits.
+
+Run the additional model cases explicitly:
+
+```sh
+nix develop --command go test -tags adaptivepolicy ./internal/bond \
+  -run '^TestAdaptiveFieldStandby' -count=3 -v
+```
+
+Observed with the earlier receipt-timing-corrected model input: baseline
+and `c8` both pass all six voice-only outage variants and fail all six
+combined bulk/outage/recovery cases, identically across three
+runs. The latter test combines the existing 1a/1c and 1b gates; a combined
+failure need not mean its outage phase failed. On the bidirectional mobile
+blackout, baseline TCP delivery in `[23,35)` is 1,200/3,500 B/s and `c8`
+delivers 8,700/8,100 B/s against an independent 12,110 B/s reference. The
+75% bound is 9,082.5 B/s, so this is a measured model increase, not a gate pass
+or a field gain. Evidence: `field-standby-{f75668e,c8}-outage-three.jsonl`.
+
+A later failing reproduction corrects sequence distance being mistaken for
+three selectively received segments. With that correction, the same
+voice-only cases still pass and all six combined bulk cases still fail
+identically across three runs. Mobile-blackout TCP delivery in `[23,35)`
+is now 700/1,800 B/s on baseline and 1,600/3,600 B/s on `c8`, against the
+same 12,110 B/s independent reference. These supersede the older-input
+numbers for current model verdicts (`field-standby-{f75668e,c8}-sack-loss-three.jsonl`).
+
+Observed: the new profile passes its independent lab UDP capacity gate in
+both directions: satellite 0.4843/0.4845 Mbit/s and mobile 9.6777 up/96.8394
+down, all above 85% of configured wire rate. Plain TCP is 0.3816/0.3823 on
+satellite and 9.5566 up/95.3654 down; it is reported separately. The host
+trace records a 99% busy 100 ms sample and maximum wake delay 2.6 ms;
+guest maxima are 5.8/10.3 ms with observed steal. This is one calibration,
+not the required scenario or regression three-run series.
+
+One `c8` lab blackout diagnostic completed on this additional profile
+(`20261004-150613-adapt-blackout-field-caps-c8-static-diagnostic`): voice
+loss/gap checks pass, but receiver delivery after mobile recovery is only
+68,587 B/s down and 989,290 B/s up after the five-second deadline. The
+run lacks independent phase latency/goodput references for a full gate
+verdict. Its startup state differs from the warm field voice series. An
+earlier dynamically linked diagnostic binary could not start in Alpine;
+it contributes no policy evidence. Static build SHA is
+`928afcde34837cecbcd31fb20d9928081ccf1c8f3626f6b12feeff15c43445ec`.
+See the [trial record](../../docs/drafts/20261004-1105-adaptive-stage1-trial.md)
+for the matching field rounds, input-model corrections and limitations.
 
 Continuity accepts `--profile`, defaulting to `profiles/basic.json`. At 15
 seconds WAN1 is capped at 0.5 Mbit/s in each direction; lower profile rates are

@@ -164,6 +164,22 @@ both bulk bounds passing; this supersedes the older-input pass for current
 acceptance. Outage verdicts remain 1a 5/3, 1b 0/4, and 1c 5/11. No gate
 was weakened and the earlier observations retain their provenance.
 
+**Stage 0 finding, observed 2026-10-04.** A further failing reproduction
+shows the TCP models treating sequence distance as three selectively
+received segments: one far-ahead receipt causes seven retransmissions.
+Both models now use three distinct full-segment receipts, preserving the
+positive loss case and excluding duplicate reports. Production policy and
+scenario gates are unchanged. All 52 corrected-input baseline cases again
+produce identical measurements and verdicts across three runs. Radio 1c,
+lane 0, direction 0 with bulk now passes; section 2's predicted
+caller-visible failure is wrong for that case too. The pass is retained.
+Current baseline outage passes/failures are 1a 5/3, 1b 0/4, 1c 6/10;
+radio 2d still fails at 151 ms. `c8` remains unaccepted: its three-run
+outage results are 1a 5/3, 1b 1/3, 1c 9/7. Its live gigaradio survivor
+still has a target below the required payload rate at the deadline.
+The [trial record](20261004-1105-adaptive-stage1-trial.md) preserves the
+older-input observations and the renewed failure bound.
+
 ## 3. Target: one link model per lane, continuously measured, with ages
 
 A lane keeps a **link model**: a few estimates, each fed by every
@@ -547,3 +563,30 @@ queue age, repairs, copies and actual metered MB. Where cap or RF variability
 prevents a comparison, retain the uncertainty. Use captured behavior to
 challenge model assumptions; neither a poor lab result nor a favorable
 field round is sufficient to declare stages 1–3 proved.
+
+### Approved next execution — 2026-10-04
+
+**Operator instruction:** proceed with the following strategy as the goal.
+Retain stages 0–3, their order and all section 4 gates; video and permanent
+deployment remain excluded. The earlier goal is unfinished. The goal API
+refused replacement and exposes no resume operation for its paused entry;
+this approval authorizes the work, not a claim that the earlier goal passed.
+
+1. Add a separate fixture with the current field caps. Keep radio and
+   gigaradio unchanged. Delays, queue depth and policing in the new fixture
+   are stated modeling assumptions until checked against current field data.
+2. Compare deployed → candidate → deployed with matched startup age. Measure
+   direct Starlink, direct 5G and tunnel immediately before each round. Run
+   voice-only single-WAN outages first, then rate-capped TCP high enough to
+   expose the survivor's residual service; record delivered bytes and MB.
+3. Isolate stage 1's outstanding capacity bottleneck with a minimal model
+   reproduction. Determine whether a correction belongs to liveness/pacing,
+   or demonstrate its dependency on a later estimator. Do not combine stages
+   to obtain a passing verdict.
+4. Continue estimator replacement in stages 2 and 3 only in the approved
+   order, with separate outcome-test commits and removal of replaced rules.
+   Complete the lab series, regression gates, documentation and Nix build
+   before claiming the implementation complete.
+
+The next deliverable is the matching field comparison and a reproducible
+account of the next bottleneck. Existing failed gates remain outstanding.

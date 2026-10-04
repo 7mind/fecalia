@@ -271,3 +271,179 @@ non-privileged gate before restoration
 (`stage1-c8-sack-nonprivileged-gate.txt`). These are default-suite checks,
 not passes of the tagged progression scenarios or the missing candidate lab
 series and existing lab gates.
+
+## Approved matching-cap comparison — 2026-10-04
+
+The operator approved the next strategy in the adaptive-policy plan. This
+resumes bounded diagnosis of the retained candidate; it does not accept
+stage 1 or combine later stages with it. The goal API refused a replacement
+because its earlier unfinished goal is paused, and supplies no resume
+operation. The approved strategy is recorded in the plan.
+
+**Observed model evidence, receipt-timing-corrected input before the
+loss-evidence correction below:** `field-standby.json` supplies the same current
+rate caps to the lab and deterministic model. Its fixed 14/28 ms delays,
+zero random loss, satellite policer and 300 ms mobile buffer are assumptions,
+not a current RF trace. Three baseline voice-only reference runs give
+41/41 ms satellite p99 and 59/59 ms mobile p99, with all 700 echoes per
+direction delivered in `[5,19)` seconds. Baseline and `c8` both pass all six
+voice-only outage variants and fail all six combined bulk/outage/recovery
+cases across three repetitions. No existing radio/gigaradio input or gate
+was changed. For the bidirectional mobile blackout, `[23,35)` TCP delivery
+is 1,200/3,500 B/s on baseline and 8,700/8,100 B/s on `c8`. The independent
+reference is 12,110 B/s, so the unchanged 75% gate still fails.
+
+**Observed diagnostic evidence with that earlier input:** on the same fixture with only satellite
+from startup, `c8` delivers 13,800 B/s each way in `[15,25)`; five consecutive
+early voice losses nevertheless fail continuity. During mobile failover,
+the satellite target at 22.999 seconds exceeds its physical rate in both
+directions, while the TCP sender retains 812/37 outstanding segments and
+has entered timeout recovery. At 34.999 seconds these counts are 725/5.
+The large direction-0 flight predates blackout: 882 segments at 19.999
+seconds. **Inference:** a low survivor target is not sufficient to explain
+this matching-cap failure; the transfer history and recovery differ from
+the stationary case. This is distinct from the earlier gigaradio target
+bound, not proof of a field root cause or a proposed estimator correction.
+Evidence: `field-standby-c8-{survivor-diagnostic,tcp-handoff-trace}.txt`.
+The trace instrumentation was test-only and restored after collection.
+
+**Observed field evidence:** the voice series uses deployed → `c8` →
+deployed, with both daemon ages between 180 and 195 seconds when collection
+begins. Each round measures direct Starlink, direct 5G and tunnel TCP in
+that order first, at a 1 Mbit/s offered ceiling, and then runs two 50 Hz,
+160-byte echo streams for 60 seconds. A verified timer removes the single
+5G-egress blackout after 15 seconds; the current management reply route is
+checked separately. Candidate SHA and executable are verified on both hosts.
+
+| Warm round | Lost echoes, edge/hub | Maximum receive gap, ms | Whole-run RTT p99, ms | Outage RTT p99, ms |
+|---|---:|---:|---:|---:|
+| Deployed A | 3 / 0 | 81 / 119 | 59 / 58 | 132 / 74 |
+| `c8` | 0 / 0 | 77 / 82 | 54 / 55 | 60 / 61 |
+| Deployed B | 0 / 0 | 97 / 91 | 71 / 68 | 84 / 71 |
+
+All three pass the loss, consecutive-loss and receive-gap checks. The
+outage RTT measurements exclude the first second, using the recorded guest
+application/removal times. They are measurements, not independent
+survivor-idle + 50 ms gate verdicts. **Inference:** this series does not
+establish a repeatable voice gain. Direct Starlink upload is 0.506–0.517
+Mbit/s and download 0.530–0.534; 5G and tunnel reach approximately the
+1 Mbit/s offered ceiling, establishing lower bounds only. Both deployed
+executable hashes and empty runtime drop-ins were verified after restoration.
+Evidence: `field-matched-series-standby-voice-20261004-143324/manifest.json`
+and each round's `summary.json`.
+
+**Observed collection interruptions:** the first voice reference attempt
+failed before impairment because the field SSH wrapper overrode the worker
+host-key file; selecting the SSH executable with the correct worker file
+corrected the collection. A later 24,000 B/s bulk series stopped before
+impairment on an SSH connection timeout after four direct-link transfers.
+Restoration succeeded. The following edge observation reports Starlink DOWN,
+and source-bound ICMP to the concentrator receives no replies. The cause is
+unknown; the 5G blackout is held until both lanes are observed working.
+No bulk policy verdict follows from that interrupted collection.
+
+**Observed mobile VLAN accounting:** the completed voice series consumes
+26.449579 MB continuously across restarts, direct references, voice and
+cleanup. Its three voice collectors account for 12.186687 MB within that
+larger interval. The failed host-key attempt adds 1.234752 MB and the
+interrupted bulk series 8.257803 MB in disjoint continuous intervals.
+These counters include background traffic and are not modem billing totals.
+No binary was transferred again.
+
+## Three selective receipts and current verdicts
+
+**Observed reproduction:** with ten outstanding full segments, receipt of
+only segment 10 caused the model to retransmit 1–7 immediately. The
+production-source `f75668e` worktree reproduces this through its test-only
+adapter. Both models used sequence distance from the highest SACK rather
+than the three later receipts their model contract describes. The new
+test covers one receipt, its duplicate, a second distinct receipt and the
+third receipt's positive loss case. It fails for the stated reason before
+the correction and passes afterwards. Evidence:
+`model-sack-loss-evidence-{exact-f75668e-red,green}.txt`; code-only commit
+`75ebc1f`.
+
+**Document evidence:** [RFC 6675 section 4](https://www.rfc-editor.org/rfc/rfc6675.html#section-4)
+defines loss using SACKed sequences or SACKed bytes above a hole. Sequence
+distance alone is not that evidence. The models now retain the three
+highest distinct full-segment receipts and use the third as the loss
+boundary in both callers. This does not implement complete RFC 6675 or
+Linux RACK recovery. **Observed in the field:** both kernels use CUBIC,
+SACK and `tcp_recovery=1`; the edge kernel is 6.18.52 and concentrator
+6.18.42. The model remains a documented approximation, not a Linux kernel
+equivalence claim.
+
+**Observed current model results:** all 52 original-controller cases have
+identical measurements and verdicts across three runs. The first command
+ran 50 cases; cold row 0's two cases completed separately, three times.
+The combined summary validates all 52. Baseline passes/failures are 1a 5/3,
+1b 0/4, 1c 6/10, 2a 0/4, 2b 0/2, 2c 0/2, 2d 0/2, 3a 2/2, 3b 0/4,
+3c 0/4 and 0 0/2. Radio 1c lane 0 direction 0 with bulk now passes;
+the plan's predicted caller-visible failure is wrong in that case and the
+pass is retained. Radio 2d still fails at 151 ms p99. `c8` gives 1a 5/3,
+1b 1/3, 1c 9/7, identically across three runs. No acceptance threshold or
+production controller changed. Evidence:
+`adaptive-policy-f75668e-sack-loss-full-summary.json` and
+`stage1-c8-outage-sack-loss-three-summary.json`.
+
+The additional field-cap fixture still gives six voice-only passes and
+six combined bulk/outage/recovery failures on both controllers, identically
+across three runs. Current mobile-blackout `[23,35)` TCP delivery is
+700/1,800 B/s on baseline and 1,600/3,600 on `c8`, against the unchanged
+12,110 B/s reference. These supersede the earlier model numbers for current
+verdicts; they are not field measurements.
+
+**Observed renewed failure bound:** after this correction, gigaradio's
+direction-0 survivor at 22.999 seconds is live, with a 653,342 wire B/s
+target and 737,189 B/s capacity estimate. Its deadline requires 20,242,721
+TCP payload B/s; actual final-second payload delivery is 84,000 B/s.
+The target was already 356,020 B/s before blackout. **Inference:** even
+spending the entire target on payload cannot satisfy the deadline. This
+renews the explained failure for the retained stage 1 attempt; liveness
+eligibility alone cannot meet that phase's gate. It does not prove a field
+root cause or impossibility for every policy. Evidence:
+`stage1-c8-giga0-sack-loss-bound.txt`.
+
+On the matching-cap diagnostic with corrected input, the satellite-only
+stationary transfer delivers 11,040 B/s each way; five early consecutive
+voice losses still fail continuity. During mobile failover, direction 0
+retains 824 outstanding TCP segments at 22.999 seconds and 808 at 34.999;
+its target at 22.999 is 85,991 B/s. Direction 1's target is 61,083 B/s,
+near the configured 62,500 B/s service. **Inference:** this different
+failure needs a recovery diagnosis, not an assumption that the gigaradio
+target bound explains it. Evidence:
+`field-standby-c8-sack-loss-handoff-trace.txt`; test-only instrumentation
+was restored after capture.
+
+**Observed additional lab evidence:** the new fixture's UDP calibration
+passes above 85% on every WAN/direction. The host's trace includes one
+99% busy 100 ms sample; guest wake maxima are 5.8/10.3 ms with observed
+steal. A static `c8` blackout diagnostic completes, with voice continuity
+checks passing. TCP receiver delivery after mobile recovery's five-second
+deadline averages 68,587 B/s down and 989,290 up. The run lacks independent
+phase goodput/idle-latency references for a full gate verdict, and its
+startup differs from the warm field series. This is not the required
+radio/gigaradio three-run series. Evidence:
+`field-standby-{lab-calibration,calibration-timing-summary,c8-lab-receiver-diagnostic}`
+under the evidence root, with their `.txt`/`.json` suffixes. The first
+diagnostic build omitted `CGO_ENABLED=0`, required an unavailable Nix
+loader in Alpine and failed before traffic; the corrected static build's
+SHA is `928afcde34837cecbcd31fb20d9928081ccf1c8f3626f6b12feeff15c43445ec`.
+
+**Observed field interruption and restoration:** another bulk attempt
+stops on an SSH timeout during the startup wait, before direct calibration
+or impairment. It adds 1.194921 MB in its continuous mobile counter interval.
+A fresh read at 14:19 UTC verifies both deployed executable hashes, empty
+candidate overrides and inactive restore timers. The edge has no test WAN
+qdiscs or task TCP/voice listener. Starlink lanes are DOWN on both hosts
+and 5G lanes are UP. The field bulk comparison is held; no verdict is inferred from
+these incomplete collections. The continuous mobile VLAN increase since
+the first matching-series attempt is 64.076884 MB, including background
+traffic and idle waits, not a billing total. Evidence:
+`field-matched-restoration-current-20261004-151943/manifest.json`.
+
+**Observed verification:** the full non-privileged gate and `nix build`
+pass with the corrected models. `main` retains stage 0 production behavior;
+the approved stages 1–3, their three-run lab gates and candidate regression
+series remain incomplete. The stage 1 attempt is still stopped at an
+explained gate failure; later estimators are not folded into it.

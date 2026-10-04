@@ -434,6 +434,34 @@ retained radio and built-in field fixtures differ; the 300+300 Mbit/s
 gigaradio failure is a stress result rather than the field's required
 goodput. Field references require contemporaneous direct-link measurements.
 
+The additional `field-standby.json` fixture now uses those rate caps in both
+the lab profile reader and the deterministic model. Fixed 14/28 ms delays,
+zero random loss, satellite policing and a 300 ms mobile buffer are modeling
+assumptions. It leaves the required radio/gigaradio families unchanged.
+Observed on `f75668e`: three identical voice-only idle measurements establish
+p99 references of 41 ms on satellite and 59 ms on mobile. Baseline and `c8`
+pass the six additional voice-only outages but fail their six combined
+bulk/outage/recovery cases across three repetitions. The candidate's higher
+standby-survivor TCP delivery still falls below the unchanged goodput gate;
+it establishes a model increase, not a field improvement. The approved next
+comparison matches startup ages and uses deployed → candidate → deployed
+rounds with current direct-link measurements. Stage 1 remains unaccepted.
+
+A further failing reproduction corrects the TCP models' loss evidence:
+one far-ahead SACK had triggered multiple retransmissions from sequence
+distance alone. Both models now require three distinct selectively received
+full segments above a hole. This corrects test inputs, not the production
+transport. All 52 baseline scenarios again have identical measurements in
+three runs; radio 1c lane 0 direction 0 with bulk now passes and that
+finding is retained. The corrected `c8` survivor still fails bulk and
+recovery gates. Warm deployed → candidate → deployed field voice rounds
+all pass loss/gap checks, without establishing a repeatable gain. The
+24 kB/s TCP field comparison is incomplete because Starlink availability
+and management SSH became intermittent; no bulk verdict follows. Both
+deployed binaries, empty candidate overrides and absent test qdiscs were
+verified afterwards. Detailed observations and input provenance remain in
+the trial record above.
+
 **Paths and epochs.** An unpadded challenge-protected PROBE carries a 22-byte
 capability record: `bond`, version 1, physical path ID, process Boot ID and Bind
 Open generation. Padded PMTU probes retain their original size. A logical lane
