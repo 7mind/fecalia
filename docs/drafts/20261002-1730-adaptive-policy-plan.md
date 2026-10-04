@@ -139,6 +139,16 @@ caller-visible failure is wrong for that case. Some earlier voice-only 1c
 passes become failures and others become passes, so the newer evidence
 supersedes those earlier outage verdicts without changing their gates.
 
+**Stage 0 finding, observed 2026-10-04.** A separate failing reproduction
+on `f75668e` exposed the TCP model forgetting retransmission history at a
+timeout and accepting an ambiguous RTT sample. Removing RTT eligibility
+when retransmitting corrects the model without changing production policy
+or scenario thresholds. All 52 corrected-input baseline cases have identical
+measurements and verdicts across three runs. The outage verdicts above,
+radio 2d pass and 3a latency findings remain; prior measurements retain their
+input provenance. The [stage 1 trial record](20261004-1105-adaptive-stage1-trial.md)
+records the reproduction and corrected candidate failures.
+
 ## 3. Target: one link model per lane, continuously measured, with ages
 
 A lane keeps a **link model**: a few estimates, each fed by every

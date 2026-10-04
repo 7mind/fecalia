@@ -400,8 +400,10 @@ Both production hosts were restored and independently verified.
 The TCP test models now discard RTT sample eligibility when retransmitting
 a segment. A failing reproduction on `f75668e` showed a timeout forgetting
 that history and inflating RTO; this is an input-model correction, not a
-production transport estimator. Baseline scenarios must be remeasured with
-it. The [trial record](drafts/20261004-1105-adaptive-stage1-trial.md)
+production transport estimator. The corrected-input baseline completed all
+52 cases three times with identical measurements and verdicts: outage
+passes/failures remain 1a 5/3, 1b 0/4, and 1c 5/11. Stage 1 still fails
+scenario gates. The [trial record](drafts/20261004-1105-adaptive-stage1-trial.md)
 retains executable/source hashes, old and corrected model provenance,
 field variability, counter deltas and outstanding acceptance work.
 

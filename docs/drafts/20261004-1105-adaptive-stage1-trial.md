@@ -180,8 +180,12 @@ disambiguation. This reproduction establishes that specific model defect;
 it does not prove every RTT sample in the approximation matches Linux TCP.
 
 **Observed:** one corrected-input `c8` run gives 1a 4/4, 1b 1/3, and 1c 8/8
-passes/failures. The baseline's three-run scenario series is being remeasured;
-earlier model verdicts retain their input provenance. The full non-privileged
+passes/failures. The corrected-input `f75668e` series completed three runs of
+all 52 scenario cases, with identical measurements and verdicts in each run.
+Its outage verdicts remain 1a 5/3, 1b 0/4, and 1c 5/11 passes/failures;
+radio 2d and the 3a voice-latency findings remain passes. Evidence:
+`adaptive-policy-f75668e-karn-three.jsonl` and its `-summary.json`.
+Earlier model measurements retain their input provenance. The full non-privileged
 gate also passes after this test-infrastructure correction
 (`stage1-c8-karn-nonprivileged-gate.txt`). Stage 1 is still unaccepted;
 no stage 2 or 3 replacement has been implemented.

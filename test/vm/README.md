@@ -2325,8 +2325,11 @@ when their retransmission scoreboard resets at an RTO. The exact test fails
 on `f75668e`, delaying a required retry after an ambiguous RTT sample; it
 passes when retransmission removes the original's RTT sample timestamp.
 Both models are corrected without changing policy or scenario thresholds.
-The original-controller three-run model series is being repeated with these
-inputs. Earlier measured verdicts are historical evidence from the previous
-model, not proof under the corrected inputs. No candidate lab series or
+The corrected original-controller series completed all 52 cases three times,
+with identical measurements and verdicts. Outage passes/failures remain
+1a 5/3, 1b 0/4, and 1c 5/11; radio 2d and the 3a latency findings remain
+passes. Evidence: `adaptive-policy-f75668e-karn-three.jsonl` and its summary
+under the evidence root. Earlier measurements retain their previous model
+provenance. No candidate lab series or
 existing continuity/benchmark/UDP acceptance is established by these field
 observations; stages 1–3 remain unaccepted.
