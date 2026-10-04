@@ -1,10 +1,18 @@
 # Adaptive policy plan — 2026-10-02
 
-State: `main` = `f75668e`, deployed on the edge (`pi.mo`) and on `raspi5l`
+Original baseline: `main` = `f75668e`, deployed on the edge (`pi.mo`) and on `raspi5l`
 (both daemons restarted 13:47, idle since). This plan follows
 [the improvement plan](20261001-0820-wanbond-improvement-plan.md) and replaces
 its item-by-item tuning as the way forward. Stage 0 measurement infrastructure
 is partly implemented; stages 1–3 have not begun.
+
+**Release checkpoint, 2026-10-04:** the operator approved committing and
+tagging the tested C8 candidate for their own installation. Production code
+is now `4a1cd54`, released as `v0.0.2`; the agent restored both production
+hosts to their original deployed binaries. This approval is distinct from
+the incomplete stage 0 proof and failed stage 1 gates. Stages 2–3 remain
+unfinished; no scenario threshold is changed. See the
+[release record](20261004-1105-adaptive-stage1-trial.md#operator-approved-c8-release--2026-10-04).
 
 Provenance of each claim is marked: **observed** (run or read in this session),
 **inferred** (from reading the code, not executed), **recorded** (taken from the
@@ -450,6 +458,11 @@ delay model is also what stage 3's congestion signal reads.
    host contention and physical-link behavior must be distinguished rather
    than inferred from the overall verdict. Preserve the field trial's
    candidate revision, outstanding failures and bounded workload.
+8. After the parked comparisons and their own `wbtest`, the operator requests
+   committing and release-tagging the tested C8 candidate for installation
+   (2026-10-04, 20:19 UTC). The agent restores the hosts; the operator handles
+   installation. Preserve failed gates and measured limits. This release
+   decision does not assert completion of stages 0–3.
 
 Open: the video gates of row 4 (300 ms gap, 2% loss) are a proposal; and how a
 video call is told from a QUIC download.

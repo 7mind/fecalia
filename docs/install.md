@@ -382,22 +382,24 @@ residence bound. `coalesced_tcp_acks_total` counts unsent
 pure TCP acknowledgements superseded by later cumulative acknowledgements;
 these are separate from queue drops. No extra configuration is needed for the
 local flow metadata and per-flow small-packet scheduling.
-`up=1` requires both a current authenticated lane lease and non-stalled
-delivery feedback.
-Stage 0 adds `transit_floor_seconds`, `transit_floor_known`,
+`up=1` requires a current authenticated lane lease and live or suspect
+ACK-progress liveness; bulk requires live state.
+Stage 0 introduced `transit_floor_seconds`, `transit_floor_known`,
 `transit_floor_age_seconds`, `path_delay_seconds`, `rank_seconds` and
-`liveness_state` (0 dead, 1 live). The floor includes the receiver's clock
+`liveness_state`. The floor includes the receiver's clock
 offset and can be negative; use its known flag and age when interpreting it.
 Path delay and rank still describe the legacy idle-only policy.
 `wanbond monitor` displays the same inputs and per-peer rejected-frame counts.
-The temporary stage 1 trial draft additionally exports
+The C8 policy released as `v0.0.2` additionally exports
 `liveness_age_seconds` and `ack_progress_known`. Its `liveness_state` values
 are 0 dead, 1 live and 2 suspect. `up=1` permits interactive traffic in live
 or suspect state; bulk requires live. A zero progress age with
 `ack_progress_known=0` means no physical ACK progress has been observed in
 the current peer epoch. Fresh hellos do not refresh that evidence.
-See the [trial record](drafts/20261004-1105-adaptive-stage1-trial.md) for
-its outstanding failures and temporary candidate procedure.
+No configuration or wire-format change is required. The operator approved
+this candidate for installation while adaptive scenario gates remain
+outstanding. See the [release record](drafts/20261004-1105-adaptive-stage1-trial.md#operator-approved-c8-release--2026-10-04)
+for measurements, failures and verified restoration before operator installation.
 `rejected_frames_total{peer,cause}` distinguishes malformed frames, stale
 epochs, unvalidated paths, mismatched lanes, invalid acknowledgements, unknown
 types and regressing transport time. It counts frames rejected after outer

@@ -32,6 +32,11 @@ Prerequisites (all phases):
 
 ## Adaptive transport and autonomous VM verification
 
+- [ ] For `v0.0.2`, retain the C8 source/binary identity and the
+      [operator release record](drafts/20261004-1105-adaptive-stage1-trial.md#operator-approved-c8-release--2026-10-04).
+      Field approval does not establish adaptive stage 1 acceptance.
+      Upload and loaded-latency spread remain open; preserve the failed
+      model gates and incomplete both-family regression series.
 - [ ] Run the [KVM lab procedure](../test/vm/README.md): calibrate each WAN before
       interpreting tunnel throughput; save the profile and binary hash.
 - [ ] For adaptive-policy scenarios, retain actual voice send stamps and TCP

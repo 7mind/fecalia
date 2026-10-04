@@ -20,9 +20,9 @@ The same binary serves both roles; the role is chosen from the config file.
 
 1. **Transparent failover** — a TCP flow survives a WAN dying mid-session, with
    no reset: the WireGuard engine sees one stable endpoint per peer, and the
-   transport stops using a lane whose acknowledgements stall or whose
-   authenticated hello lapses, and repairs its outstanding datagrams over
-   another lane.
+   transport diverts bulk when physical acknowledgement progress becomes
+   suspect, stops using a dead lane or an expired authenticated hello, and
+   repairs outstanding datagrams over another lane.
 2. **Aggregation** — under load, traffic is sent over every usable lane, each
    paced at the capacity the transport measured for it. No bandwidth figures
    are configured.
@@ -82,7 +82,12 @@ distinguish the pacing target from actual send and delivery rates. The repair
 timer also measures full delivery-confirmation time so reordered packets do not
 trigger premature retries.
 Small-packet duplication follows learned capacity, capped at 20% of the aggregate
-pacing target and 64 kB/s; the second lane reserves capacity for the copies. Bulk receive batching reduces return ACK traffic and
+pacing target and 64 kB/s; suspect-lane voice copies bypass that allowance.
+The second lane reserves capacity for the copies. DATA, copies, repairs,
+keepalives and ACKs advance a shared lane pacing clock; measured ACK demand
+supplies its feedback budget. A sole slow survivor carries bulk in the service
+left after voice, with a one-datagram bulk window when capacity is known or
+voice dominates. Bulk receive batching reduces return ACK traffic and
 flushes immediately for interactive packets.
 
 Lost datagrams receive bounded cross-path retries. Bulk repair lasts at most
@@ -105,6 +110,13 @@ local to the sender and does not change the wire protocol. Bulk datagrams remain
 Throughput and continuity targets are not all met: the recorded measurements
 and failures are in the [lab report](test/vm/README.md), the open items in the
 [improvement plan](docs/drafts/20261001-0820-wanbond-improvement-plan.md).
+
+`v0.0.2` contains the operator-approved C8 field candidate. The operator's
+2026-10-04 Speedtest reports 66.19 Mbit/s down and 0.33 Mbit/s up; sequential
+direct-link tests used different servers and do not prove aggregation gain.
+Adaptive stage 1 gates remain unsatisfied; the delay and capacity estimator
+replacements in stages 2–3 remain unfinished. See the
+[release record](docs/drafts/20261004-1105-adaptive-stage1-trial.md#operator-approved-c8-release--2026-10-04).
 
 On Linux the daemon needs `tc` (iproute2) at startup: it inspects the queue
 discipline of `wanbond0` and removes the HTB/`bfifo` rate cap an older build

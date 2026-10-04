@@ -2445,3 +2445,30 @@ This supersedes its older-input pass for current acceptance. Evidence:
 main branch passes the full non-privileged gate and `nix build`
 (`stage1-c8-final-restored-{nonprivileged-gate,nix-build}.txt`). These checks
 establish neither candidate lab acceptance nor completion of stages 1–3.
+
+### Operator-approved C8 release — 2026-10-04
+
+The operator subsequently approves committing and tagging the tested C8
+candidate for their installation. Production code `4a1cd54` matches the
+tested `94b15c4`; later model corrections remain. Release `v0.0.2` contains
+ACK-progress live/suspect/dead eligibility, shared DATA/ACK pacing and
+residual bulk service on a sole slow voice-bearing survivor. No profile,
+wire encoding, configuration or acceptance threshold changes.
+
+**Operator evidence:** a sequential Starlink → 5G → tunnel Speedtest at
+20:18–20:19 UTC reports 0.49/0.46, 44.58/2.42 and 66.19/0.33 Mbit/s down/up.
+Tunnel loaded download latency is 105.70 ms, with a maximum of 831.68 ms.
+Different servers and changing RF service prevent a matched aggregation
+claim. Upload and latency spread remain open. This supplements the bounded
+interleaved blackout comparisons; it does not prove the failed model or
+incomplete lab/regression gates.
+
+**Observed:** the full non-privileged gate and three liveness outcome tests
+pass with C8 and current model inputs. Both hosts are restored and verified
+at 20:22 UTC: deployed hashes, empty overrides, inactive restoration timers,
+adaptive lanes UP and edge WAN qdiscs `noqueue`. The operator window advances
+mobile RX+TX counters by 213.36 MB, including tests, management and background
+traffic. It includes the activation interval. See the
+[release record](../../docs/drafts/20261004-1105-adaptive-stage1-trial.md#operator-approved-c8-release--2026-10-04)
+for source identity, supplied measurements, retained failures and check logs.
+Stages 1–3 are not accepted by their gates.

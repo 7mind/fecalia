@@ -183,16 +183,17 @@ rejections are counted by cause (`malformed`, `epoch`, `path`, `lane`, `ack`,
 counts cover authenticated CONTROL frames passed to the transport; outer
 authentication and route demultiplexing precede them.
 
-Stage 0 diagnostics expose the current policy's inputs without changing its
-decisions. Per-lane metrics and `wanbond monitor` report transit floor, whether
+Stage 0 introduced diagnostics without changing policy decisions.
+Per-lane metrics and `wanbond monitor` report transit floor, whether
 it is known, its evidence age, path delay, rank and liveness. The floor is the
 receiver-relative transit minimum of the most recently sampled wire-size
 bucket: it includes the clock offset and may be negative. Its age is measured
 from the sample that set the minimum, rather than the last ACK. Path delay is
 still the legacy unloaded round trip; rank is the legacy latency score. This
-baseline has live/dead liveness, with no suspect state yet. These diagnostic
-fields are observations of the old policy, not the planned continuously aged
-link model.
+baseline had live/dead liveness. The C8 policy released as `v0.0.2` uses
+live/suspect/dead ACK-progress liveness and exports its evidence age and known
+flag. Delay/rank and capacity still use the legacy estimators; the complete
+continuously aged link model remains unfinished.
 
 `realtime_original_packets_total` records each lane's first real-time
 submissions, excluding copies, repairs and small TCP datagrams. Its
@@ -276,8 +277,8 @@ CPU saturation during those measurements and designated field measurements
 as the behavioral reference. Stage 0 resumed with host/guest wake-delay,
 CPU/steal and per-thread scheduler observations; the earlier lab timing
 verdict is inconclusive. CPU saturation is operator evidence, not a recorded
-cause. The policy remains the legacy controller;
-the continuously aged model and stages 1–3 are not implemented. See the
+cause. At that stage 0 checkpoint the legacy controller remained;
+the continuously aged model and stages 1–3 were not implemented. See the
 [measurement record](../test/vm/README.md#adaptive-policy-stage-0--2026-10-02-in-progress)
 for provenance, incomplete gates and the independent calibration failure.
 
@@ -350,8 +351,8 @@ must accompany those results; stage acceptance and permanent deployment
 restrictions are unchanged. The plan's
 [research follow-up](drafts/20261002-1730-adaptive-policy-plan.md#8-research-follow-up--2026-10-04)
 proposes delivery sampling, a shared lane wire budget and completion-aware
-scheduling. These are unimplemented experiments, not measured improvements
-or changes to the transport described below.
+scheduling. C8 implements shared pacing as described below; the sampling and
+completion-aware scheduling proposals remain unimplemented.
 
 A stage 1 trial draft was built on 2026-10-04 from `04a745d` plus the
 retained `stage1-c4-source.patch` (SHA256
@@ -417,8 +418,8 @@ The corrected `c8` outage gates still fail: its live gigaradio survivor has a
 Repeated delay cuts and its low capacity estimate precede the blackout.
 This explains the candidate's failure; it does not establish a field cause.
 The attempt stops under the operator's explained-gate-failure rule and is
-retained on `adaptive-stage1-c8-final` (`94b15c4`). The repository's main
-branch retains the stage 0 controller; stages 1–3 remain unaccepted.
+retained on `adaptive-stage1-c8-final` (`94b15c4`). At that checkpoint the
+main branch retained the stage 0 controller; stages 1–3 remained unaccepted.
 
 Observed after fresh-SACK timing correction: all 52 original-controller
 scenario cases produce identical measurements across three runs. Outage
@@ -475,6 +476,27 @@ binaries and cleanup postconditions were verified afterwards; mobile VLAN
 counters increased 100.24 MB across the test interval, including background
 traffic. The unchanged model failures still reject stage 1's retained attempt;
 stages 1–3 remain unaccepted. See the trial record for raw provenance and spread.
+
+**Operator-approved C8 release, 2026-10-04.** The operator subsequently
+requested committing and tagging this exact candidate for their installation.
+Production code in `4a1cd54` matches all 176 production files checked against
+the tested `94b15c4`; later test-model corrections remain. `v0.0.2` contains
+ACK-progress liveness, shared pacing and residual survivor bulk service
+described above. It removes the boolean stall state, silent 0.7 rate cut,
+fixed survivor bulk restriction and fixed stall-clearance timeout;
+`control.go` has 31 constant names against the 32-name original baseline.
+The ACK version, framing, overhead and configuration are unchanged.
+
+**Operator evidence:** their 20:18–20:19 UTC run reports 66.19 Mbit/s tunnel
+download and 0.33 Mbit/s upload, with loaded download latency 105.70 ms and
+a maximum of 831.68 ms. Sequential direct 5G reports 44.58/2.42 Mbit/s at a
+different server; this does not establish aggregation gain. The earlier
+bounded blackout comparisons establish their narrower uplink gain. Failed
+stage 1 gates and unfinished stages 2–3 remain recorded. Both hosts were
+restored to deployed binaries and empty overrides, with inactive restoration
+timers and unchanged WAN qdiscs verified at 20:22 UTC. The operator window
+advanced mobile RX+TX counters by 213.36 MB, including tests, management and
+background traffic. See the [release record](drafts/20261004-1105-adaptive-stage1-trial.md#operator-approved-c8-release--2026-10-04).
 
 **Paths and epochs.** An unpadded challenge-protected PROBE carries a 22-byte
 capability record: `bond`, version 1, physical path ID, process Boot ID and Bind
@@ -777,10 +799,11 @@ bytes stay within 8% of the bytes they acknowledge: at a fixed 25 ms they took
 traffic keeps the 25 ms confirmation. The sender learns the peer's cadence
 from ACK arrivals and uses it in the repair timer, the early copy of a
 real-time datagram and the window, so a peer running an earlier version, which
-always uses 25 ms, interoperates. They bypass data
-pacing: charging reverse feedback to a data-only rate estimate can accumulate
-permanent pacing debt and starve voice/TCP
-ACKs while receiving a fast bulk stream. Congestion samples reflect the data
+always uses 25 ms, interoperates. ACKs leave immediately and advance the
+shared pacing clock. Because ACK v1 reports only DATA wire bytes, the clock's
+rate is the DATA target plus measured outgoing ACK demand; charging ACKs
+against the DATA target alone would accumulate pacing debt while receiving
+a fast bulk stream. Congestion samples reflect the data
 capacity remaining after feedback traffic. Target rate, actual send rate and
 measured delivery remain separate values in metrics. A persistent delay increase
 with a collapsed target triggers baseline calibration, at most once per 10 seconds: bulk pauses
@@ -816,15 +839,15 @@ at every repeated signal: one minute after a restart the mobile uplink ended
 its first discovery at 0.26 MB/s and carried 1.5 Mbit/s of a Speedtest
 upload, against 4.0-4.9 two hours later. A lane whose peer reported nothing
 new for 100 ms, twice the longest interval between acknowledgements, and then
-confirmed datagrams sent before that silence began, stalled. Its backlog is
-as long as the stall when it ends and leaves, at the draining target, in four
-times the stall's length, a second at most. A delay signal within what is
-left of it by then is put down to the stall
+confirmed datagrams sent before that silence began, stalled. C8 remembers
+the stall's length and the highest attempt sent when progress resumes.
+Physical receipt progress beyond that flight clears the exception; a fixed
+timeout no longer asserts that it drained. Before it clears, delay up to the
+stall's length plus the congestion threshold is put down to the stall
 (`wanbond_adaptive_stall_signals_total`): discovery goes on, a probe is
 neither won nor lost, the estimate stands, and the target gives way as it
-does while a probe's queue drains. Delay above what is left of the backlog is
-a queue as before, since the backlog only shrinks
-(`TestStallDoesNotEndDiscovery`, `TestStalledLaneKeepsItsEstimate`).
+does while a probe's queue drains. Larger delay is treated as queueing.
+Outcome tests retain bulk delivery through bursty stalls and slowdowns.
 
 Discovery that ends while the sender, not the lane, is the limit has measured
 the sender. A return to discovery that ends so keeps the estimate the lane
@@ -916,7 +939,16 @@ were never confirmed and were sent again (production, 2026-10-02: 900-1800
 repairs in a 7 s download, all duplicates; the acknowledgements were not lost
 on the link but rejected for their time stamp, the defect described above;
 `TestLostAcknowledgementDoesNotCauseRepairs`).
-Repairs prefer a different healthy lane. A repair returns to the lane of the
+Liveness follows fresh physical ACK progress, including progress in sequence
+or received bytes. With attempts outstanding, twice the peer's ACK cadence
+without progress makes a lane suspect; one RTO makes it dead. Suspect lanes
+remain eligible for small traffic, divert bulk and force real-time copies
+outside the ordinary copy allowance. Fresh hellos only renew the lane lease.
+Dead lanes with a current lease send empty keepalives every 50 ms to detect
+their return; progress restores live eligibility. Silence does not lower the
+capacity estimate or pacing target.
+
+Repairs prefer a different eligible lane. A repair returns to the lane of the
 datagram's last transmission only once the peer has reported a later datagram
 received on that lane, or when fewer than three followed it there, so that a
 loss at the end of a burst is still repaired. While a lane delivers nothing,
@@ -956,9 +988,12 @@ lane is allowed, a lane below 1.2 Mbit/s: one call needs a third of a
 0.5 Mbit/s lane, and bulk in the rest put 22-24 ms of serialization ahead of a
 voice datagram for a third of a megabit of throughput
 (`TestBulkKeepsOffTheSlowLaneACallRides`: one-way p99 43 ms shared, 20 ms
-kept clean). With no other lane for bulk, it is a lane on which real-time
-traffic has reserved more than half the target. A lane whose capacity was
-never found is not a real-time lane by either rule: beside a real-time stream
+kept clean). With no other live lane for bulk, bulk uses residual service
+rather than being confined to its guaranteed 5% minimum. If one full bulk
+datagram takes more than 10 ms to serialize and capacity is known or voice
+originals plus copies exceed the bulk allowance, its class window permits
+one bulk datagram. A lane whose capacity was never found is not excluded by
+the multi-lane isolation rule: beside a real-time stream
 its target is held near recent delivery, by that target the stream alone took
 most of the lane, and bulk confined to its minimum could not raise delivery,
 so on the only lane up a transfer started beside a call received nothing for
@@ -974,11 +1009,15 @@ full congestion window by one datagram and go to the lane on which they would
 arrive first. Only real-time datagrams are copied onto a second lane.
 Additional copies have an allowance of 20% of the healthy lanes'
 aggregate pacing target, capped at 64 kB/s, with a 100 ms burst allowance.
-A copy is sent with its original or not at all, so the other lanes reserve
+A budgeted copy leaves with its original, so the other lanes reserve
 capacity for the copies of the originals they do not carry, as much as the
 allowance and the real-time demand permit; lower classes are paced and
-windowed to leave it free, and a copy may lead the pacing clock by one full
-datagram of a lower class. Without the reservation bulk filled the second
+windowed to leave it free. Original voice may borrow its own datagram's
+slot on the shared clock; a sole leased lane, lower-class flight or reserved
+copy permits borrowing a full datagram's slot. The class pacing clock keeps
+its ordinary lead. Suspect-lane copies bypass the ordinary token allowance,
+and pending voice gets an alternate copy before its repair timer. Without
+the reservation bulk filled the second
 lane's window and pacing slots, four in ten voice datagrams went uncopied
 whatever the allowance, and each of those lost on its lane arrived about
 250 ms late (`TestVoiceCopiesHaveRoomOnTheOtherLane`). Two 50 Hz voice streams

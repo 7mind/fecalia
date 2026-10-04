@@ -1,8 +1,9 @@
 # Stage 1 shared-pacing trial — 2026-10-04
 
-State: experimental draft; stages 1–3 are not accepted. The deployed build
-was unchanged at the baseline checks below. No permanent deployment is
-part of this work.
+State: C8 approved by the operator for release as `v0.0.2`; stages 1–3 remain
+unaccepted by their gates. The deployed build was unchanged at the baseline
+checks below. The agent restored the production hosts; installation belongs
+to the operator. See the final release checkpoint below.
 
 ## Provenance
 
@@ -601,3 +602,71 @@ The field experiment establishes a limited gain and latency variation,
 not completion of stages 1–3, the required lab series or candidate regression
 gates. No estimator replacement or acceptance threshold was changed in
 response to these field results.
+
+## Operator-approved C8 release — 2026-10-04
+
+**Operator decision:** after the parked comparisons and their own `wbtest`,
+the operator requests committing and release-tagging C8 for installation.
+This supersedes the preceding statement that C8 is unmerged; it does not
+establish stage 1 acceptance or finish the later estimator stages.
+
+**Observed source identity:** code commit `4a1cd54` brings the production
+patch from `94b15c4` into `main`. All 176 production Go/module/embedded-UI
+files compared match that tested source; subsequent test-model corrections
+remain. The tested ARM64 executable is `c8-s1-share`, SHA256
+`c35834c70f466b55986113c3c9df45075f8189d3f31a033dd218be0a62af33a1`.
+The release tag is `v0.0.2`. Configuration and wire encoding are unchanged.
+
+**Operator evidence:** `wbtest` ran from 20:18:05 to 20:19:46 UTC on
+2026-10-04, selected exit `raspi5l`, and measured Starlink → 5G → tunnel.
+The daemon had been up for ten minutes at the initial monitor snapshot.
+
+| Interface | Server ID | Download / upload, Mbit/s | Idle latency, ms | Loaded download / upload latency, ms | Maximum download / upload latency, ms |
+|---|---:|---:|---:|---:|---:|
+| Starlink `end0.231` | 38092 | 0.49 / 0.46 | 30.66 | 34.12 / 36.50 | 319.77 / 336.52 |
+| 5G `end0.232` | 4604 | 44.58 / 2.42 | 21.99 | 114.63 / 2159.59 | 285.82 / 5313.00 |
+| Tunnel `wanbond0` | 38092 | 66.19 / 0.33 | 43.98 | 105.70 / 43.50 | 831.68 / 217.57 |
+
+The supplied output reports tunnel packet loss of 0.0%; direct packet loss
+is unavailable and direct tests emit socket-open errors before completing.
+These are the tool's reported latency statistics, not voice p99 measurements.
+The operator accepts this release while noting weak upload and questionable
+latency distribution. Sequential measurements, different servers and changing
+RF service prevent an inference that the tunnel added capacity above the
+contemporaneous 5G service. The earlier three interleaved blackout sets
+establish their separate bounded uplink gain. This Speedtest has no
+deployed-build comparison.
+
+The supplied monitor reports `raspi5l` queue drops increasing from 1 to 107,
+expired datagrams from 0 to 2,633 and 5G repairs from 28 to 1,053. Its final
+5G DATA target is 286.7 KiB/s and delivery 200.9 KiB/s. Two snapshots do not
+locate those events within download or upload or establish their cause.
+The upload bottleneck remains unresolved. Operator-supplied result links:
+[Starlink](https://www.speedtest.net/result/c/169b10cc-a338-4376-ba65-b66c06b7eb49),
+[5G](https://www.speedtest.net/result/c/d11ccd53-4fbc-461d-9b08-68ae2ec72096),
+[tunnel](https://www.speedtest.net/result/c/a898fb20-e926-43b8-81f3-2b8d6bcf94ee).
+Those pages were not independently fetched.
+
+**Observed restoration:** at 20:22 UTC both running deployed hashes are
+`f0cb62b2e221b413436c76a428e58dc177110deace3d70d87ee7db08eeec1375`,
+runtime overrides are empty, restore timers are inactive, all adaptive lanes
+are UP and both edge WAN qdiscs are `noqueue`. No field impairment was added
+for the operator test. Mobile VLAN RX+TX counters advance **213.360066 MB**
+from candidate preflight through restoration, including operator traffic,
+background traffic and management. This includes the previously reported
+0.91 MB activation interval; do not add them.
+
+**Observed release checks:** the full AGENTS.md non-privileged gate and three
+tagged liveness outcome tests pass with C8 and current test-model corrections.
+The 1a–1c model failures remain as recorded above; both-family three-run
+acceptance and continuity/benchmark/UDP regression proof remain incomplete.
+The release also requires a successful `nix build` before handover; its log
+is retained with the release evidence.
+Stages 2–3 remain unfinished.
+
+Evidence under `/srv/nvme/tmp/wanbond-adaptive-evidence/`:
+`field-user-candidate-20261004-200736/` contains activation and running-hash/
+timer checks; `candidate-release-20261004-202126/` contains restoration,
+the structured operator report, mobile counters and release-check logs.
+The operator measurements retain their supplied provenance; they are not
+an agent-run experiment.
