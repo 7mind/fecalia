@@ -108,7 +108,7 @@ func (p *policyTCP) acknowledge(payload []byte, now time.Time, send func(uint64)
 			s.previousMin, s.roundMin, s.roundEnd = s.roundMin, 0, s.next
 		}
 	}
-	for seq := s.unacked; seq+tcpDuplicateACK <= s.highestSacked && seq < s.next; seq++ {
+	for seq := s.unacked; seq < s.highestSacked[tcpDuplicateACK-1] && seq < s.next; seq++ {
 		if s.sacked[seq] || s.retransmitted[seq] {
 			continue
 		}
@@ -151,6 +151,30 @@ func (p *policyTCP) receive(seq uint64) (int, []byte) {
 
 func (p *policyTCP) metadata(side int) bond.PacketMetadata {
 	return bond.PacketMetadata{Flow: bond.FlowID{4, 6, byte(3 + side)}, ACK: bond.TCPACK{Eligible: len(p.ranges) == 0, Sequence: 1, Acknowledgement: uint32(p.next), Window: 4096}}
+}
+
+func TestAdaptiveModelLossRequiresThreeSelectiveReceipts(t *testing.T) {
+	start := time.Unix(100, 0)
+	sender, receiver := newPolicyTCP(), newPolicyTCP()
+	var sent []uint64
+	transmit := func(seq uint64) { sent = append(sent, seq) }
+	sender.offer(start, transmit)
+	if len(sent) != tcpInitialCwnd {
+		t.Fatalf("initial flight has %d segments", len(sent))
+	}
+	sent = nil
+	for step, seq := range []uint64{10, 10, 9} {
+		_, ack := receiver.receive(seq)
+		sender.acknowledge(ack, start.Add(time.Duration(100+step*10)*time.Millisecond), transmit)
+		if len(sent) != 0 {
+			t.Fatalf("only %d distinct later segments arrived, but retransmitted %v", len(receiver.buffered), sent)
+		}
+	}
+	_, ack := receiver.receive(8)
+	sender.acknowledge(ack, start.Add(130*time.Millisecond), transmit)
+	if !slices.Equal(sent, []uint64{1, 2, 3, 4, 5, 6, 7}) {
+		t.Fatalf("three later full segments must expose the preceding holes: retransmitted %v", sent)
+	}
 }
 
 func TestAdaptiveModelRTTDoesNotForgetRetransmittedSegments(t *testing.T) {

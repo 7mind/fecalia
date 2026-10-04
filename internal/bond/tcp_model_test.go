@@ -147,7 +147,7 @@ type tcpSender struct {
 	sentAt        map[uint64]time.Time
 	retransmitted map[uint64]bool
 	sacked        map[uint64]bool
-	highestSacked uint64
+	highestSacked [tcpDuplicateACK]uint64
 }
 
 func (s *tcpSender) reduce(now time.Time) {
@@ -211,8 +211,16 @@ func (s *tcpSender) observeACK(payload []byte, now time.Time) uint64 {
 			if at, eligible := s.sentAt[seq]; eligible && !s.sacked[seq] && (selective.IsZero() || at.Before(selective)) {
 				selective = at
 			}
+			if !s.sacked[seq] {
+				for i, high := range s.highestSacked {
+					if seq > high {
+						copy(s.highestSacked[i+1:], s.highestSacked[i:])
+						s.highestSacked[i] = seq
+						break
+					}
+				}
+			}
 			s.sacked[seq] = true
-			s.highestSacked = max(s.highestSacked, seq)
 		}
 	}
 	// A cumulative ACK covering a retransmission cannot identify its RTT;
@@ -413,9 +421,8 @@ func (m tcpTransfer) run(t *testing.T) tcpOutcome {
 						s.previousMin, s.roundMin, s.roundEnd = s.roundMin, 0, s.next
 					}
 				}
-				// Segments three below the highest selectively acknowledged one
-				// and not acknowledged themselves are lost.
-				for seq := s.unacked; seq+tcpDuplicateACK <= s.highestSacked && seq < s.next; seq++ {
+				// Three selectively received full segments above a hole show loss.
+				for seq := s.unacked; seq < s.highestSacked[tcpDuplicateACK-1] && seq < s.next; seq++ {
 					if s.sacked[seq] || s.retransmitted[seq] {
 						continue
 					}
