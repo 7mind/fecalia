@@ -467,6 +467,10 @@ delay model is also what stage 3's congestion signal reads.
    the new operational baseline (2026-10-04). Preserve `f75668e` as the
    original reproduction reference. This does not waive the section 4 gates
    or accept an unfinished stage.
+10. The operator replaces the failed-gate sequencing stop with an improvement
+    goal: continue advancing until the metrics improve over the installed
+    baseline (2026-10-04). Stages 2 and 3 may proceed with stage 1 gates still
+    outstanding. See section 11; no numeric gate is waived.
 
 Open: the video gates of row 4 (300 ms gap, 2% loss) are a proposal; and how a
 video call is told from a QUIC download.
@@ -859,3 +863,55 @@ nix develop --command go test -tags adaptivepolicy ./internal/bond \
 nix develop --command go test -tags adaptivepolicy ./internal/bond \
   -run '^TestAdaptivePolicy' -count=3 -timeout=30m
 ```
+
+## 11. Revised execution goal — operator, 2026-10-04
+
+Improve the adaptive transport against observed installed baseline `b444920`
+across the metrics below. Advance through the delay and capacity replacements
+despite explained model/lab failures, retaining those failures as evidence
+and rerunning their scenarios. This supersedes the failed-gate stop and
+stage-acceptance prerequisite in sections 5, 9 and 10. Implementation order
+remains delay, then capacity; acceptance is assessed across the completed
+policy, without calling an incomplete intermediate stage accepted.
+
+| Metric | Desired change and retained targets |
+|---|---|
+| TCP payload goodput, upload/download and together | Higher relative to contemporaneous available service; 75% in steady changed conditions, 70% under cellular variation |
+| Voice round-trip latency | Lower median/p95/p99; p99 under 150 ms during rate changes, survivor idle p99 +50 ms after failover |
+| Voice jitter and receive gaps | Lower latency spread; no gap of 150 ms |
+| Voice loss | Under 1%, at most three consecutive losses; preserve zero-loss cases |
+| Bulk continuity | Delivery in every second after the first outage second |
+| Outage/recovery adaptation | Survivor goodput within 3 s; returning lane carries bulk within 2 s and pair goodput within 5 s |
+| Rate adaptation | Fall within 5 s, rise within 10 s, plan upgrade within 20 s; no expiration burst |
+| Delay adaptation and ranking stability | Follow better delay within 2 s after a delay rise, switch within 5 s when another lane improves, at most one move per 5 s under jitter |
+| Cold transfer | 60% of available pair goodput within 7 s |
+| Bandwidth efficiency | Lower repairs/copies/expired datagrams per delivered byte; retain mobile RX+TX MB |
+
+A zero-loss baseline cannot be strictly improved numerically: preserve it
+while improving latency, service, adaptation and efficiency. Capped flows
+already reaching their offer establish lower bounds; increase a bounded
+offer only where necessary to expose headroom, recording its byte budget.
+Assess repeatable gains in paired baseline/candidate/baseline field sets
+with immediate direct-link references, phase-aligned counters and startup
+ages. Compare distributions and the observed RF/scheduler spread; do not
+invent fixed tolerances for the previously qualitative gates. Field remains
+the behavioral reference. Lab/model disagreement triggers investigation and
+further measurements rather than terminating implementation automatically.
+
+First restate the remaining tests of removed mechanisms as outcome tests in
+a separate code commit; then replace the stage 2 delay model and remove its
+superseded rules together. Capacity replacement follows, with real queued
+traffic for demand-triggered bounded pushes and no synthetic probe traffic.
+Every estimator change must reduce the `control.go` constant inventory.
+
+All invariants, reproduction discipline, separate code/docs commits, full
+non-privileged checks and Nix handover build remain required. Temporary field
+candidates retain restore timers, compressed edge binaries, voice-first
+ordering and metered workloads. Unsafe access changes and a required wire
+format revision still require resolution before that specific operation.
+Stage 4/video and permanent deployment remain outside this goal.
+
+The goal-tool attempt to replace the earlier paused goal is rejected because
+that goal is unfinished; the available status API cannot resume or amend its
+objective. This section records the revised authorized objective without
+claiming the earlier goal complete. Work continues under this instruction.
