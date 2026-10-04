@@ -2325,7 +2325,7 @@ when their retransmission scoreboard resets at an RTO. The exact test fails
 on `f75668e`, delaying a required retry after an ambiguous RTT sample; it
 passes when retransmission removes the original's RTT sample timestamp.
 Both models are corrected without changing policy or scenario thresholds.
-The corrected original-controller series completed all 52 cases three times,
+The Karn-corrected original-controller series completed all 52 cases three times,
 with identical measurements and verdicts. Outage passes/failures remain
 1a 5/3, 1b 0/4, and 1c 5/11; radio 2d and the 3a latency findings remain
 passes. Evidence: `adaptive-policy-f75668e-karn-three.jsonl` and its summary
@@ -2333,3 +2333,31 @@ under the evidence root. Earlier measurements retain their previous model
 provenance. No candidate lab series or
 existing continuity/benchmark/UDP acceptance is established by these field
 observations; stages 1–3 remain unaccepted.
+
+Subsequent RTT-model reproductions fail on original-controller source:
+previously SACKed data is timed again on cumulative progress (1.15-second
+RTO), and fresh SACK timing is ignored (initial one-second RTO). Both models
+now share receipt-timing selection, excluding already SACKed data and
+ambiguous retransmission feedback. The new reproductions pass; no policy or
+gate threshold changes. Evidence: `model-sack-f75668e-red.txt` and
+`model-sack-timing-green.txt`.
+
+The `c8` draft still fails all bulk 1a cases and three recovery cases under
+those inputs. A gigaradio trace records its live survivor's 676,154 wire B/s
+target at the deadline requiring 20,242,721 TCP payload B/s. The low estimate
+and repeated delay cuts already precede the blackout. The explained failure
+stops this attempt; its code is retained on `adaptive-stage1-c8-final`
+(`94b15c4`), and `main` is restored to the stage 0 controller with test-model
+corrections. This model diagnosis does not establish a field root cause.
+The [trial record](../../docs/drafts/20261004-1105-adaptive-stage1-trial.md)
+retains the phase bounds, source hashes and restoration evidence.
+
+The fresh-SACK-corrected baseline completes all 52 cases three times with
+identical measurements and verdicts. Outage passes/failures remain 1a 5/3,
+1b 0/4, and 1c 5/11. Radio 2d now fails direction-0 voice p99 at 151 ms
+against the unchanged under-150-ms gate, while bulk passes both bounds.
+This supersedes its older-input pass for current acceptance. Evidence:
+`adaptive-policy-f75668e-sack-three.jsonl` and its summary. The restored
+main branch passes the full non-privileged gate and `nix build`
+(`stage1-c8-final-restored-{nonprivileged-gate,nix-build}.txt`). These checks
+establish neither candidate lab acceptance nor completion of stages 1–3.

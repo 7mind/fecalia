@@ -400,12 +400,32 @@ Both production hosts were restored and independently verified.
 The TCP test models now discard RTT sample eligibility when retransmitting
 a segment. A failing reproduction on `f75668e` showed a timeout forgetting
 that history and inflating RTO; this is an input-model correction, not a
-production transport estimator. The corrected-input baseline completed all
+production transport estimator. The Karn-corrected-input baseline completed all
 52 cases three times with identical measurements and verdicts: outage
 passes/failures remain 1a 5/3, 1b 0/4, and 1c 5/11. Stage 1 still fails
 scenario gates. The [trial record](drafts/20261004-1105-adaptive-stage1-trial.md)
 retains executable/source hashes, old and corrected model provenance,
 field variability, counter deltas and outstanding acceptance work.
+
+A further test-model reproduction found previously SACKed data being sampled
+again on cumulative progress, while fresh SACK timing was ignored. Both
+models now share RTT selection that excludes ambiguous retransmission timing
+and already reported receipts, using fresh SACK timing as needed. Neither
+correction changes the production controller or acceptance thresholds.
+The corrected `c8` outage gates still fail: its live gigaradio survivor has a
+0.676 MB/s wire target at the deadline requiring 20.24 MB/s of TCP payload.
+Repeated delay cuts and its low capacity estimate precede the blackout.
+This explains the candidate's failure; it does not establish a field cause.
+The attempt stops under the operator's explained-gate-failure rule and is
+retained on `adaptive-stage1-c8-final` (`94b15c4`). The repository's main
+branch retains the stage 0 controller; stages 1–3 remain unaccepted.
+
+Observed after fresh-SACK timing correction: all 52 original-controller
+scenario cases produce identical measurements across three runs. Outage
+verdicts remain 1a 5/3, 1b 0/4, and 1c 5/11 passes/failures. Radio 2d now
+fails at 151 ms voice p99, superseding its older-input pass for current
+acceptance; bulk still passes. No gate was weakened. The restored main branch
+passes the full non-privileged gate and `nix build`.
 
 **Paths and epochs.** An unpadded challenge-protected PROBE carries a 22-byte
 capability record: `bond`, version 1, physical path ID, process Boot ID and Bind

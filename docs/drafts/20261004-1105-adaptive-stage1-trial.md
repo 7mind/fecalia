@@ -179,8 +179,8 @@ requires Karn's exclusion of retransmitted segments without timestamp
 disambiguation. This reproduction establishes that specific model defect;
 it does not prove every RTT sample in the approximation matches Linux TCP.
 
-**Observed:** one corrected-input `c8` run gives 1a 4/4, 1b 1/3, and 1c 8/8
-passes/failures. The corrected-input `f75668e` series completed three runs of
+**Observed:** one Karn-corrected-input `c8` run gives 1a 4/4, 1b 1/3, and 1c 8/8
+passes/failures. The Karn-corrected-input `f75668e` series completed three runs of
 all 52 scenario cases, with identical measurements and verdicts in each run.
 Its outage verdicts remain 1a 5/3, 1b 0/4, and 1c 5/11 passes/failures;
 radio 2d and the 3a voice-latency findings remain passes. Evidence:
@@ -189,3 +189,68 @@ Earlier model measurements retain their input provenance. The full non-privilege
 gate also passes after this test-infrastructure correction
 (`stage1-c8-karn-nonprivileged-gate.txt`). Stage 1 is still unaccepted;
 no stage 2 or 3 replacement has been implemented.
+
+## Fresh SACK timing and explained stage 1 stop
+
+**Observed:** a subsequent trace exposed another RTT-model defect: a segment
+already selectively acknowledged was sampled again when a cumulative ACK
+advanced past it. A reproduction on original-controller source delays the
+next required retry with an inflated 1.15-second RTO. A second reproduction
+shows fresh selective feedback being ignored, leaving the initial one-second
+RTO. Both pass after the two models share receipt-timing selection: exclude
+previously SACKed segments, exclude cumulative measurements covering a
+retransmission, and use fresh, unretransmitted SACK timing when needed.
+Duplicate SACK reports contribute no new sample. Production code and the
+scenario gates are unchanged.
+
+**Observed:** the fresh-SACK-corrected `f75668e` series completed all 52 cases
+three times, with identical measurements and verdicts. Outage passes/failures
+remain 1a 5/3, 1b 0/4, and 1c 5/11. Radio 2d now fails: direction 0 voice
+p99 is 151 ms against the unchanged under-150-ms gate; bulk still passes
+both directional bounds. Its earlier pass remains a finding from the older
+input model, superseded for current verdicts by this correction. The 3a
+voice-only passes remain. Evidence: `adaptive-policy-f75668e-sack-three.jsonl`
+and its `-summary.json`. No model test was bent to recover the earlier pass.
+
+**Document evidence:** Linux v6.18's
+[`tcp_clean_rtx_queue` and `tcp_ack_update_rtt`](https://github.com/torvalds/linux/blob/v6.18/net/ipv4/tcp_input.c#L3034)
+exclude previously SACKed data from cumulative timing, reject ambiguous
+cumulative timing covering retransmissions, and use fresh SACK timing as a
+fallback. This aligns that part of the approximation; it does not establish
+complete Linux TCP equivalence. Evidence: `model-sack-f75668e-red.txt`,
+`model-sack-timing-green.txt`, and test-only commit `b210aaf`.
+
+**Observed:** with those corrected inputs, `c8` still gives 1a 4/4, 1b 1/3,
+and 1c 8/8 passes/failures in one complete run
+(`stage1-c8-outage-model-sack-v1.jsonl`). In gigaradio 1a lane 0 with bulk,
+the surviving direction-0 lane remains live. At 22.999 seconds its target is
+676,154 wire B/s; the gate requires 20,242,721 TCP payload B/s, three seconds
+after the blackout. Its capacity estimate is 802,783 B/s despite physical
+service of 37,500,000 B/s. Before the blackout, its target was already
+356,020 B/s with repeated delay cuts. The trace retains the lane's delivery,
+window, liveness age and controller decisions
+(`stage1-c8-giga0-sack-diagnostic.txt`).
+
+**Inference:** even spending the entire recorded target on payload cannot
+meet that deadline; liveness eligibility alone cannot correct this capacity
+and delay failure. This is a bound for this candidate and measured phase,
+not a proof that every policy fails. Under the operator's explained-gate-failure
+rule, this attempt stops. Stage 2 or 3 mechanisms are not folded into stage 1,
+and no acceptance bound is weakened.
+
+The production draft is retained as code-only commit `94b15c4` on
+`adaptive-stage1-c8-final`. Its patch SHA256 remains
+`2bd5e76d960e1806b2c7515daeb4c87619f1f10c822796d4f277029f358c1bf8`;
+this is the source already tested temporarily in the field. `main` retains
+the stage 0 controller and the committed outcome tests/model corrections.
+Observed again: both production daemons run the deployed store executable;
+the earlier full restoration verification remains recorded separately.
+No new field payload trials followed this model correction.
+
+**Observed:** the full non-privileged gate and `nix build` pass after restoring
+the stage 0 controller (`stage1-c8-final-restored-nonprivileged-gate.txt` and
+`stage1-c8-final-restored-nix-build.txt`). The candidate also passed the full
+non-privileged gate before restoration
+(`stage1-c8-sack-nonprivileged-gate.txt`). These are default-suite checks,
+not passes of the tagged progression scenarios or the missing candidate lab
+series and existing lab gates.

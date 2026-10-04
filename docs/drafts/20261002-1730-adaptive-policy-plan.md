@@ -144,10 +144,25 @@ on `f75668e` exposed the TCP model forgetting retransmission history at a
 timeout and accepting an ambiguous RTT sample. Removing RTT eligibility
 when retransmitting corrects the model without changing production policy
 or scenario thresholds. All 52 corrected-input baseline cases have identical
-measurements and verdicts across three runs. The outage verdicts above,
+measurements and verdicts across three runs with that Karn-only correction. The outage verdicts above,
 radio 2d pass and 3a latency findings remain; prior measurements retain their
 input provenance. The [stage 1 trial record](20261004-1105-adaptive-stage1-trial.md)
 records the reproduction and corrected candidate failures.
+
+A subsequent pair of observed reproductions exposes previously SACKed data
+being timed again on cumulative progress and fresh SACK timing being ignored.
+Both models now share receipt-timing selection; no production rule or
+acceptance threshold changes. The `c8` candidate still fails 1a–1c, with a
+live gigaradio survivor's target below its independent required payload
+goodput at the deadline. The explained failure stops that attempt; the code
+is retained on `adaptive-stage1-c8-final` and `main` retains stage 0.
+This establishes neither a field gain nor a field root cause; see the trial
+record above for observations and the conditional bound.
+The fresh-SACK-corrected baseline again produces identical measurements in
+three runs of all 52 cases. Radio 2d now fails at 151 ms voice p99 with
+both bulk bounds passing; this supersedes the older-input pass for current
+acceptance. Outage verdicts remain 1a 5/3, 1b 0/4, and 1c 5/11. No gate
+was weakened and the earlier observations retain their provenance.
 
 ## 3. Target: one link model per lane, continuously measured, with ages
 
