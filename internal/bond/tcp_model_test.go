@@ -193,6 +193,39 @@ func (s *tcpSender) rto() time.Duration {
 	return max(tcpMinimumRTO, s.srtt+4*s.rttVar)
 }
 
+func (s *tcpSender) observeACK(payload []byte, now time.Time) uint64 {
+	acknowledged := binary.BigEndian.Uint64(payload)
+	var cumulative, selective time.Time
+	ambiguous := false
+	for seq := s.unacked; seq < acknowledged; seq++ {
+		at, eligible := s.sentAt[seq]
+		ambiguous = ambiguous || !eligible
+		if eligible && !s.sacked[seq] && (cumulative.IsZero() || at.Before(cumulative)) {
+			cumulative = at
+		}
+	}
+	for block := 0; block < tcpSACKBlocks; block++ {
+		from := binary.BigEndian.Uint64(payload[8+16*block:])
+		to := binary.BigEndian.Uint64(payload[16+16*block:])
+		for seq := max(from, s.unacked); seq < to && seq < s.next; seq++ {
+			if at, eligible := s.sentAt[seq]; eligible && !s.sacked[seq] && (selective.IsZero() || at.Before(selective)) {
+				selective = at
+			}
+			s.sacked[seq] = true
+			s.highestSacked = max(s.highestSacked, seq)
+		}
+	}
+	// A cumulative ACK covering a retransmission cannot identify its RTT;
+	// already SACKed segments report no new receipt timing either.
+	if ambiguous || cumulative.IsZero() {
+		cumulative = selective
+	}
+	if !cumulative.IsZero() {
+		s.sample(now.Sub(cumulative))
+	}
+	return acknowledged
+}
+
 // insertRange adds seq to ascending half-open ranges, merging neighbours.
 func insertRange(ranges [][2]uint64, seq uint64) [][2]uint64 {
 	i := len(ranges)
@@ -357,19 +390,8 @@ func (m tcpTransfer) run(t *testing.T) tcpOutcome {
 				// An acknowledgement reached the sender: the cumulative point
 				// and up to four ranges received beyond it.
 				s := &sender
-				acknowledged := binary.BigEndian.Uint64(d.Payload)
-				for block := 0; block < tcpSACKBlocks; block++ {
-					from := binary.BigEndian.Uint64(d.Payload[8+16*block:])
-					to := binary.BigEndian.Uint64(d.Payload[16+16*block:])
-					for seq := max(from, s.unacked); seq < to && seq < s.next; seq++ {
-						s.sacked[seq] = true
-						s.highestSacked = max(s.highestSacked, seq)
-					}
-				}
+				acknowledged := s.observeACK(d.Payload, now)
 				if acknowledged > s.unacked {
-					if at, ok := s.sentAt[acknowledged-1]; ok && !s.retransmitted[acknowledged-1] {
-						s.sample(now.Sub(at))
-					}
 					newly := float64(acknowledged - s.unacked)
 					for seq := s.unacked; seq < acknowledged; seq++ {
 						delete(s.sentAt, seq)

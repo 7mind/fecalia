@@ -86,19 +86,8 @@ func (p *policyTCP) offer(now time.Time, send func(uint64)) {
 
 func (p *policyTCP) acknowledge(payload []byte, now time.Time, send func(uint64)) {
 	s := &p.sender
-	acknowledged := binary.BigEndian.Uint64(payload)
-	for block := 0; block < tcpSACKBlocks; block++ {
-		from := binary.BigEndian.Uint64(payload[8+16*block:])
-		to := binary.BigEndian.Uint64(payload[16+16*block:])
-		for seq := max(from, s.unacked); seq < to && seq < s.next; seq++ {
-			s.sacked[seq] = true
-			s.highestSacked = max(s.highestSacked, seq)
-		}
-	}
+	acknowledged := s.observeACK(payload, now)
 	if acknowledged > s.unacked {
-		if at, ok := s.sentAt[acknowledged-1]; ok && !s.retransmitted[acknowledged-1] {
-			s.sample(now.Sub(at))
-		}
 		newly := float64(acknowledged - s.unacked)
 		for seq := s.unacked; seq < acknowledged; seq++ {
 			delete(s.sentAt, seq)
@@ -189,6 +178,55 @@ func TestAdaptiveModelRTTDoesNotForgetRetransmittedSegments(t *testing.T) {
 	sender.offer(start.Add(1600*time.Millisecond), transmit)
 	if !slices.Contains(sent, uint64(4)) {
 		t.Fatalf("segment 4 was not retried: ambiguous ACK inflated RTO to %s; transmissions %v", sender.sender.rto(), sent)
+	}
+}
+
+func TestAdaptiveModelRTTDoesNotResampleSelectiveAcknowledgements(t *testing.T) {
+	start := time.Unix(100, 0)
+	sender, receiver := newPolicyTCP(), newPolicyTCP()
+	var sent []uint64
+	transmit := func(seq uint64) { sent = append(sent, seq) }
+	sender.offer(start, transmit)
+	initiallySent := len(sent)
+	acknowledge := func(seq uint64, elapsed time.Duration) {
+		_, ack := receiver.receive(seq)
+		sender.acknowledge(ack, start.Add(elapsed), transmit)
+	}
+	acknowledge(1, 100*time.Millisecond)
+	for seq := uint64(7); seq <= 10; seq++ {
+		acknowledge(seq, 100*time.Millisecond)
+	}
+	for seq := uint64(2); seq <= 6; seq++ {
+		if !slices.Contains(sent[initiallySent:], seq) {
+			t.Fatalf("fixture did not retransmit segment %d", seq)
+		}
+		acknowledge(seq, 900*time.Millisecond)
+	}
+	sent = nil
+	sender.offer(start.Add(900*time.Millisecond), transmit)
+	if !slices.Contains(sent, uint64(11)) {
+		t.Fatal("fixture did not start the next flight")
+	}
+	sent = nil
+	sender.offer(start.Add(1400*time.Millisecond), transmit)
+	if !slices.Contains(sent, uint64(11)) {
+		t.Fatalf("segment 11 was not retried: repeated SACK delivery inflated RTO to %s; transmissions %v", sender.sender.rto(), sent)
+	}
+}
+
+func TestAdaptiveModelRTTUsesFreshSelectiveAcknowledgements(t *testing.T) {
+	start := time.Unix(100, 0)
+	sender, receiver := newPolicyTCP(), newPolicyTCP()
+	var sent []uint64
+	transmit := func(seq uint64) { sent = append(sent, seq) }
+	sender.offer(start, transmit)
+	_, ack := receiver.receive(10)
+	sender.acknowledge(ack, start.Add(100*time.Millisecond), transmit)
+	sent = nil
+	sender.acknowledge(ack, start.Add(800*time.Millisecond), transmit)
+	sender.offer(start.Add(900*time.Millisecond), transmit)
+	if !slices.Contains(sent, uint64(1)) {
+		t.Fatalf("segment 1 was not retried using fresh SACK timing: RTO %s; transmissions %v", sender.sender.rto(), sent)
 	}
 }
 
