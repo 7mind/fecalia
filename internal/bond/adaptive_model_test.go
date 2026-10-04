@@ -53,6 +53,21 @@ type policyRun struct {
 	seconds, trafficAt int
 	bulk, voice        bool
 	bulkDirection      policyBulkDirection
+	bulkPeriods        []policyBulkPeriod
+}
+
+type policyBulkPeriod struct{ from, until time.Duration }
+
+func (m policyRun) bulkActive(at time.Duration) bool {
+	if len(m.bulkPeriods) == 0 {
+		return m.bulk
+	}
+	for _, period := range m.bulkPeriods {
+		if at >= period.from && at < period.until {
+			return m.bulk
+		}
+	}
+	return false
 }
 
 type policyVoice struct {
@@ -384,7 +399,7 @@ func (m policyRun) run(t *testing.T) policyOutcome {
 		for side, p := range peers {
 			m.renewPaths(t, p, side, now.Sub(start), now)
 			if tick >= m.trafficAt*1000 && tick < m.seconds*1000 {
-				if m.bulk && m.bulkDirection.includes(side) {
+				if m.bulkActive(now.Sub(start)) && m.bulkDirection.includes(side) {
 					tcp[side].offer(now, func(seq uint64) { send(side, now, seq) })
 				}
 				if m.voice && tick%20 == 0 {
