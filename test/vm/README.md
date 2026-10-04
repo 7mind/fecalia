@@ -2251,3 +2251,20 @@ compares BBRv3 delivery sampling, completion-aware scheduling, QUIC recovery
 principles and SCReAMv2 with the retained wanbond failures. Its implementation
 experiments are proposals, not measured improvements. No policy code or field
 state changed during this research.
+
+### Sole-survivor pacing reproduction — 2026-10-04
+
+Observed on the restored controller and on exact `f75668e` production source:
+`TestVoiceAndBulkShareSingleSlowLane` delivers 500/500 voice datagrams at
+one-way p99 55 ms, but only 2,400–3,600 bulk payload B/s in each measured
+second. The independent conservative payload reference is 6,302 B/s after
+two 50 Hz voice streams and forty full wire ACKs per second; its 75% gate
+is 4,727 B/s. The test uses public transport deliveries and simulated time.
+It remains a progression test under `-tags adaptivepolicy` until corrected.
+The original source required no production adapter for this reproduction.
+
+Evidence: `stage1-survivor-budget-{red,original-red}.txt` under
+`/srv/nvme/tmp/wanbond-adaptive-evidence`. The current liveness reproductions
+also still fail for the expected missing suspect-copy and silent rate-cut
+reasons (`stage1-resume-liveness-red-v2.txt`). An earlier mistyped test filter
+ran zero tests and establishes no behavior (`stage1-resume-liveness-red.txt`).
