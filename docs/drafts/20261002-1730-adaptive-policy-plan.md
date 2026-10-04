@@ -944,3 +944,51 @@ Mapping: `TestOneUnloadedSampleDoesNotReorderLanes` becomes
 service and aged-floor reproductions remain tagged `adaptivepolicy` until
 their corrections are verified. Production estimators are unchanged by this
 test commit; stage 3 mechanism restatements remain to do.
+
+### Capacity-test restatement and delay prototype observations
+
+**Observed:** before changing capacity control, `422870f` replaces private
+sender-limited discovery, slow-lane pulse wins and plateau-state checks with
+public transport service checks. Sparse first and resumed transfers over a
+queued 1.25 MB/s lane deliver 831,600 and 856,560 B/s against the independent
+867,845 B/s reference. Batched receipts deliver 5,388,560 B/s with all 750
+measured voice datagrams received and 90 ms one-way p99. These pass three
+identical runs. Restart budget, repeated slowdown service and traffic-counter
+outcomes also pass three runs on unchanged C8 policy.
+
+**Observed failures:** the same sparse and resumed fixtures on a policed
+lane deliver 393,360 B/s and 465,120/215,760 B/s respectively. A 90 kB/s lane
+raised to 625 kB/s delivers only 10,560 B/s against a 417,458 B/s available
+reference. All fail their unchanged 75% service gate three times. The private
+probe-win assertions passing did not establish useful TCP service; retain
+these stronger cases under `adaptivepolicy`, rather than weakening them.
+This is a model finding, not a reproduced field cause.
+
+Mapping: `TestSenderLimitedDiscoveryKeepsTheEstimate` becomes
+`TestSparseAndResumedSendersKeepBulkProductive` and
+`TestAdaptivePolicedSparseAndResumedSenders`; `TestProbeWinsCountOnASlowLane`
+becomes `TestAdaptiveSlowLaneRateIncreaseMakesBulkProgress` and the existing
+`TestPolicedLaneIsNotOverdriven`; `TestPlateauEstimateIsWhatTheLaneSustained`
+becomes `TestBatchedReceiptsKeepBulkProductive` together with the already
+restated repeated-stall service cases. Capacity-value assertions in catch-up
+and restart tests become bulk service and physical traffic-budget outcomes.
+Controller-consequence counter assertions become useful service accompanied
+by actual sent/acknowledged/original counters. Evidence is
+`stage3-capacity-outcome-baseline-complete-three.txt` and
+`stage3-restatement-default-complete-three.txt` in the evidence directory.
+
+**Observed prototype results, not accepted behavior:** the separate delay
+experiment refreshes the formerly 19.956 s old transit floor and maintains
+bulk through a 15 ms propagation-level change. Under two-direction delay
+noise it increases bulk from 65,520 to 889,800 B/s but raises voice p99 from
+63 to 154 ms, failing the 150 ms gate. Standing link-queue p90 is 46 ms on
+100 Mbit/s and 26 ms on 1.25 Mbit/s, both exceeding the existing 20 ms gate.
+It is not a field candidate. An initial ranking defect reset residence time
+on a suspect lane; preserving preference while the existing suspect-copy
+fallback operates passes the transient and persistent delay outcomes.
+
+**Inferred from the traces:** short receiver-clock delivery samples inflate
+the old capacity estimate, while an earlier queue-quality predicate admits
+self-queued transit as propagation. Test the corresponding send/receive
+flight sampler next, retaining the current delay experiment in an isolated
+worktree. The installed `b444920` baseline remains the field reference.
