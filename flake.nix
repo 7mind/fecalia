@@ -10,6 +10,8 @@
     flake-utils.lib.eachDefaultSystem (system:
       let
         pkgs = nixpkgs.legacyPackages.${system};
+        sourceCommit = self.rev or self.dirtyRev or "";
+        sourceCommitTime = if sourceCommit == "" then "" else toString (self.lastModified or "");
         monitorUI = pkgs.buildNpmPackage {
           pname = "wanbond-monitor-ui";
           version = "0.0.0";
@@ -34,7 +36,11 @@
           subPackages = [ "cmd/wanbond" ];
           preBuild = ''cp -r ${monitorUI}/. internal/monitor/dist/'';
           env.CGO_ENABLED = 0;
-          ldflags = [ "-s" "-w" ];
+          ldflags = [
+            "-s" "-w"
+            "-X main.buildCommit=${sourceCommit}"
+            "-X main.buildCommitTime=${sourceCommitTime}"
+          ];
           # Unit tests run via CI/Justfile; the e2e suite needs root and is never
           # part of the sandboxed package build.
           doCheck = false;

@@ -19,6 +19,7 @@ import (
 	"go.uber.org/goleak"
 
 	"github.com/7mind/wanbond/internal/bind"
+	"github.com/7mind/wanbond/internal/buildinfo"
 	"github.com/7mind/wanbond/internal/config"
 	"github.com/7mind/wanbond/internal/metrics"
 	"github.com/7mind/wanbond/internal/monitor"
@@ -436,7 +437,7 @@ func TestMonitorE2E_LoopbackFullAddressingEndpointsAndFingerprint(t *testing.T) 
 	cfg.Monitor = config.Monitor{Listen: "127.0.0.1:0"}
 	chtun := tuntest.NewChannelTUN()
 
-	tun, err := up(cfg, discardLogger(t), chtun.TUN(), "wanbondtest0", inertFactory, "test")
+	tun, err := up(cfg, discardLogger(t), chtun.TUN(), "wanbondtest0", inertFactory, buildinfo.Info{Version: "test"})
 	if err != nil {
 		t.Fatalf("up: %v", err)
 	}
@@ -511,7 +512,7 @@ func TestMonitorE2E_NonLoopbackRedactsAddressingButKeepsFingerprint(t *testing.T
 	cfg.Monitor = config.Monitor{Listen: "0.0.0.0:0", Token: token}
 	chtun := tuntest.NewChannelTUN()
 
-	tun, err := up(cfg, discardLogger(t), chtun.TUN(), "wanbondtest0", inertFactory, "test")
+	tun, err := up(cfg, discardLogger(t), chtun.TUN(), "wanbondtest0", inertFactory, buildinfo.Info{Version: "test"})
 	if err != nil {
 		t.Fatalf("up: %v", err)
 	}
@@ -570,7 +571,7 @@ func TestMonitorE2E_NonLoopbackRevealAddressingServesAddressing(t *testing.T) {
 	cfg.Monitor = config.Monitor{Listen: "0.0.0.0:0", Token: token, RevealAddressing: true}
 	chtun := tuntest.NewChannelTUN()
 
-	tun, err := up(cfg, discardLogger(t), chtun.TUN(), "wanbondtest0", inertFactory, "test")
+	tun, err := up(cfg, discardLogger(t), chtun.TUN(), "wanbondtest0", inertFactory, buildinfo.Info{Version: "test"})
 	if err != nil {
 		t.Fatalf("up: %v", err)
 	}

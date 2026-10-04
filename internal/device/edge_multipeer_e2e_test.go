@@ -13,6 +13,7 @@ import (
 	"github.com/amnezia-vpn/amneziawg-go/v3/tun/tuntest"
 
 	"github.com/7mind/wanbond/internal/bind"
+	"github.com/7mind/wanbond/internal/buildinfo"
 	"github.com/7mind/wanbond/internal/config"
 	"github.com/7mind/wanbond/internal/dnsresolve"
 	"github.com/7mind/wanbond/internal/telemetry"
@@ -172,18 +173,18 @@ psk = "%s"
 	inert := func() (dnsresolve.Resolver, error) { return &dnsresolve.FakeResolver{}, nil }
 
 	// Concentrators first (they must be listening before the edge initiates), then the edge.
-	conc0, err := up(conc0Cfg, discardLogger(t), tuntest.NewChannelTUN().TUN(), "wbmpc0", inert, "test")
+	conc0, err := up(conc0Cfg, discardLogger(t), tuntest.NewChannelTUN().TUN(), "wbmpc0", inert, buildinfo.Info{Version: "test"})
 	if err != nil {
 		t.Fatalf("up concentrator 0: %v", err)
 	}
 	defer conc0.Close()
-	conc1, err := up(conc1Cfg, discardLogger(t), tuntest.NewChannelTUN().TUN(), "wbmpc1", inert, "test")
+	conc1, err := up(conc1Cfg, discardLogger(t), tuntest.NewChannelTUN().TUN(), "wbmpc1", inert, buildinfo.Info{Version: "test"})
 	if err != nil {
 		t.Fatalf("up concentrator 1: %v", err)
 	}
 	defer conc1.Close()
 
-	edge, err := up(edgeCfg, discardLogger(t), tuntest.NewChannelTUN().TUN(), "wbmpe0", inert, "test")
+	edge, err := up(edgeCfg, discardLogger(t), tuntest.NewChannelTUN().TUN(), "wbmpe0", inert, buildinfo.Info{Version: "test"})
 	if err != nil {
 		t.Fatalf("up edge (2 peers, 2 uplinks): %v", err)
 	}

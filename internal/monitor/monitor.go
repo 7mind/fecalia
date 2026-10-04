@@ -165,12 +165,14 @@ type PeerSessionSnapshot struct {
 }
 
 // DaemonSnapshot is the JSON encoding of the process-scoped identity fields
-// (G21, Q60): the effective role, the daemon version/build string, and the
-// process uptime in seconds. Sourced from monitor.Info, shown on any binding.
+// (G21, Q60): role, version, source commit/time and process uptime in seconds.
+// Sourced from monitor.Info, shown on any binding.
 type DaemonSnapshot struct {
-	Role          string  `json:"role"`
-	Version       string  `json:"version"`
-	UptimeSeconds float64 `json:"uptimeSeconds"`
+	Role            string  `json:"role"`
+	Version         string  `json:"version"`
+	BuildCommit     string  `json:"buildCommit"`
+	BuildCommitTime string  `json:"buildCommitTime"`
+	UptimeSeconds   float64 `json:"uptimeSeconds"`
 }
 
 // EndpointSnapshot is one entry of the ordered hub-endpoint list with its
@@ -198,10 +200,12 @@ type EndpointSnapshot struct {
 // FAIL-CLOSED default (no daemon identity, no endpoints, empty fingerprint) that
 // server.go passes until the real Info is threaded in T219/T222.
 type Info struct {
-	// Role, Version, UptimeSeconds populate DaemonSnapshot.
-	Role          string
-	Version       string
-	UptimeSeconds float64
+	// Role, build identity and UptimeSeconds populate DaemonSnapshot.
+	Role            string
+	Version         string
+	BuildCommit     string
+	BuildCommitTime string
+	UptimeSeconds   float64
 	// Uptime, when non-nil, is a LIVE provider for the process uptime evaluated
 	// INSIDE BuildSnapshot on every snapshot (freshness, R242): the server holds one
 	// Info for its whole life, so a plain UptimeSeconds captured at construction would
@@ -372,9 +376,11 @@ func BuildSnapshot(src metrics.Source, info Info, revealAddressing, controlAvail
 		PeerNames: peerNames,
 		MultiPeer: len(peerNames) > 1,
 		Daemon: DaemonSnapshot{
-			Role:          info.Role,
-			Version:       info.Version,
-			UptimeSeconds: uptimeSeconds,
+			Role:            info.Role,
+			Version:         info.Version,
+			BuildCommit:     info.BuildCommit,
+			BuildCommitTime: info.BuildCommitTime,
+			UptimeSeconds:   uptimeSeconds,
 		},
 		WGPublicKeyFingerprint: info.WGPublicKeyFingerprint,
 		AddressingHidden:       !revealAddressing,

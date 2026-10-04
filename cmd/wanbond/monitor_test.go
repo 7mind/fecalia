@@ -29,7 +29,7 @@ func TestMonitorOnceReadsAuthenticatedSnapshot(t *testing.T) {
 		}
 		defer conn.CloseNow()
 		body, err := json.Marshal(monitor.MonitorSnapshot{
-			Daemon:   monitor.DaemonSnapshot{Role: "edge", Version: "test"},
+			Daemon:   monitor.DaemonSnapshot{Role: "edge", Version: "test", BuildCommit: "remote-daemon-dirty", BuildCommitTime: "2026-10-04T20:00:00Z"},
 			Session:  monitor.SessionSnapshot{Established: true},
 			ExitMode: "auto", ActiveExit: "raspi5l", ExitCapablePeers: []string{"raspi5l", "o2"},
 			Paths: []monitor.PathSnapshot{{Peer: "raspi5l", Name: "starlink", Up: true, RTTSeconds: 0.08, ThroughputBps: 8192}},
@@ -49,7 +49,7 @@ func TestMonitorOnceReadsAuthenticatedSnapshot(t *testing.T) {
 	if err := streamMonitor(ctx, strings.TrimPrefix(srv.URL, "http://"), "secret", true, false, &out); err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"edge", "Exit       raspi5l    Policy auto", "raspi5l / starlink", "80.0ms", "rate 1.0KiB/s"} {
+	for _, want := range []string{"edge", "Commit remote-daemon-dirty", "Commit time 2026-10-04T20:00:00Z", "Exit       raspi5l    Policy auto", "raspi5l / starlink", "80.0ms", "rate 1.0KiB/s"} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("output missing %q:\n%s", want, out.String())
 		}
@@ -72,6 +72,26 @@ func TestConcentratorViewDoesNotShowExitPolicy(t *testing.T) {
 	}
 	if strings.Contains(output, "Policy") {
 		t.Errorf("concentrator has no exit policy:\n%s", output)
+	}
+}
+
+func TestMonitorShowsDaemonBuildIdentity(t *testing.T) {
+	var snapshot monitor.MonitorSnapshot
+	if err := json.Unmarshal([]byte(`{"daemon":{"role":"edge","version":"test","buildCommit":"abcdef0123456789-dirty","buildCommitTime":"2026-10-04T20:00:00Z"}}`), &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	output := renderMonitor(snapshot, time.Unix(0, 0), false, false)
+	for _, want := range []string{"Commit abcdef0123456789-dirty", "Commit time 2026-10-04T20:00:00Z"} {
+		if !strings.Contains(output, want) {
+			t.Errorf("daemon build identity missing %q:\n%s", want, output)
+		}
+	}
+}
+
+func TestMonitorShowsUnknownForMissingBuildIdentity(t *testing.T) {
+	output := renderMonitor(monitor.MonitorSnapshot{}, time.Unix(0, 0), false, false)
+	if !strings.Contains(output, "Commit unknown  Commit time unknown") {
+		t.Fatalf("missing build metadata was not explicit:\n%s", output)
 	}
 }
 

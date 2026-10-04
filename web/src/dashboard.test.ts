@@ -73,6 +73,8 @@ function daemon(overrides: Partial<DaemonSnapshot> = {}): DaemonSnapshot {
   return {
     role: 'edge',
     version: 'test',
+    buildCommit: '',
+    buildCommitTime: '',
     uptimeSeconds: 1,
     ...overrides,
   };
@@ -423,6 +425,25 @@ describe('mountDashboard', () => {
     expect(container.textContent).toContain('198.51.100.2:51820');
 
     expect(container.querySelector('[data-testid="wg-key-line"]')!.textContent).toContain('AbCd1234');
+  });
+
+  it('shows the daemon source commit and its UTC timestamp on a redacted snapshot', () => {
+    const dashboard = mountDashboard(container);
+    const snapshot = singlePeerSnapshot();
+    snapshot.daemon = daemon({
+      buildCommit: 'abcdef0123456789-dirty',
+      buildCommitTime: '2026-10-04T20:00:00Z',
+    });
+    dashboard.onSnapshot(snapshot);
+    expect(container.textContent).toContain('abcdef0123456789-dirty');
+    expect(container.textContent).toContain('Commit time 2026-10-04T20:00:00Z');
+  });
+
+  it('shows unknown for missing daemon build metadata', () => {
+    const dashboard = mountDashboard(container);
+    dashboard.onSnapshot(singlePeerSnapshot());
+    expect(container.querySelector('[data-testid="daemon-commit"]')!.textContent).toBe('Commit unknown');
+    expect(container.querySelector('[data-testid="daemon-commit-time"]')!.textContent).toBe('Commit time unknown');
   });
 
   it('shows the addressing-hidden placeholder and never renders source/remote address text on a redacted snapshot, while still showing the fingerprint', () => {

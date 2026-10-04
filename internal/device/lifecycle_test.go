@@ -19,6 +19,7 @@ import (
 	"go.uber.org/goleak"
 
 	"github.com/7mind/wanbond/internal/bind"
+	"github.com/7mind/wanbond/internal/buildinfo"
 	"github.com/7mind/wanbond/internal/config"
 	"github.com/7mind/wanbond/internal/dnsresolve"
 	"github.com/7mind/wanbond/internal/log"
@@ -148,7 +149,7 @@ func TestUpTolerantBootEndpointless(t *testing.T) {
 		return rslv, nil
 	}
 
-	tun, err := up(cfg, discardLogger(t), chtun.TUN(), "wanbondtest0", factory, "test")
+	tun, err := up(cfg, discardLogger(t), chtun.TUN(), "wanbondtest0", factory, buildinfo.Info{Version: "test"})
 	if err != nil {
 		t.Fatalf("up on a never-resolving single-hostname peer failed, want tolerant boot: %v", err)
 	}
@@ -184,7 +185,7 @@ func TestUpZeroHostnameNoResolverNoLoop(t *testing.T) {
 		return &dnsresolve.FakeResolver{Hosts: map[string][]netip.Addr{}}, nil
 	}
 
-	tun, err := up(cfg, discardLogger(t), chtun.TUN(), "wanbondtest0", factory, "test")
+	tun, err := up(cfg, discardLogger(t), chtun.TUN(), "wanbondtest0", factory, buildinfo.Info{Version: "test"})
 	if err != nil {
 		t.Fatalf("up on an all-literal edge peer failed: %v", err)
 	}
@@ -239,7 +240,7 @@ func TestUpAllLiteralTripwireNeverCallsLookup(t *testing.T) {
 		return &tripwireResolver{t: t}, nil
 	}
 
-	tun, err := up(cfg, discardLogger(t), chtun.TUN(), "wanbondtest0", factory, "test")
+	tun, err := up(cfg, discardLogger(t), chtun.TUN(), "wanbondtest0", factory, buildinfo.Info{Version: "test"})
 	if err != nil {
 		t.Fatalf("up on an all-literal edge peer failed: %v", err)
 	}
@@ -267,7 +268,7 @@ func TestCloseStopsResolutionLoopNoLeak(t *testing.T) {
 		return &dnsresolve.FakeResolver{Hosts: map[string][]netip.Addr{}}, nil
 	}
 
-	tun, err := up(cfg, discardLogger(t), chtun.TUN(), "wanbondtest0", factory, "test")
+	tun, err := up(cfg, discardLogger(t), chtun.TUN(), "wanbondtest0", factory, buildinfo.Info{Version: "test"})
 	if err != nil {
 		t.Fatalf("up: %v", err)
 	}
@@ -316,7 +317,7 @@ public_key = "%s"
 allowed_ips = ["10.0.0.0/24"]
 `, b64(pskRaw), b64(hubPrivRaw), concPort, b64(edgePubRaw)))
 	inert := func() (dnsresolve.Resolver, error) { return &dnsresolve.FakeResolver{}, nil }
-	conc, err := up(concCfg, lg, tuntest.NewChannelTUN().TUN(), "wbfrc0", inert, "test")
+	conc, err := up(concCfg, lg, tuntest.NewChannelTUN().TUN(), "wbfrc0", inert, buildinfo.Info{Version: "test"})
 	if err != nil {
 		t.Fatalf("up concentrator: %v", err)
 	}
@@ -417,7 +418,7 @@ func TestUpFirstResolveInstallsEndpointThroughProductionWiring(t *testing.T) {
 	rslv := &flakyThenResolver{host: "hub.example.com", addr: resolved}
 	factory := func() (dnsresolve.Resolver, error) { return rslv, nil }
 
-	tun, err := up(cfg, discardLogger(t), chtun.TUN(), "wanbondtest0", factory, "test")
+	tun, err := up(cfg, discardLogger(t), chtun.TUN(), "wanbondtest0", factory, buildinfo.Info{Version: "test"})
 	if err != nil {
 		t.Fatalf("up on a hostname peer whose boot resolve fails, want tolerant boot: %v", err)
 	}

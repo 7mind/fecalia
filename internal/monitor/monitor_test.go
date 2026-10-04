@@ -59,6 +59,8 @@ func TestBuildSnapshot_ExtendedFields(t *testing.T) {
 	info := Info{
 		Role:                   "edge",
 		Version:                "v1.2.3",
+		BuildCommit:            "abcdef0123456789-dirty",
+		BuildCommitTime:        "2026-10-04T20:00:00Z",
 		UptimeSeconds:          42,
 		WGPublicKeyFingerprint: "AbCdEfGhIj",
 		Endpoints: func() []EndpointSnapshot {
@@ -73,6 +75,9 @@ func TestBuildSnapshot_ExtendedFields(t *testing.T) {
 	snap := BuildSnapshot(src, info, true, false)
 	if snap.Daemon.Role != "edge" || snap.Daemon.Version != "v1.2.3" || snap.Daemon.UptimeSeconds != 42 {
 		t.Fatalf("daemon = %+v", snap.Daemon)
+	}
+	if snap.Daemon.BuildCommit != info.BuildCommit || snap.Daemon.BuildCommitTime != info.BuildCommitTime {
+		t.Fatalf("daemon build identity = %+v", snap.Daemon)
 	}
 	if snap.WGPublicKeyFingerprint != "AbCdEfGhIj" {
 		t.Fatalf("fingerprint = %q", snap.WGPublicKeyFingerprint)
@@ -96,6 +101,9 @@ func TestBuildSnapshot_ExtendedFields(t *testing.T) {
 
 	// revealAddressing = false (non-loopback binding): server-side redaction.
 	red := BuildSnapshot(src, info, false, false)
+	if red.Daemon != snap.Daemon {
+		t.Fatalf("daemon build identity changed under address redaction: %+v", red.Daemon)
+	}
 	if !red.AddressingHidden {
 		t.Fatalf("AddressingHidden must be true when not revealed")
 	}
@@ -583,7 +591,7 @@ func TestBuildSnapshotSinglePeerByteCompatibleExceptAdditiveFields(t *testing.T)
 		"session":   map[string]any{"established": false, "lastHandshakeSeconds": float64(0)},
 		"peerNames": []any{""},
 		"multiPeer": false,
-		"daemon":    map[string]any{"role": "", "version": "", "uptimeSeconds": float64(0)},
+		"daemon":    map[string]any{"role": "", "version": "", "buildCommit": "", "buildCommitTime": "", "uptimeSeconds": float64(0)},
 		"endpoints": []any{
 			map[string]any{"address": "9.9.9.9:1", "active": true},
 		},

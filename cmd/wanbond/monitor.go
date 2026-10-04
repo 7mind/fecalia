@@ -184,6 +184,7 @@ func localMonitorAddress(listen string) (string, error) {
 func renderMonitor(s monitor.MonitorSnapshot, now time.Time, interactive, color bool) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "%s  %s  v%s  up %s\n", monitorStyle("wanbond", monitorHeadingColor, color), s.Daemon.Role, s.Daemon.Version, (time.Duration(s.Daemon.UptimeSeconds) * time.Second).Truncate(time.Second))
+	fmt.Fprintf(&b, "Commit %s  Commit time %s\n", knownBuildField(s.Daemon.BuildCommit), knownBuildField(s.Daemon.BuildCommitTime))
 	fmt.Fprintf(&b, "Updated %s", now.Format("15:04:05"))
 	if interactive {
 		fmt.Fprint(&b, "    Ctrl+C to quit")
@@ -294,6 +295,13 @@ func renderMonitor(s monitor.MonitorSnapshot, now time.Time, interactive, color 
 		}
 	}
 	return strings.TrimRight(b.String(), "\n")
+}
+
+func knownBuildField(value string) string {
+	if value == "" {
+		return "unknown"
+	}
+	return value
 }
 
 func monitorStatus(state string, up, color bool) string {

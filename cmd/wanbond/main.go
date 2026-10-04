@@ -12,6 +12,7 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/7mind/wanbond/internal/buildinfo"
 	"github.com/7mind/wanbond/internal/config"
 	"github.com/7mind/wanbond/internal/device"
 	"github.com/7mind/wanbond/internal/log"
@@ -19,6 +20,9 @@ import (
 
 // version is overridden at build time via -ldflags "-X main.version=...".
 var version = "dev"
+
+// Nix builds lack Go's VCS metadata; these linker stamps supply source identity.
+var buildCommit, buildCommitTime string
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {
@@ -35,15 +39,19 @@ func main() {
 // configuration, brings the tunnel up for the configured role, and blocks until
 // a termination signal, then tears the tunnel down.
 func run(args []string) error {
-	if len(args) == 1 && (args[0] == "version" || args[0] == "--version") {
-		fmt.Println("wanbond", version)
-		return nil
-	}
 	if len(args) > 0 && args[0] == "monitor" {
 		return runMonitor(args[1:], os.Stdout)
 	}
 	if len(args) > 0 && args[0] == "set-exit" {
 		return runSetExit(args[1:], os.Stdout)
+	}
+	build, err := buildinfo.Read(version, buildCommit, buildCommitTime)
+	if err != nil {
+		return err
+	}
+	if len(args) == 1 && (args[0] == "version" || args[0] == "--version") {
+		fmt.Printf("wanbond %s\nCommit %s\nCommit time %s\n", build.Version, knownBuildField(build.Commit), knownBuildField(build.CommitTime))
+		return nil
 	}
 
 	fs := flag.NewFlagSet("wanbond", flag.ContinueOnError)
@@ -73,9 +81,9 @@ func run(args []string) error {
 		return err
 	}
 	main := lg.Component("main")
-	main.Info("wanbond starting", "version", version, "role", string(cfg.Role))
+	main.Info("wanbond starting", "version", build.Version, "commit", build.Commit, "commit_time", build.CommitTime, "role", string(cfg.Role))
 
-	tun, err := device.Up(cfg, lg, version)
+	tun, err := device.Up(cfg, lg, build)
 	if err != nil {
 		return err
 	}
@@ -113,7 +121,7 @@ func writeUsage(w io.Writer, daemonFlags *flag.FlagSet) {
   wanbond monitor [flags]                      live terminal view of a running daemon
   wanbond set-exit [flags] <exit-peer>|auto    select the active exit on a running edge
                                                (runtime only; not persisted)
-  wanbond version                              print the version
+  wanbond version                              print the version and source identity
   wanbond help                                 show this help
 
 Run 'wanbond <command> --help' for command flags.

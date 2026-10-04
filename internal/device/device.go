@@ -27,6 +27,7 @@ import (
 	"github.com/amnezia-vpn/amneziawg-go/v3/tun"
 
 	"github.com/7mind/wanbond/internal/bind"
+	"github.com/7mind/wanbond/internal/buildinfo"
 	"github.com/7mind/wanbond/internal/config"
 	"github.com/7mind/wanbond/internal/dnsresolve"
 	"github.com/7mind/wanbond/internal/log"
@@ -290,7 +291,7 @@ type Tunnel struct {
 // applies the crypto configuration from cfg, and brings the device up. The same
 // path drives both roles; the role only changes which UAPI fields cfg carries
 // (the concentrator sets listen_port; the edge sets each peer's endpoint).
-func Up(cfg *config.Config, lg log.Logger, version string) (*Tunnel, error) {
+func Up(cfg *config.Config, lg log.Logger, build buildinfo.Info) (*Tunnel, error) {
 	clg := lg.Component("device")
 
 	tunDev, err := tun.CreateTUN(defaultTUNName, tunMTU(cfg))
@@ -326,7 +327,7 @@ func Up(cfg *config.Config, lg log.Logger, version string) (*Tunnel, error) {
 	// as a factory (not eagerly constructed) so up() builds it AT MOST ONCE and ONLY when some peer
 	// carries a hostname endpoint spec — a config with zero hostname specs never constructs a
 	// resolver (Q29 inertness). The injected TUN and factory are also the seams device tests drive.
-	t, err := up(cfg, clg, tunDev, name, cfg.DNS.NewResolver, version)
+	t, err := up(cfg, clg, tunDev, name, cfg.DNS.NewResolver, build)
 	if err != nil {
 		return nil, err
 	}
@@ -443,7 +444,7 @@ type resolverFactory func() (dnsresolve.Resolver, error)
 // it out of Up gives device tests a seam to inject a channel TUN and a fake resolver without the
 // privileged tun.CreateTUN. The same path drives both roles; the role only changes which UAPI
 // fields cfg carries (the concentrator sets listen_port; the edge sets each peer's endpoint).
-func up(cfg *config.Config, clg log.Logger, tunDev tun.Device, name string, newResolver resolverFactory, version string) (*Tunnel, error) {
+func up(cfg *config.Config, clg log.Logger, tunDev tun.Device, name string, newResolver resolverFactory, build buildinfo.Info) (*Tunnel, error) {
 	// Process start instant for the monitor's LIVE uptime provider (T222): captured at the
 	// very top of bring-up so Info.Uptime() = time.Since(startTime) is a fresh, monotonically
 	// increasing value on every snapshot rather than a boot-time constant.
@@ -766,7 +767,9 @@ func up(cfg *config.Config, clg log.Logger, tunDev tun.Device, name string, newR
 		// Built once here and reused by every applyMonitorLocked (boot + reload rebind).
 		monitorInfo: monitor.Info{
 			Role:                   string(cfg.Role),
-			Version:                version,
+			Version:                build.Version,
+			BuildCommit:            build.Commit,
+			BuildCommitTime:        build.CommitTime,
 			Uptime:                 func() float64 { return time.Since(startTime).Seconds() },
 			WGPublicKeyFingerprint: fingerprint,
 			Endpoints:              newEndpointsProvider(ids, hubFailoverCtrls),

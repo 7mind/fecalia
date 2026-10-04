@@ -10,6 +10,7 @@ import (
 
 	"github.com/amnezia-vpn/amneziawg-go/v3/tun/tuntest"
 
+	"github.com/7mind/wanbond/internal/buildinfo"
 	"github.com/7mind/wanbond/internal/config"
 	"github.com/7mind/wanbond/internal/dnsresolve"
 	"github.com/7mind/wanbond/internal/frame"
@@ -75,7 +76,7 @@ func TestUpTwoPeerConcentratorWiresPerPeerState(t *testing.T) {
 		return &dnsresolve.FakeResolver{}, nil
 	}
 
-	tun, err := up(cfg, discardLogger(t), chtun.TUN(), "wanbondtest0", factory, "test")
+	tun, err := up(cfg, discardLogger(t), chtun.TUN(), "wanbondtest0", factory, buildinfo.Info{Version: "test"})
 	if err != nil {
 		t.Fatalf("up on a 2-peer concentrator failed: %v", err)
 	}
@@ -208,7 +209,7 @@ func TestUpTwoPeerConcentratorKeysEachPeerOnItsOwnPSK(t *testing.T) {
 
 	chtun := tuntest.NewChannelTUN()
 	factory := func() (dnsresolve.Resolver, error) { return &dnsresolve.FakeResolver{}, nil }
-	tun, err := up(cfg, discardLogger(t), chtun.TUN(), "wanbondtest0", factory, "test")
+	tun, err := up(cfg, discardLogger(t), chtun.TUN(), "wanbondtest0", factory, buildinfo.Info{Version: "test"})
 	if err != nil {
 		t.Fatalf("up on a 2-peer concentrator failed: %v", err)
 	}
@@ -269,7 +270,7 @@ func TestUpSinglePeerConcentratorOnePeerState(t *testing.T) {
 		return &dnsresolve.FakeResolver{}, nil
 	}
 
-	tun, err := up(cfg, discardLogger(t), chtun.TUN(), "wanbondtest0", factory, "test")
+	tun, err := up(cfg, discardLogger(t), chtun.TUN(), "wanbondtest0", factory, buildinfo.Info{Version: "test"})
 	if err != nil {
 		t.Fatalf("up on a single-peer concentrator failed: %v", err)
 	}

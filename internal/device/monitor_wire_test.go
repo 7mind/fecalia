@@ -17,6 +17,7 @@ import (
 	"go.uber.org/goleak"
 
 	"github.com/7mind/wanbond/internal/bind"
+	"github.com/7mind/wanbond/internal/buildinfo"
 	"github.com/7mind/wanbond/internal/config"
 	"github.com/7mind/wanbond/internal/dnsresolve"
 	"github.com/7mind/wanbond/internal/metrics"
@@ -43,7 +44,7 @@ func TestUpStartsMonitorEndpointReachableWS(t *testing.T) {
 	cfg.Monitor = config.Monitor{Listen: "127.0.0.1:0"}
 	chtun := tuntest.NewChannelTUN()
 
-	tun, err := up(cfg, discardLogger(t), chtun.TUN(), "wanbondtest0", inertFactory, "test")
+	tun, err := up(cfg, discardLogger(t), chtun.TUN(), "wanbondtest0", inertFactory, buildinfo.Info{Version: "test"})
 	if err != nil {
 		t.Fatalf("up with [monitor] configured failed: %v", err)
 	}
@@ -110,7 +111,7 @@ func TestUpMonitorEdgeConcentratorParity(t *testing.T) {
 			cfg.Monitor = config.Monitor{Listen: "127.0.0.1:0"}
 			chtun := tuntest.NewChannelTUN()
 
-			tun, err := up(cfg, discardLogger(t), chtun.TUN(), "wanbondtest0", inertFactory, "test")
+			tun, err := up(cfg, discardLogger(t), chtun.TUN(), "wanbondtest0", inertFactory, buildinfo.Info{Version: "test"})
 			if err != nil {
 				t.Fatalf("up (%s) with [monitor] configured failed: %v", tc.name, err)
 			}
@@ -137,7 +138,7 @@ func TestReloadReconcilesMonitorWithoutTearingTunnel(t *testing.T) {
 	cfg.Monitor = config.Monitor{Listen: "127.0.0.1:0"}
 	chtun := tuntest.NewChannelTUN()
 
-	tun, err := up(cfg, discardLogger(t), chtun.TUN(), "wanbondtest0", inertFactory, "test")
+	tun, err := up(cfg, discardLogger(t), chtun.TUN(), "wanbondtest0", inertFactory, buildinfo.Info{Version: "test"})
 	if err != nil {
 		t.Fatalf("up failed: %v", err)
 	}
@@ -206,7 +207,7 @@ func TestReloadRevealAddressingFlipRebindsMonitorWithoutTearingTunnel(t *testing
 	cfg.Monitor = config.Monitor{Listen: "0.0.0.0:0", Token: token, RevealAddressing: false}
 	chtun := tuntest.NewChannelTUN()
 
-	tun, err := up(cfg, discardLogger(t), chtun.TUN(), "wanbondtest0", inertFactory, "test")
+	tun, err := up(cfg, discardLogger(t), chtun.TUN(), "wanbondtest0", inertFactory, buildinfo.Info{Version: "test"})
 	if err != nil {
 		t.Fatalf("up failed: %v", err)
 	}
@@ -279,7 +280,7 @@ func TestReloadTokenRotationAtFixedPort(t *testing.T) {
 	cfg.Monitor = config.Monitor{Listen: fixedAddr}
 	chtun := tuntest.NewChannelTUN()
 
-	tun, err := up(cfg, discardLogger(t), chtun.TUN(), "wanbondtest0", inertFactory, "test")
+	tun, err := up(cfg, discardLogger(t), chtun.TUN(), "wanbondtest0", inertFactory, buildinfo.Info{Version: "test"})
 	if err != nil {
 		t.Fatalf("up with a fixed-port [monitor] failed: %v", err)
 	}
@@ -332,7 +333,7 @@ func TestMonitorWire_InfoFields(t *testing.T) {
 	cfg.Monitor = config.Monitor{Listen: "127.0.0.1:0"}
 	chtun := tuntest.NewChannelTUN()
 
-	tun, err := up(cfg, discardLogger(t), chtun.TUN(), "wanbondtest0", inertFactory, wantVersion)
+	tun, err := up(cfg, discardLogger(t), chtun.TUN(), "wanbondtest0", inertFactory, buildinfo.Info{Version: wantVersion, Commit: "abcdef0123456789", CommitTime: "2026-10-04T20:00:00Z"})
 	if err != nil {
 		t.Fatalf("up failed: %v", err)
 	}
@@ -345,6 +346,9 @@ func TestMonitorWire_InfoFields(t *testing.T) {
 	}
 	if info.Version != wantVersion {
 		t.Fatalf("Info.Version = %q, want %q", info.Version, wantVersion)
+	}
+	if info.BuildCommit != "abcdef0123456789" || info.BuildCommitTime != "2026-10-04T20:00:00Z" {
+		t.Fatalf("device did not forward daemon build identity: %+v", info)
 	}
 
 	// Uptime MUST be a live provider (R242), reporting a positive elapsed time.

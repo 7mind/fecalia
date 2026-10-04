@@ -292,6 +292,8 @@ export function mountDashboard(container: HTMLElement): DashboardHandle {
         <div class="brand"><span class="brand-mark">w.</span><div><strong>wanbond</strong><small>Network monitor</small></div></div>
         <div class="daemon-meta"><span class="role-badge" data-testid="role-badge">${escapeHtml(d.role)}</span>
         <span data-testid="daemon-version">v${escapeHtml(d.version)}</span>
+        <span data-testid="daemon-commit">Commit ${escapeHtml(d.buildCommit || 'unknown')}</span>
+        <span data-testid="daemon-commit-time">Commit time ${escapeHtml(d.buildCommitTime || 'unknown')}</span>
         <span data-testid="daemon-uptime">Up ${formatUptime(d.uptimeSeconds)}</span></div>
       </div>`;
   }

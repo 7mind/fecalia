@@ -32,7 +32,7 @@ const REDACTED_FRAME = `{
   "session": { "established": true, "lastHandshakeSeconds": 12.5 },
   "peerNames": [],
   "multiPeer": false,
-  "daemon": { "role": "edge", "version": "v0.1.0", "uptimeSeconds": 3600 },
+  "daemon": { "role": "edge", "version": "v0.1.0", "buildCommit": "", "buildCommitTime": "", "uptimeSeconds": 3600 },
   "endpoints": [
     { "address": "", "active": true },
     { "address": "", "active": false }
@@ -69,7 +69,7 @@ const FULL_FRAME = `{
   "session": { "established": true, "lastHandshakeSeconds": 12.5 },
   "peerNames": [],
   "multiPeer": false,
-  "daemon": { "role": "edge", "version": "v0.1.0", "uptimeSeconds": 3600 },
+  "daemon": { "role": "edge", "version": "v0.1.0", "buildCommit": "", "buildCommitTime": "", "uptimeSeconds": 3600 },
   "endpoints": [
     { "address": "198.51.100.9:51820", "active": true },
     { "address": "198.51.100.10:51820", "active": false }
@@ -101,7 +101,7 @@ const TWO_PEER_FRAME = `{
   "session": { "established": true, "lastHandshakeSeconds": 12.5 },
   "peerNames": ["tokyo", "osaka"],
   "multiPeer": true,
-  "daemon": { "role": "edge", "version": "v0.1.0", "uptimeSeconds": 3600 },
+  "daemon": { "role": "edge", "version": "v0.1.0", "buildCommit": "", "buildCommitTime": "", "uptimeSeconds": 3600 },
   "endpoints": [
     { "peer": "tokyo", "address": "hub-a1:51820", "active": true },
     { "peer": "tokyo", "address": "hub-a2:51820", "active": false },
@@ -142,7 +142,7 @@ describe('MonitorSnapshot wire fixtures (T218)', () => {
       { address: '', active: false },
     ]);
 
-    expect(snapshot.daemon).toEqual({ role: 'edge', version: 'v0.1.0', uptimeSeconds: 3600 });
+    expect(snapshot.daemon).toEqual({ role: 'edge', version: 'v0.1.0', buildCommit: '', buildCommitTime: '', uptimeSeconds: 3600 });
     expect(snapshot.wgPublicKeyFingerprint).toBe('aGVsbG8gd29');
   });
 

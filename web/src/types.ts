@@ -136,11 +136,13 @@ export interface SessionSnapshot {
 
 /**
  * Mirrors monitor.DaemonSnapshot: the process-scoped identity fields (role,
- * version/build string, process uptime), shown on any binding.
+ * version, source commit/time, process uptime), shown on any binding.
  */
 export interface DaemonSnapshot {
   role: string;
   version: string;
+  buildCommit: string;
+  buildCommitTime: string;
   uptimeSeconds: number;
 }
 
