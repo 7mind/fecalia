@@ -2472,3 +2472,26 @@ traffic. It includes the activation interval. See the
 [release record](../../docs/drafts/20261004-1105-adaptive-stage1-trial.md#operator-approved-c8-release--2026-10-04)
 for source identity, supplied measurements, retained failures and check logs.
 Stages 1–3 are not accepted by their gates.
+
+### Build identity in measurements — 2026-10-04
+
+`wanbond monitor` and the dashboard now display the daemon's source commit
+and UTC commit time; `wanbond version` reports the invoked executable.
+Go builds use embedded VCS metadata, and Nix builds explicitly stamp the
+flake revision/source time. Modified source appends `-dirty`; unavailable
+metadata displays `unknown`. The time is not compilation time or uptime.
+Retain the executable hash and any dirty patch as well: a base revision with
+uncommitted edits does not establish their contents.
+
+Observed CLI/UI reproductions fail before this feature because the build
+fields are omitted; both pass afterwards. The full non-privileged gate
+(44 frontend tests), e2e/realhosts source vet checks and three binary smoke
+cases pass: Go VCS identity, unavailable VCS identity and explicit stamps.
+No adaptive transport policy, lab profile or gate changed. Evidence:
+`/srv/nvme/tmp/wanbond-adaptive-evidence/build-identity-20261004-205649/`.
+Nix build and packaged identity verification are required before handover.
+
+A subsequent boundary reproduction found numeric times outside RFC3339's
+year range being accepted. Validating UTC text encoding rejects those inputs;
+the reproduction now passes. `timestamp-range-{red,green}.txt` retains both
+results alongside the build-identity evidence.

@@ -39,13 +39,25 @@ dependency) for both deployment architectures into `dist/`:
 Verify with `file dist/*`: both must report `statically linked`. Alternatively
 `nix build` produces the host-architecture binary via the flake package.
 
+`wanbond version`, `wanbond monitor` and the dashboard expose source commit
+and UTC commit time. The timestamp is the source commit's time, not the
+compilation time or daemon start time. Ordinary Go/Just builds use Go's
+embedded VCS metadata; the Nix package supplies the flake revision and its
+source timestamp through `main.buildCommit` and `main.buildCommitTime`
+linker stamps. Modified trees append `-dirty`; missing metadata displays
+`unknown`, including builds made without VCS metadata or stamps. Explicit
+commit stamps never borrow another commit's time from Go metadata.
+Malformed supplied times fail startup rather than displaying a false date.
+The monitor views show the running daemon's identity; `wanbond version`
+shows the locally invoked executable, which can differ from that daemon.
+
 ## 2. Install the binary
 
 On each host (pick the artifact matching `uname -m`):
 
 ```sh
 install -m 0755 wanbond-linux-<arch> /usr/local/bin/wanbond
-wanbond version   # prints the stamped build version
+wanbond version   # prints version, source commit and UTC commit time
 ```
 
 ## 3. Write the config file — 0600 REQUIRED
@@ -1444,7 +1456,8 @@ listen = "127.0.0.1:9101"
   is 400. See [docs/design.md §Security model](design.md) for the full
   posture.
 - **What you see**: beyond per-peer throughput/loss, the dashboard shows
-  the daemon's role/version/uptime, each path's bind mode + bound device,
+  the daemon's role/version/source commit/UTC commit time/uptime, each path's
+  bind mode + bound device,
   the truncated WireGuard public-key
   fingerprint, and the ordered hub-endpoint failover list with the active
   entry highlighted — all of these are shown **on ANY binding**, loopback or
@@ -1481,7 +1494,7 @@ listen = "127.0.0.1:9101"
     `reveal_addressing` opt-in in `[monitor]`, per-path source addresses,
     hub endpoint addresses, and (on the concentrator) connected-edge source
     addresses become visible to anyone holding the token; the token gate is
-    still enforced and unaffected. Everything else (role/version/uptime/
+    still enforced and unaffected. Everything else (role/version/source identity/uptime/
     bind-mode/fingerprint) is shown in full regardless of
     binding or the addressing flag.
 - **Build step**: the dashboard ships as an embedded frontend bundle built by

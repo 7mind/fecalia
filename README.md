@@ -226,7 +226,8 @@ edge + concentrator (+ standby) from scratch, follow the operator-facing
   model](docs/design.md#security-model) and [docs/install.md
   §6c](docs/install.md#6c-monitoring-ui-monitor)). Beyond per-peer traffic/
   quality, the dashboard shows: the daemon's effective **role** (edge/
-  concentrator), **version**, and process **uptime**; per-path **bind mode**
+  concentrator), **version**, **source commit and UTC commit time**, and
+  process **uptime**; per-path **bind mode**
   (`source`/`device`/`auto`) plus the resolved **bound device**; the truncated WireGuard
   public-key **fingerprint** (never the full key — read-only identity
   disambiguation only); and, on any binding, an ordered **hub-endpoint
@@ -283,6 +284,7 @@ Three tiers (see [docs/manual-checklist.md](docs/manual-checklist.md)):
 
 ```
 cmd/wanbond/            entry point; role selection; SIGHUP reload
+internal/buildinfo/     executable source identity from Go VCS metadata or Nix stamps
 internal/bind/          the custom conn.Bind — per-path sockets, peer demux, probes, the amnezia boundary
 internal/bond/          the transport: lanes, capacity discovery, pacing, traffic classes, repair, ACKs
 internal/frame/         outer frame codec (obfuscation + HMAC authentication)

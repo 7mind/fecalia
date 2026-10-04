@@ -1846,9 +1846,10 @@ by `internal/device`:
   not add a second telemetry sampler or a control route, and works for either
   daemon role when the monitor endpoint is enabled. Its ANSI status and heading
   colors are selected locally for capable terminals and can be disabled with
-  `--no-color` or `NO_COLOR`; the snapshot wire format is unchanged. The
+  `--no-color` or `NO_COLOR`; color controls do not alter snapshot fields. The
   `MonitorSnapshot` wire contract (`monitor.go`) also carries a
-  `DaemonSnapshot` (role, version, process uptime, always shown); per-path
+  `DaemonSnapshot` (role, version, source commit/time, process uptime,
+  always shown); per-path
   `bindMode`/`boundDevice` (runtime-resolved, via the `bind.PathTraffic`
   pass-through), shown on any binding; a truncated WireGuard public-key `wgPublicKeyFingerprint` (any
   binding — see *Security model*); a `peerSessions` array mirroring
@@ -1882,6 +1883,17 @@ by `internal/device`:
   once at construction), while `monitor.Info.ExitCapablePeers` is immutable
   config metadata copied into every snapshot. A hub failover or an exit switch/
   auto-promotion after startup is reflected in the next pushed frame.
+- `internal/buildinfo` — source identity from Go's executable VCS metadata,
+  or explicit Nix linker stamps when the build source lacks `.git`. The CLI
+  resolves it once and passes `buildinfo.Info` through device construction
+  into the monitor seam. `daemon.buildCommit` preserves the full revision
+  and `-dirty`; `daemon.buildCommitTime` is UTC RFC3339 source commit time,
+  not compilation time. Empty metadata displays `unknown`, and invalid
+  supplied timestamps return an error. Explicit commits do not borrow a
+  timestamp from another VCS revision. These identity fields remain visible
+  under address redaction. Monitor views identify the daemon; `wanbond version`
+  identifies the invoked executable. This adds monitoring JSON fields and
+  does not change the transport's authenticated hello, DATA or ACK encoding.
 - `internal/wireaudit` — the requirement-6 DPI wire-format audit (pcap parse +
   per-offset value-entropy + coverage checks) used by the P5 tests.
 - `internal/log` — slog-based structured logging.
@@ -2173,7 +2185,7 @@ misbehaves subtly. Agents and contributors must preserve them.
   - **Addressing redaction gate (Q62/Q64) — server-side, not client-side.**
     Per-path `addressing` (`source`, `remote`) and the ordered, per-peer-grouped
     `endpoints` list's `address` values are the one REDACTABLE part of the
-    extended wire contract (role/version/uptime/bind-mode/
+    extended wire contract (role/version/source identity/uptime/bind-mode/
     fingerprint/`peerSessions`/`activeExit`/`exitMode`/`exitCapablePeers` are NOT gated — see the
     `internal/monitor` bullet above). `monitor.NewServer`
     derives a `revealAddressing` verdict via **act-then-verify**:

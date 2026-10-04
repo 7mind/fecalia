@@ -601,8 +601,9 @@ this approval authorizes the work, not a claim that the earlier goal passed.
    Complete the lab series, regression gates, documentation and Nix build
    before claiming the implementation complete.
 
-The next deliverable is the matching field comparison and a reproducible
-account of the next bottleneck. Existing failed gates remain outstanding.
+At that checkpoint the next deliverable was the matching field comparison
+and a reproducible account of the next bottleneck. Existing failed gates
+remain outstanding; section 9 gives the execution priorities after release.
 
 **Observed checkpoint, parked field resumption, 2026-10-04:** three
 deployed → `c8` → deployed comparisons complete with matched startup ages
@@ -617,3 +618,96 @@ and cleanup were verified afterwards; the mobile VLAN interval increased
 100.24 MB including background traffic. The unchanged model failures still
 reject the retained stage 1 attempt. The [trial record](20261004-1105-adaptive-stage1-trial.md#parked-field-resumption--2026-10-04)
 keeps all nine rounds and their limitations; no gate or stage order changes.
+
+## 9. Further improvements after the C8 release — 2026-10-04
+
+### Current checkpoint and evidence
+
+**Observed:** `v0.0.2` contains the released C8 policy (`4a1cd54` plus
+documentation). The following monitoring feature is implemented in
+`ab4c8a1`: both monitor views expose the running daemon's source commit and
+UTC commit time. **Operator decision:** use reproducible source commit time,
+not compilation time. Go VCS metadata and explicit Nix stamps preserve dirty
+markers; unavailable identity is displayed as unknown. Retain the executable
+hash and any dirty patch alongside the commit. This feature adds diagnostics,
+not an estimator or transport policy. The existing release tag precedes it.
+
+**Recorded field evidence:** three matched deployed → C8 → deployed sets
+establish the bounded outage uplink gain, with mixed downlink results and
+voice RTT p99 reaching 131–144 ms in two candidate rounds. **Operator
+evidence:** the subsequent sequential Speedtest reports 66.19 Mbit/s down
+and 0.33 up through C8; direct 5G reports 44.58/2.42 at a different server.
+These observations do not isolate an aggregation gain or the upload cause.
+The supplied monitor records 2,633 expirations and 1,053 5G repairs at the
+end, but cannot assign them to the download or upload phase. The
+[release record](20261004-1105-adaptive-stage1-trial.md#operator-approved-c8-release--2026-10-04)
+preserves measurements, restoration and mobile accounting.
+
+**Recorded model evidence:** C8 still fails 1a–1c gates. The gigaradio
+survivor's legacy target/estimate is already too low before the blackout;
+ACK-progress liveness alone cannot establish the required goodput. This is
+an explained failure for that model, not a demonstrated field upload cause.
+The full non-privileged gate and tagged source vet checks pass after the
+monitor feature; neither substitutes for the incomplete adaptive lab series.
+
+### Next deliverable: reproduce and explain the upload limit
+
+1. Observe both running executables before testing; do not infer installation
+   from a tag or operator intent. Record daemon commit/time, hash, selected
+   exit, uptime and lane states. If identity is dirty or unknown, retain
+   source/patch provenance. Keep the original `f75668e` evidence and compare
+   against the actual installed C8 baseline when it is observed installed.
+2. Use the same controlled destination for direct Starlink, direct 5G and
+   tunnel measurements, immediately before each round. Match startup ages
+   and interleave baseline → candidate → baseline. Begin with voice-only;
+   then bounded upload alone, download alone and bidirectional TCP. Preserve
+   configured caps separately from measured RF service. A 1 Mbit/s offered
+   ceiling can expose the reported 0.33 Mbit/s upload without an uncapped
+   Speedtest; reaching that ceiling gives a lower bound, not capacity proof.
+   Record a byte budget and mobile RX+TX MB for every interval.
+3. Capture receiver bytes, actual TCP start times, sender backpressure and
+   retransmissions, voice send/receive stamps, and per-lane progress, target,
+   delivery, inflight, queue, repairs, expirations and rejected ACK counters.
+   Use phase-aligned samples: final smoothed metrics cannot explain a whole
+   transfer. Independently calibrate survivor idle voice latency and residual
+   TCP goodput before making the section 4 percentage or idle-plus-50-ms claim.
+4. Turn the observed limit into a minimal deterministic reproduction that
+   fails for its actual cause before changing policy. Compare original and
+   C8 outcomes to distinguish an existing defect from a regression. Check
+   whether the limit is the pacing/window/class budget, reverse feedback,
+   repair/expiry history or the link estimates. These are hypotheses, not
+   findings. Preserve model corrections separately from production fixes;
+   a model pass is not proof that it reproduces Linux TCP or the RF link.
+
+**Delivery criterion:** one phase-aligned field reproduction, the matching
+model failure and a causal account consistent with both. If they disagree,
+report the disagreement and input/scheduler uncertainty before proceeding.
+Do not infer a historical CPU cause from current host load. No new WAN
+impairment is needed to investigate a healthy two-link upload; any later
+single-WAN impairment retains management checks and verified removal timers.
+
+### Implementation and proof remain in stages 1, 2, 3
+
+| Stage | Remaining change | Required proof and removal |
+|---|---|---|
+| 1 — liveness/pacing | Resolve reproduced class/feedback/repair defects within the current stage, then prove 1a–1c. Released C8 already provides ACK-progress states and shared pacing. | Restate any remaining mechanism assertion as an outcome in a separate commit. Preserve loss/gap/deadline and returning-lane receipt checks. If a failed gate requires the later delay/capacity model, stop and report that dependency rather than adding a capacity heuristic here. |
+| 2 — delay/rank | Sliding transit floor with age and fresh path-delay evidence from all eligible ACK samples; hysteresis for voice ranking and coherent threshold/window inputs. | Prove 3a–3c, including primary moves rather than faster-copy delivery and protection against following a standing queue upward. Remove idle-only estimates, wander, floor tests, calibration and superseded bounds in the same estimator change. |
+| 3 — capacity/loss | Align corresponding send/receive flights, identify application/scheduler/path limits, age capacity confidence and keep loss as a measured ratio. Demand in the tunnel triggers bounded upward pushes of queued real traffic. | Prove 2a–2d and cold 0. Remove decay, remeasurement, delivery-raise/sustained/plateau rules, policing memory and cold-start special cases. Redundant pushed copies remain a measured fallback, with their MB cost reported. |
+
+Do not fold later estimators into stage 1 to obtain a pass or mark a released
+candidate as an accepted stage. `control.go` is now at 31 constant names,
+against the original 32; every further estimator must remove its replaced
+rules and reduce that inventory. Original passing-model findings remain
+findings; do not bend them into failures. ACK v1 supplies the existing local
+prototype inputs, but any required new feedback field still stops work for
+a versioned ACK and rollout design.
+
+The final acceptance remains all section 4 cases, three runs on each lab
+family with contemporaneous calibration and scheduler observations, and
+continuity/benchmark/UDP regression checks on radio and gigaradio. Field is
+the behavioral reference; an explained failed gate or disagreement still
+requires a report. Qualitative unchanged-latency/bulk comparisons retain
+paired references and uncertainty rather than an invented tolerance.
+Code/docs commits stay separate; affected design/runbook docs, the full
+non-privileged gate and `nix build` remain part of completion. Stage 4 video
+and agent-managed permanent deployment remain outside this goal.

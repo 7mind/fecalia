@@ -32,6 +32,13 @@ Prerequisites (all phases):
 
 ## Adaptive transport and autonomous VM verification
 
+- [ ] Record the running daemon's commit/time from `wanbond monitor` or the
+      dashboard, its executable hash and uptime before each measurement.
+      `wanbond version` identifies the invoked local binary; it need not be
+      the daemon. Commit time is UTC source time, not compilation time.
+      Retain `-dirty` together with the patch/hash; `unknown` does not prove
+      source identity. Builds preceding this feature provide no monitor
+      commit/time fields.
 - [ ] For `v0.0.2`, retain the C8 source/binary identity and the
       [operator release record](drafts/20261004-1105-adaptive-stage1-trial.md#operator-approved-c8-release--2026-10-04).
       Field approval does not establish adaptive stage 1 acceptance.
