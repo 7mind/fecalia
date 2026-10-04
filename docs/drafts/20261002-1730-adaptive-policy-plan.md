@@ -915,3 +915,32 @@ The goal-tool attempt to replace the earlier paused goal is rejected because
 that goal is unfinished; the available status API cannot resume or amend its
 objective. This section records the revised authorized objective without
 claiming the earlier goal complete. Work continues under this instruction.
+
+### Delay-test restatement before replacement
+
+**Observed:** tests of direct `rebaseline` state, exact congestion-threshold
+constants and direct unloaded-window field mutation are replaced with public
+transport outcomes before removing those mechanisms. Transient and persistent
+idle delay changes check which lane carries voice originals; independent
+forward/reverse delay variation checks voice loss/p99 and TCP payload service.
+All four outcome cases pass three identical runs on unchanged C8 policy.
+
+The simultaneous two-direction variation adds a stronger progression case:
+both directions deliver 65,520 B/s against an independent 867,845 B/s reference
+(75% required), despite zero voice loss and 63 ms p99. It fails identically
+three times before the replacement. This is not relabeled as a fix or weakened
+to match the baseline. A second public reproduction shows fresh ACK traffic
+retaining transit-floor evidence aged 19.956 s in both directions, again three
+identical failures against the ten-second freshness contract. These are model
+observations, not field root causes. Evidence:
+`stage2-outcome-restatement-three.txt` and
+`stage2-delay-reproductions-red.txt` under the existing evidence directory.
+
+Mapping: `TestOneUnloadedSampleDoesNotReorderLanes` becomes
+`TestUnloadedDelayChangesChooseTheBetterVoiceLane`;
+`TestThresholdIsBounded`, `TestLoadedRTTVariationDoesNotExpandWindow` and
+`TestLoadedBaseRTTDoesNotExpandWindow` become the directional cases of
+`TestDelayNoisePreservesVoiceAndBulkService`. The additional bidirectional
+service and aged-floor reproductions remain tagged `adaptivepolicy` until
+their corrections are verified. Production estimators are unchanged by this
+test commit; stage 3 mechanism restatements remain to do.
