@@ -387,6 +387,24 @@ stage 1 implementation. Stage 2 delay/rank and stage 3 capacity replacement
 remain unimplemented. The [trial record](drafts/20261004-1105-adaptive-stage1-trial.md)
 separates observed behavior, code inferences and unfinished gates.
 
+The subsequent `c8-s1-share` trial bounds the extra original-voice pacing
+allowance by its datagram size, while a sole leased lane, lower-class flight,
+or reserved copy may borrow a full datagram's slot. Its targeted voice,
+target and cold-stall checks, full non-privileged gate and Nix build pass
+before a later TCP-model correction. Its complete scenario gates still fail.
+Temporary field blackouts lose no voice on the candidates, but the baseline
+also produces a zero-loss repeat; the observed difference is not a consistent
+field gain. Native capped TCP reaches the same offered ceiling on both.
+Both production hosts were restored and independently verified.
+
+The TCP test models now discard RTT sample eligibility when retransmitting
+a segment. A failing reproduction on `f75668e` showed a timeout forgetting
+that history and inflating RTO; this is an input-model correction, not a
+production transport estimator. Baseline scenarios must be remeasured with
+it. The [trial record](drafts/20261004-1105-adaptive-stage1-trial.md)
+retains executable/source hashes, old and corrected model provenance,
+field variability, counter deltas and outstanding acceptance work.
+
 **Paths and epochs.** An unpadded challenge-protected PROBE carries a 22-byte
 capability record: `bond`, version 1, physical path ID, process Boot ID and Bind
 Open generation. Padded PMTU probes retain their original size. A logical lane

@@ -87,3 +87,101 @@ Each impairment requires live paths immediately beforehand and its own
 verified removal timer. Native bounded TCP and single-WAN voice measurements
 will be recorded here with current direct-link observations, actual payload
 receipt and mobile VLAN MB. Stages 2 and 3 remain outstanding.
+
+## Subsequent field observations
+
+**Observed:** both binaries were run temporarily through `candidate.sh`,
+with ten-minute restoration timers verified before replacement. Every
+blackout below affects only mobile egress (`end0.232`, 100% loss for about
+15 seconds). Both lanes were observed up immediately before impairment;
+each removal timer was verified before `tc`. These are one-direction
+outages, not two-direction 1a trials. Direct Starlink and 5G ICMP measurements
+precede each tunnel round. Their variation and the differing startup states
+prevent attribution of a single difference to the policy.
+
+| Voice round | Lost echoes, edge/hub, of 3,000 each | Maximum gaps, ms | RTT p99, ms | Mobile VLAN MB |
+|---|---|---|---|---|
+| Warm `c4`, mobile outage | 0 / 0 | 80 / 84 | 55 / 59 | 3.036497 |
+| Restored baseline, mobile outage | 34 / 37 | 81 / 82 | 85 / 89 | 2.761980 |
+| Fresh `c4`, mobile outage | 0 / 0 | 125 / 109 | 75 / 81 | 2.887876 |
+| Fresh baseline, mobile outage | 0 / 0 | 113 / 77 | 68 / 70 | 2.963275 |
+| Fresh `c8`, mobile outage | 0 / 0 | 93 / 73 | 67 / 63 | 2.916792 |
+
+The baseline's first loss difference did not repeat consistently. No field
+improvement is established. These observations do not provide a matched
+survivor voice-idle reference for the p99 gate or a three-run lab series.
+
+**Observed:** native TCP beside voice delivered the complete, digest-checked
+240,000-byte payload in each direction on the baseline, `c4`, `c8`, and the
+restored baseline after `c8`. Each reaches the offered 8,000 B/s ceiling;
+none measures capacity or aggregation. All these rounds delivered 3,000/3,000
+voice echoes each way. RTT p99 edge/hub was 63/60 ms on the initial working
+baseline, 72/63 on `c4`, 73/56 on `c8`, and 86/90 after restoration. The
+temporary exact-peer TCP rules were removed on both hosts after every round.
+
+The recorded stage 1 rounds total **45.135906 MB** in mobile VLAN RX+TX
+counter deltas, including helpers and the failed firewall collection.
+This is not a modem billing total or a continuous task-wide counter interval.
+The two edge binaries were gzip-compressed: 4,663,222 bytes for `c4` and
+4,695,943 for `c8`. The management transfer's provider was not established;
+those bytes must not be silently attributed to, or added to, the VLAN total.
+
+**Observed:** final restoration checks verify the deployed SHA256 on both
+hosts, empty runtime service drop-ins, inactive candidate restoration timers,
+removed task TCP rules, closed test ports, and `noqueue` on both WAN VLANs.
+No nix-config deployment was edited. Evidence:
+`stage1-c8-restoration-verified.json` and the individually named
+`field-voice-stage1-*` directories under the evidence root.
+
+## Revised pacing draft and remaining failures
+
+`c8-s1-share` was built from `2e3c261` plus `stage1-c8-source.patch`, SHA256
+`2bd5e76d960e1806b2c7515daeb4c87619f1f10c822796d4f277029f358c1bf8`.
+Its executable SHA256 is
+`c35834c70f466b55986113c3c9df45075f8189d3f31a033dd218be0a62af33a1`.
+It retains `c4`'s progress liveness and shared pacing, but limits an original
+voice datagram's extra pacing allowance to its own size when other leased
+lanes exist and no lower class occupies the lane. A sole leased lane,
+lower-class flight, or reserved copy permits one full-datagram allowance.
+
+**Observed:** unlimited allowance in `c4` failed the unchanged 75,000 B/s
+target bound. Removing the allowance entirely in that case passed the bound
+but regressed cold-stall bulk. Using only the voice size passed those checks
+but produced 76 ms against the unchanged 75 ms sole-lane voice bound.
+The final `c8` targeted run passes all three: highest target 66,496 B/s,
+cold-stall service above its existing bounds, and sole-lane voice p99 72 ms.
+The full non-privileged gate and `nix build` pass on this source before the
+subsequent TCP-model correction below.
+
+**Observed:** the complete original-input `c8` outage model still gives
+1a 4 passes/4 failures, 1b 0/4, and 1c 8/8. A diagnostic removal of the
+multi-lane voice-isolation rule raises voice p99 to 35 ms against 25 ms and
+to 73 ms against 70 ms in two existing outcome tests, while all four recovery
+cases still fail. That diagnostic was reverted; the restored production
+patch has the same SHA256 as the tested `c8` source. These results rule out
+unconditional isolation removal as the correction, not every possible
+allocation policy.
+
+## TCP-model RTT correction
+
+**Observed:** tracing radio 1a found the model TCP sender's RTO reaching
+13.334881677 seconds while its survivor still carried wire traffic. The
+model cleared its retransmission scoreboard at an RTO, then allowed an
+original send timestamp of a previously retransmitted segment to become an
+RTT sample. A separate reproduction fails on `f75668e`: the resulting
+1.20625-second RTO prevents the required retry. Removing a segment's
+RTT-eligible send timestamp at every retransmission makes it pass without
+changing production code or scenario thresholds. Both TCP models receive
+the same correction.
+
+**Document evidence:** [RFC 6298 section 3](https://www.rfc-editor.org/rfc/rfc6298.html#section-3)
+requires Karn's exclusion of retransmitted segments without timestamp
+disambiguation. This reproduction establishes that specific model defect;
+it does not prove every RTT sample in the approximation matches Linux TCP.
+
+**Observed:** one corrected-input `c8` run gives 1a 4/4, 1b 1/3, and 1c 8/8
+passes/failures. The baseline's three-run scenario series is being remeasured;
+earlier model verdicts retain their input provenance. The full non-privileged
+gate also passes after this test-infrastructure correction
+(`stage1-c8-karn-nonprivileged-gate.txt`). Stage 1 is still unaccepted;
+no stage 2 or 3 replacement has been implemented.

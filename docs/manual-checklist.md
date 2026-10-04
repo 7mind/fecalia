@@ -47,6 +47,12 @@ Prerequisites (all phases):
       An observed Linux reply route alone does not establish the provider.
       Measure direct Starlink and 5G properties immediately before tunnel
       properties, preserving raw variation and imposing field rate caps.
+      Retain both executable hashes and startup states: a warm candidate and
+      a fresh baseline do not isolate a policy difference. A capped flow
+      reaching its offered ceiling establishes only that service lower bound.
+      Report VLAN counter intervals separately from management transfers
+      whose provider is unknown. See the [stage 1 trial record](drafts/20261004-1105-adaptive-stage1-trial.md)
+      for the measured comparisons and restoration checks.
 - [ ] Record the removal timer's accuracy and actual firing time. For a
       latency-rise measurement, remove netem after receipt collection:
       deleting it while voice packets are queued can contaminate the loss

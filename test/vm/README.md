@@ -2306,3 +2306,27 @@ offering 8,000 payload B/s per direction for 30 seconds beside voice, at
 most 240,000 bytes per direction. Its TUN-only, exact-peer TCP input rule
 expires after 180 seconds and is removed in cleanup. Candidate builds still
 use `candidate.sh` and its independently verified restoration timers.
+
+Subsequent observed `c8` checks pass the full non-privileged gate and Nix
+build before a later TCP-model correction. Its source and executable hashes,
+remaining scenario failures and reverted isolation experiment are in the
+[trial record](../../docs/drafts/20261004-1105-adaptive-stage1-trial.md).
+Candidates delivered all voice echoes in three individually recorded mobile
+egress blackouts across two different binaries. The deployed baseline lost
+34/37 echoes in one round and zero in its repeat; this is not consistent
+evidence of a field gain or three repetitions of one candidate. Native TCP
+on both builds reaches the same 8,000 B/s offered ceiling. All runtime
+overrides, task firewall rules and WAN qdiscs were restored and verified.
+The recorded mobile VLAN deltas total 45.135906 MB including collection;
+management binary transfers are separately reported, with unknown provider.
+
+A reproduction subsequently found the TCP models forgetting Karn history
+when their retransmission scoreboard resets at an RTO. The exact test fails
+on `f75668e`, delaying a required retry after an ambiguous RTT sample; it
+passes when retransmission removes the original's RTT sample timestamp.
+Both models are corrected without changing policy or scenario thresholds.
+The original-controller three-run model series is being repeated with these
+inputs. Earlier measured verdicts are historical evidence from the previous
+model, not proof under the corrected inputs. No candidate lab series or
+existing continuity/benchmark/UDP acceptance is established by these field
+observations; stages 1–3 remain unaccepted.
