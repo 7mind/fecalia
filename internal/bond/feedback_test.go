@@ -1,6 +1,7 @@
 package bond_test
 
 import (
+	"bytes"
 	"container/heap"
 	"encoding/binary"
 	"strings"
@@ -245,41 +246,71 @@ func TestWindowDeliveryDrivesPacingWithoutQueuedData(t *testing.T) {
 
 func TestJitteredPathRepairsBeforePacketExpires(t *testing.T) {
 	start := time.Unix(100, 0)
-	a, b := bond.New(bond.Epoch{Boot: 1, Generation: 1}), bond.New(bond.Epoch{Boot: 2, Generation: 1})
-	a.SetRemote(b.Epoch(), true)
-	b.SetRemote(a.Epoch(), true)
-	for i := 0; i < 30; i++ {
-		now := start.Add(time.Duration(i) * 250 * time.Millisecond)
-		a.Path(0, 0, 80*time.Millisecond, now)
-		b.Path(0, 0, 80*time.Millisecond, now)
-		if err := a.Enqueue(make([]byte, 1200), bond.PacketMetadata{}, now); err != nil {
-			t.Fatal(err)
+	peers := [2]*bond.Transport{bond.New(bond.Epoch{Boot: 1, Generation: 1}), bond.New(bond.Epoch{Boot: 2, Generation: 1})}
+	for side, peer := range peers {
+		peer.SetRemote(peers[1-side].Epoch(), true)
+	}
+	queue := &events{}
+	heap.Init(queue)
+	payload := bytes.Repeat([]byte{0x73}, 1200)
+	var original bond.PathID
+	dropped, repaired, delivered := false, false, 0
+	for tick := 0; tick <= 7825; tick++ {
+		now := start.Add(time.Duration(tick) * time.Millisecond)
+		for _, peer := range peers {
+			if err := peer.Path(0, 0, 80*time.Millisecond, now); err != nil {
+				t.Fatal(err)
+			}
+			if tick >= 7500 {
+				if err := peer.Path(1, 1, 150*time.Millisecond, now); err != nil {
+					t.Fatal(err)
+				}
+			}
 		}
-		rtt := time.Duration(60+40*(i%2)) * time.Millisecond
-		for _, tx := range poll(a, now) {
-			if _, err := b.Receive(tx.Path, tx.Frame, now.Add(rtt/2)); err != nil {
+		if tick < 7500 && tick%250 == 0 {
+			if err := peers[0].Enqueue(make([]byte, 1200), bond.PacketMetadata{}, now); err != nil {
 				t.Fatal(err)
 			}
 		}
-		for _, tx := range poll(b, now.Add(rtt/2+30*time.Millisecond)) {
-			if _, err := a.Receive(tx.Path, tx.Frame, now.Add(rtt+30*time.Millisecond)); err != nil {
+		if tick == 7500 {
+			if err := peers[0].Enqueue(payload, bond.PacketMetadata{}, now); err != nil {
 				t.Fatal(err)
 			}
 		}
-	}
-	now := start.Add(30 * 250 * time.Millisecond)
-	a.Path(0, 0, 80*time.Millisecond, now)
-	a.Path(1, 1, 150*time.Millisecond, now)
-	if err := a.Enqueue(make([]byte, 1200), bond.PacketMetadata{}, now); err != nil {
-		t.Fatal(err)
-	}
-	poll(a, now) // Drop the first attempt.
-	for _, tx := range poll(a, now.Add(225*time.Millisecond)) {
-		if tx.Path == 1 && tx.Frame.ControlType == bond.DataType && len(tx.Frame.Payload) > 1000 {
-			return
+		for side, peer := range peers {
+			for _, tx := range poll(peer, now) {
+				if side == 0 && bytes.HasSuffix(tx.Frame.Payload, payload) {
+					if !dropped {
+						original, dropped = tx.Path, true
+						continue
+					}
+					if tx.Path != original && tick <= 7750 {
+						repaired = true
+					}
+				}
+				delay := time.Duration(30+20*(tick/250%2)) * time.Millisecond
+				if tx.Path == 1 {
+					delay = 75 * time.Millisecond
+				}
+				heap.Push(queue, event{now.Add(delay), 1 - side, tx.Path, tx.Frame})
+			}
+		}
+		for queue.Len() > 0 && !(*queue)[0].at.After(now) {
+			e := heap.Pop(queue).(event)
+			got, err := peers[e.to].Receive(e.path, e.frame, now)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, packet := range got {
+				if e.to == 1 && bytes.Equal(packet.Payload, payload) {
+					delivered++
+				}
+			}
 		}
 	}
-	t.Fatalf("lost packet received no repair before its 250 ms lifetime: %+v", a.Snapshot(now).Paths)
+	if !dropped || !repaired || delivered != 1 {
+		t.Fatalf("isolated loss: first attempt dropped %t, alternate repair within 250ms %t, deliveries by 325ms %d", dropped, repaired, delivered)
+	}
 }
 
 func TestBusyJitterDoesNotCollapsePacingRate(t *testing.T) {

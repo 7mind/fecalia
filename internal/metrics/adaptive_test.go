@@ -107,8 +107,13 @@ func TestRealtimeOriginalsExcludeCopiesAndTCPACKs(t *testing.T) {
 	start := time.Unix(100, 0)
 	p := bond.New(bond.Epoch{Boot: 1, Generation: 1})
 	p.SetRemote(bond.Epoch{Boot: 2, Generation: 1}, true)
+	peer := bond.New(bond.Epoch{Boot: 2, Generation: 1})
+	peer.SetRemote(p.Epoch(), true)
 	for lane := range 2 {
 		if err := p.Path(bond.PathID(lane), bond.PathID(lane), time.Duration(40+40*lane)*time.Millisecond, start); err != nil {
+			t.Fatal(err)
+		}
+		if err := peer.Path(bond.PathID(lane), bond.PathID(lane), time.Duration(40+40*lane)*time.Millisecond, start); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -118,6 +123,7 @@ func TestRealtimeOriginalsExcludeCopiesAndTCPACKs(t *testing.T) {
 	var repairs uint64
 	bulkTransmissions := 0
 	tcpSent := false
+	voiceDropped, bulkDropped := false, false
 	for tick := 0; tick < 400; tick++ {
 		now := start.Add(time.Duration(tick) * time.Millisecond)
 		if tick == 70 {
@@ -146,6 +152,29 @@ func TestRealtimeOriginalsExcludeCopiesAndTCPACKs(t *testing.T) {
 			}
 			if sent.Frame.ControlType == bond.DataType && len(sent.Frame.Payload) == bond.Overhead-frame.ControlOverhead+1280 {
 				bulkTransmissions++
+				if !bulkDropped {
+					bulkDropped = true
+					continue
+				}
+			}
+			if sent.Frame.ControlType == bond.DataType && len(sent.Frame.Payload) == bond.Overhead-frame.ControlOverhead+224 && !voiceDropped {
+				voiceDropped = true
+				continue
+			}
+			if _, err := peer.Receive(sent.Path, sent.Frame, now); err != nil {
+				t.Fatal(err)
+			}
+		}
+		acks, err := peer.Poll(now)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, ack := range acks {
+			if ack.Path == 0 && tick >= 100 {
+				continue
+			}
+			if _, err := p.Receive(ack.Path, ack.Frame, now); err != nil {
+				t.Fatal(err)
 			}
 		}
 	}
