@@ -70,6 +70,7 @@ func (p *policyTCP) offer(now time.Time, send func(uint64)) {
 		s.backoff = min(s.backoff*2, 64)
 		s.lastProgress = now
 		clear(s.retransmitted)
+		delete(s.sentAt, s.unacked)
 		s.retransmitted[s.unacked] = true
 		send(s.unacked)
 	}
@@ -126,6 +127,7 @@ func (p *policyTCP) acknowledge(payload []byte, now time.Time, send func(uint64)
 			s.reduce(now)
 			s.cwnd, s.recovering, s.recover = s.ssthresh, true, s.next
 		}
+		delete(s.sentAt, seq)
 		s.retransmitted[seq] = true
 		send(seq)
 	}
@@ -160,6 +162,34 @@ func (p *policyTCP) receive(seq uint64) (int, []byte) {
 
 func (p *policyTCP) metadata(side int) bond.PacketMetadata {
 	return bond.PacketMetadata{Flow: bond.FlowID{4, 6, byte(3 + side)}, ACK: bond.TCPACK{Eligible: len(p.ranges) == 0, Sequence: 1, Acknowledgement: uint32(p.next), Window: 4096}}
+}
+
+func TestAdaptiveModelRTTDoesNotForgetRetransmittedSegments(t *testing.T) {
+	start := time.Unix(100, 0)
+	sender, receiver := newPolicyTCP(), newPolicyTCP()
+	var sent []uint64
+	transmit := func(seq uint64) { sent = append(sent, seq) }
+	sender.offer(start, transmit)
+	initiallySent := len(sent)
+	acknowledge := func(seq uint64, elapsed time.Duration) {
+		_, ack := receiver.receive(seq)
+		sender.acknowledge(ack, start.Add(elapsed), transmit)
+	}
+	acknowledge(1, 100*time.Millisecond)
+	for _, seq := range []uint64{5, 6, 7} {
+		acknowledge(seq, 100*time.Millisecond)
+	}
+	if !slices.Contains(sent[initiallySent:], uint64(3)) {
+		t.Fatal("fixture did not retransmit segment 3 before its timeout")
+	}
+	sender.offer(start.Add(800*time.Millisecond), transmit)
+	acknowledge(3, 900*time.Millisecond)
+	acknowledge(2, 950*time.Millisecond)
+	sent = nil
+	sender.offer(start.Add(1600*time.Millisecond), transmit)
+	if !slices.Contains(sent, uint64(4)) {
+		t.Fatalf("segment 4 was not retried: ambiguous ACK inflated RTO to %s; transmissions %v", sender.sender.rto(), sent)
+	}
 }
 
 func TestAdaptiveModelPreservesSACKReports(t *testing.T) {

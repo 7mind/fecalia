@@ -143,10 +143,11 @@ type tcpSender struct {
 	srtt, rttVar          time.Duration
 	lastProgress          time.Time
 	backoff               int
-	sentAt                map[uint64]time.Time
-	retransmitted         map[uint64]bool
-	sacked                map[uint64]bool
-	highestSacked         uint64
+	// sentAt keeps RTT-eligible originals; retransmission removes the sample.
+	sentAt        map[uint64]time.Time
+	retransmitted map[uint64]bool
+	sacked        map[uint64]bool
+	highestSacked uint64
 }
 
 func (s *tcpSender) reduce(now time.Time) {
@@ -291,6 +292,7 @@ func (m tcpTransfer) run(t *testing.T) tcpOutcome {
 				s.backoff = min(s.backoff*2, 64)
 				s.lastProgress = now
 				clear(s.retransmitted)
+				delete(s.sentAt, s.unacked)
 				s.retransmitted[s.unacked] = true
 				send(now, s.unacked)
 				outcome.timeouts++
@@ -400,6 +402,7 @@ func (m tcpTransfer) run(t *testing.T) tcpOutcome {
 						s.cwnd = s.ssthresh
 						s.recovering, s.recover = true, s.next
 					}
+					delete(s.sentAt, seq)
 					s.retransmitted[seq] = true
 					send(now, seq)
 					outcome.retransmits++
