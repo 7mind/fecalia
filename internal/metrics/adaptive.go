@@ -54,8 +54,18 @@ func newAdaptiveCollector(source AdaptiveSource) *adaptiveCollector {
 		makeMetric("transit_floor_age_seconds", "Age of the evidence that set the most recently sampled transit floor.", prometheus.GaugeValue, func(p bond.PathStats) float64 { return p.TransitFloorAge.Seconds() }),
 		makeMetric("path_delay_seconds", "Stage 0 unloaded round trip used as the path-delay input; refreshed only while idle or calibrating.", prometheus.GaugeValue, func(p bond.PathStats) float64 { return p.PathDelay.Seconds() }),
 		makeMetric("rank_seconds", "Latency score used to rank lanes for real-time traffic.", prometheus.GaugeValue, func(p bond.PathStats) float64 { return p.Rank.Seconds() }),
-		makeMetric("liveness_state", "Stage 0 liveness: 0 dead, 1 live. Suspect is introduced by stage 1.", prometheus.GaugeValue, func(p bond.PathStats) float64 {
-			if p.Liveness == "live" {
+		makeMetric("liveness_state", "ACK-progress liveness: 0 dead, 1 live, 2 suspect. Suspect allows interactive traffic and forces alternate real-time copies.", prometheus.GaugeValue, func(p bond.PathStats) float64 {
+			switch p.Liveness {
+			case bond.LaneLive:
+				return 1
+			case bond.LaneSuspect:
+				return 2
+			}
+			return 0
+		}),
+		makeMetric("liveness_age_seconds", "Age of the latest physical ACK progress; zero while that evidence is unknown.", prometheus.GaugeValue, func(p bond.PathStats) float64 { return p.LivenessAge.Seconds() }),
+		makeMetric("ack_progress_known", "Lane has received an authenticated physical ACK progress report in this peer epoch.", prometheus.GaugeValue, func(p bond.PathStats) float64 {
+			if p.ACKProgressKnown {
 				return 1
 			}
 			return 0
@@ -99,7 +109,7 @@ func newAdaptiveCollector(source AdaptiveSource) *adaptiveCollector {
 		makeMetric("pulse_wins_total", "Probes that drew no congestion signal and raised the estimate.", prometheus.CounterValue, func(p bond.PathStats) float64 { return float64(p.Decisions.PulseWins) }),
 		makeMetric("pulse_losses_total", "Probes that found the limit.", prometheus.CounterValue, func(p bond.PathStats) float64 { return float64(p.Decisions.PulseLosses) }),
 		makeMetric("rediscoveries_total", "Returns to discovery after consecutive probes without a congestion signal.", prometheus.CounterValue, func(p bond.PathStats) float64 { return float64(p.Decisions.Rediscoveries) }),
-		makeMetric("up", "Authenticated lane lease is current and data acknowledgements have not stalled.", prometheus.GaugeValue, func(p bond.PathStats) float64 {
+		makeMetric("up", "Authenticated lane lease is current and ACK-progress liveness allows interactive traffic; bulk additionally requires live state.", prometheus.GaugeValue, func(p bond.PathStats) float64 {
 			if p.Up {
 				return 1
 			}

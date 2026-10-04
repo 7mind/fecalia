@@ -104,3 +104,18 @@ func TestAdaptivePolicy1SuspectCopiesBeforeTheRepairTimer(t *testing.T) {
 		t.Errorf("receiver obtained %d copies by twice the peer's ACK cadence plus alternate transit, want one", delivered)
 	}
 }
+
+func TestAdaptivePolicy1HelloDoesNotInventACKProgress(t *testing.T) {
+	start := time.Unix(100, 0)
+	peer := bond.New(bond.Epoch{Boot: 1, Generation: 1})
+	peer.SetRemote(bond.Epoch{Boot: 2, Generation: 1}, true)
+	for second := 0; second <= 5; second++ {
+		now := start.Add(time.Duration(second) * time.Second)
+		if err := peer.Path(0, 0, 40*time.Millisecond, now); err != nil {
+			t.Fatal(err)
+		}
+		if age := peer.Snapshot(now).Paths[0].LivenessAge; age != 0 {
+			t.Fatalf("hello without any physical progress report has liveness evidence age %s, want zero for unknown evidence", age)
+		}
+	}
+}

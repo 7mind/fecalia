@@ -649,7 +649,7 @@ func TestBuildSnapshotLanesMirrorTransport(t *testing.T) {
 				QueueDrops: 9, AdmissionDrops: 1, AQMDrops: 2, InteractiveQueueDrops: 3, InteractiveQueued: 4, Expired: 5, Duplicates: 6, CoalescedACKs: 7,
 				Paths: []bond.PathStats{{
 					Path: 256, Capacity: 130000, Rate: 125000, SendRate: 100000, DeliveryRate: 90000,
-					TransitFloor: -10 * time.Millisecond, TransitFloorKnown: true, TransitFloorAge: 3 * time.Second, PathDelay: 50 * time.Millisecond, Rank: 70 * time.Millisecond, Liveness: "live",
+					TransitFloor: -10 * time.Millisecond, TransitFloorKnown: true, TransitFloorAge: 3 * time.Second, PathDelay: 50 * time.Millisecond, Rank: 70 * time.Millisecond, Liveness: "live", LivenessAge: 2 * time.Second, ACKProgressKnown: true,
 					RTT: 60 * time.Millisecond, QueueDelay: 37 * time.Millisecond, Threshold: 30 * time.Millisecond,
 					InFlight: 5000, Window: 30000, Sent: 11, ACKed: 10, Retransmits: 12, Up: true, Discovering: true,
 					Decisions: bond.Decisions{DelaySignals: 21, LossSignals: 22, DiscoveryCongested: 23, DiscoveryPlateau: 24,
@@ -671,6 +671,7 @@ func TestBuildSnapshotLanesMirrorTransport(t *testing.T) {
 	}
 	wantLane := map[string]any{
 		"transitFloorSeconds": -0.01, "transitFloorKnown": true, "transitFloorAgeSeconds": float64(3), "pathDelaySeconds": 0.05, "rankSeconds": 0.07, "liveness": "live",
+		"livenessAgeSeconds": float64(2), "ackProgressKnown": true,
 		"peer": "hub", "path": "5g", "remotePath": float64(0), "lane": float64(256), "up": true, "discovering": true,
 		"targetBps": float64(1000000), "sendBps": float64(800000), "deliveryBps": float64(720000), "capacityBps": float64(1040000),
 		"rttSeconds": 0.06, "queueDelaySeconds": 0.037, "thresholdSeconds": 0.03,

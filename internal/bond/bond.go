@@ -49,7 +49,6 @@ const (
 	priorityLead          = 5 * time.Millisecond
 	minimumClassShare     = 0.05
 	smallClassShare       = 0.5
-	realtimeLane          = 0.5
 	reservationHeadroom   = 1.1
 	ipProtocolTCP         = 6
 	pathLease             = time.Second
@@ -115,6 +114,8 @@ type PathStats struct {
 	PathDelay            time.Duration
 	Rank                 time.Duration
 	Liveness             LaneLiveness
+	LivenessAge          time.Duration
+	ACKProgressKnown     bool
 	Capacity             float64 // the demonstrated capacity the target holds below; 0 while discovering
 	Rate                 float64
 	SendRate             float64
@@ -146,8 +147,9 @@ type PathStats struct {
 type LaneLiveness string
 
 const (
-	LaneLive LaneLiveness = "live"
-	LaneDead LaneLiveness = "dead"
+	LaneLive    LaneLiveness = "live"
+	LaneSuspect LaneLiveness = "suspect"
+	LaneDead    LaneLiveness = "dead"
 )
 
 // Decisions counts what the lane's control concluded, so that a rate held low
@@ -221,6 +223,8 @@ type transitBaseline struct {
 }
 
 type lane struct {
+	model                linkModel
+	feedbackSent         rateMeter
 	id                   PathID
 	remoteID             PathID
 	lease                time.Time
@@ -278,7 +282,6 @@ type lane struct {
 	ackRevision        uint64
 	receivedHigh       uint64 // the highest lane sequence the peer reported
 	arrived            arrived
-	progressAt         time.Time
 	stall              stall
 	ackReceipts        receiptWindow
 	ackedBytes         uint64
@@ -305,7 +308,6 @@ type lane struct {
 	floorSampling      bool
 	floorTested        time.Time
 	floorTestEvery     time.Duration
-	stalled            bool
 	droppedAt          time.Time // when the path last showed material loss
 	lastTransmit       time.Time
 	lastPayload        time.Time
@@ -425,11 +427,11 @@ func (t *Transport) SetRemote(epoch Epoch, adopted bool) bool {
 		p.roundEnd, p.roundDone, p.roundLossy = 0, false, false
 		p.lastACK, p.ackGap = time.Time{}, 0
 		p.nextSend = time.Time{}
-		p.stalled = false
+		p.feedbackSent = rateMeter{}
 		p.losses, p.lossMark, p.lossMarked = lossLedger{}, 0, false
 		p.reordering, p.newestConfirmed = peak{bucket: reorderMemory}, time.Time{}
 		p.ackRevision, p.receivedHigh, p.arrived = 0, 0, arrived{}
-		p.progressAt, p.stall = time.Time{}, stall{}
+		p.model, p.stall = linkModel{}, stall{}
 		p.ackReceipts = receiptWindow{}
 		p.ackedBytes, p.ackedElapsed = 0, 0
 		clear(p.transitBases[:])
@@ -727,7 +729,7 @@ func (p *lane) window() int {
 func (t *Transport) PacingRate(now time.Time) float64 {
 	var rate float64
 	for _, p := range t.paths {
-		if p.up(now) && !p.stalled {
+		if p.eligible(classRealtime, now) {
 			rate += p.rate
 		}
 	}
@@ -785,7 +787,7 @@ func (t *Transport) transmit(p *packet, path *lane, now time.Time) Transmission 
 		}
 		t.pendingOrder = append(t.pendingOrder, p)
 	}
-	path.seq++
+	path.beginAttempt(now)
 	if path.firstSent.IsZero() {
 		path.firstSent = now
 	}
@@ -796,7 +798,7 @@ func (t *Transport) transmit(p *packet, path *lane, now time.Time) Transmission 
 	if p.interactive {
 		path.interactiveSent += uint64(size)
 	}
-	path.nextSend = maxTime(path.nextSend, now.Add(-2*time.Millisecond)).Add(time.Duration(float64(size) / path.rate * float64(time.Second)))
+	path.pace(now, size)
 	if allowed := path.allowed(p.class); allowed > 0 {
 		path.classNext[p.class] = maxTime(path.classNext[p.class], now.Add(-2*time.Millisecond)).Add(time.Duration(float64(size) / allowed * float64(time.Second)))
 	}
@@ -809,6 +811,11 @@ func (t *Transport) transmit(p *packet, path *lane, now time.Time) Transmission 
 	path.lastPayload = now
 	t.pending[p.seq] = p
 	return Transmission{path.id, dataFrame(t.epoch, t.remote, path.id, path.seq, p.seq, p.order, p.payload)}
+}
+
+func (p *lane) pace(now time.Time, bytes int) {
+	rate := p.rate + p.feedbackSent.rate(now)
+	p.nextSend = maxTime(p.nextSend, now.Add(-2*time.Millisecond)).Add(time.Duration(float64(bytes) / rate * float64(time.Second)))
 }
 
 func (t *Transport) Poll(now time.Time) ([]Transmission, error) {
@@ -842,6 +849,8 @@ func (t *Transport) Poll(now time.Time) ([]Transmission, error) {
 			}
 			a := acknowledgement{observed: t.remote, high: r.receipts.high, mask: r.receipts.mask[0], bytes: r.bytes, elapsed: uint64(r.highAt.Sub(r.start)), delay: uint64(now.Sub(r.highAt)), receivedHigh: high, receivedMask: t.received.bitmap(high)}
 			out = append(out, Transmission{r.path, ackFrame(t.epoch, r.remoteLane, r.revision, a)})
+			path.feedbackSent.add(now, ackWireBytes)
+			path.pace(now, ackWireBytes)
 			t.unreported.forgetThrough(high)
 			r.pending = 0
 			r.ackAt = now
@@ -860,13 +869,6 @@ func (t *Transport) Poll(now time.Time) ([]Transmission, error) {
 				// acknowledgement cadence arrives after the timeout as often
 				// as a loss does. Loss is measured from the receiver's
 				// cumulative byte count (lossLedger).
-				if path.lastACK.Before(a.sent) {
-					path.stalled = true
-					if a.packet != nil && now.Sub(path.lastAdjust) >= deliveryInterval {
-						path.rate = math.Max(minimumRate, path.rate*0.7)
-						path.lastAdjust = now
-					}
-				}
 				path.release(a)
 				a.released = true
 				path.attempts[seq] = a
@@ -879,11 +881,11 @@ func (t *Transport) Poll(now time.Time) ([]Transmission, error) {
 			}
 		}
 		pingInterval := 200 * time.Millisecond
-		if path.stalled {
+		if path.liveness(now) == LaneDead {
 			pingInterval = 50 * time.Millisecond
 		}
 		if path.up(now) && now.Sub(path.lastTransmit) >= pingInterval {
-			path.seq++
+			path.beginAttempt(now)
 			path.lastTransmit = now
 			if path.firstSent.IsZero() {
 				path.firstSent = now
@@ -891,9 +893,11 @@ func (t *Transport) Poll(now time.Time) ([]Transmission, error) {
 			path.attempts[path.seq] = attempt{sent: now, bytes: wireOverhead, through: path.sent + wireOverhead}
 			path.inflight += wireOverhead
 			path.sent += wireOverhead
+			path.pace(now, wireOverhead)
 			out = append(out, Transmission{path.id, dataFrame(t.epoch, t.remote, path.id, path.seq, 0, 0, nil)})
 		}
 	}
+	t.reserve(now)
 	retained := t.pendingOrder[:0]
 	for _, p := range t.pendingOrder {
 		if p.acked {
@@ -911,15 +915,9 @@ func (t *Transport) Poll(now time.Time) ([]Transmission, error) {
 		if previous != nil {
 			rto = previous.rto()
 		}
-		// A long feedback tail must not consume the entire lifetime of a small
-		// datagram. One earlier cross-path copy shares the replication budget.
 		size := len(p.payload) + wireOverhead
-		if p.class == classRealtime && p.attempts == 1 && previous != nil &&
-			!previous.lastACK.After(p.lastSent) &&
-			now.Sub(p.lastSent) >= max(minimumRTO, previous.baseRTT+previous.peerACKInterval()) &&
-			t.redundancyTokens >= float64(size) {
+		if p.class == classRealtime && p.attempts == 1 && previous != nil && previous.liveness(now) != LaneLive {
 			if path := t.chooseLane(now, p.class, size, p.lastPath, true); path != nil {
-				t.redundancyTokens -= float64(size)
 				out = append(out, t.transmit(p, path, now))
 				continue
 			}
@@ -945,7 +943,7 @@ func (t *Transport) Poll(now time.Time) ([]Transmission, error) {
 // signal congestion that does not exist.
 func (t *Transport) discovering(now time.Time) bool {
 	for _, p := range t.paths {
-		if p.up(now) && !p.stalled && p.startup {
+		if p.liveness(now) == LaneLive && p.startup {
 			return true
 		}
 	}
@@ -955,7 +953,7 @@ func (t *Transport) discovering(now time.Time) bool {
 func (t *Transport) slowestRoundTrip(now time.Time) time.Duration {
 	var slowest time.Duration
 	for _, p := range t.paths {
-		if p.up(now) && !p.stalled {
+		if p.liveness(now) == LaneLive {
 			slowest = max(slowest, p.rtt)
 		}
 	}
@@ -1080,9 +1078,14 @@ func (t *Transport) receive(path PathID, f frame.Control, now time.Time) ([]Deli
 }
 
 func (t *Transport) ack(p *lane, a acknowledgement, now time.Time, fresh bool) {
-	silence, progressed := now.Sub(p.progressAt), a.high > p.receivedHigh
+	silence := p.model.progressAge(now)
+	progressed := fresh && (a.high > p.receivedHigh || a.bytes > p.ackedBytes)
+	p.receivedHigh = max(p.receivedHigh, a.high)
 	if progressed {
-		p.receivedHigh, p.progressAt = a.high, now
+		p.model.progressAt = now
+		if a.high > p.stall.through {
+			p.stall = stall{}
+		}
 	}
 	backlogged := t.queued() > 0 || p.inflight >= p.window()/2
 	var sample time.Duration
@@ -1122,7 +1125,6 @@ func (t *Transport) ack(p *lane, a acknowledgement, now time.Time, fresh bool) {
 				highSent, through, counted = sent.sent, sent.through, true
 			}
 			if fresh && seq == a.high && a.delay <= uint64(now.Sub(sent.sent)) {
-				p.stalled = false
 				sample = now.Sub(sent.sent) - time.Duration(a.delay)
 				transit := time.Duration(a.elapsed) - sent.sent.Sub(p.firstSent)
 				if sent.packet == nil && now.Sub(p.lastPayload) >= feedbackHorizon {
@@ -1214,7 +1216,7 @@ func (t *Transport) ack(p *lane, a acknowledgement, now time.Time, fresh bool) {
 	}
 	p.newestConfirmed = newestConfirmed
 	if progressed && silence >= stallSilence && silence < pathLease && physicalFeedback >= silence {
-		p.stallEnded(now, silence)
+		p.stallEnded(silence)
 	}
 	if counted {
 		p.losses.record(now, a.high, through, a.bytes, p.lateBelow(a, highSent, now))
@@ -1413,20 +1415,18 @@ func (t *Transport) Snapshot(now time.Time) Snapshot {
 		if baseline.known {
 			age = max(0, now.Sub(baseline.observed))
 		}
-		liveness := LaneLive
-		if !p.up(now) || p.stalled {
-			liveness = LaneDead
-		}
+		liveness := p.liveness(now)
 		s.Paths = append(s.Paths, PathStats{
 			TransitFloor: baseline.delay, TransitFloorKnown: baseline.known, TransitFloorAge: age,
 			PathDelay: p.idleRTT, Rank: p.latency(), Liveness: liveness,
+			LivenessAge: p.model.progressAge(now), ACKProgressKnown: !p.model.progressAt.IsZero(),
 			Path: p.id, Capacity: p.control.capacity, Rate: p.rate, SendRate: p.sendRate, DeliveryRate: p.deliveryRate,
 			RTT: p.rtt, RTTVariation: p.rttVariation, IdleRTTVariation: p.idleRTTVariation,
 			IdleForwardVariation: p.idleForwardVariation,
 			FeedbackRTT:          p.feedbackRTT, FeedbackRTTVariation: p.feedbackRTTVariation,
 			BaseRTT: p.baseRTT, QueueDelay: p.queueDelay,
 			InFlight: p.inflight, Window: p.window(), Sent: p.sent, ACKed: p.acked, Retransmits: p.retries, InteractiveSent: p.interactiveSent, RealtimeOriginals: p.realtimeOriginals, BulkOriginals: p.bulkOriginals, BulkReceived: p.bulkReceived,
-			Up:          p.up(now) && !p.stalled,
+			Up:          p.eligible(classRealtime, now),
 			Discovering: p.startup,
 			Threshold:   p.congestionThreshold(),
 			Decisions:   p.decisions,

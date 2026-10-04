@@ -42,8 +42,6 @@ const (
 	// test of the transit floor pauses bulk for as long: the delay is
 	// measured a round trip late, and what built the queue ran on.
 	drainQueues = 2
-	// maxStallClear bounds how long delay is put down to a stall.
-	maxStallClear = time.Second
 )
 
 // control holds a lane's target between discovery runs.
@@ -167,27 +165,19 @@ func (p *lane) observeWander(delay time.Duration) {
 
 // stall is the last time the lane delivered nothing for a while and then what
 // it held: a stall of the path, not a queue this lane built. What was sent
-// meanwhile waits behind it. That backlog is as long as the stall when it
-// ends and leaves at the draining target in several times the stall's
-// length; delay within what is left of it says nothing about capacity.
+// meanwhile waits behind it. Receipts beyond that flight clear the exception:
+// a fixed timeout cannot establish that the path has drained the flight.
 type stall struct {
-	length           time.Duration
-	ended, clearedBy time.Time
+	length  time.Duration
+	through uint64
 }
 
-func (p *lane) stallEnded(now time.Time, silence time.Duration) {
-	clear := min(maxStallClear, time.Duration(float64(silence)/(1-capacityDrop))+2*p.rtt)
-	p.stall = stall{length: silence, ended: now, clearedBy: now.Add(clear)}
+func (p *lane) stallEnded(silence time.Duration) {
+	p.stall = stall{length: silence, through: p.seq}
 }
 
-// explains reports whether the stall's backlog accounts for the delay: a
-// queue this lane builds grows or stands, the backlog only shrinks.
-func (s *stall) explains(now time.Time, delay, threshold time.Duration) bool {
-	if !now.Before(s.clearedBy) {
-		return false
-	}
-	left := time.Duration(float64(s.length) * float64(s.clearedBy.Sub(now)) / float64(s.clearedBy.Sub(s.ended)))
-	return delay <= left+threshold
+func (s *stall) explains(delay, threshold time.Duration) bool {
+	return s.through != 0 && delay <= s.length+threshold
 }
 
 // stalledSignal answers a delay signal that follows a stall. The estimate
@@ -231,7 +221,7 @@ func (p *lane) adjust(now time.Time, lost, delayed, sampled, laneLimited, realti
 	// loss; only a round's material loss is congestion.
 	lost = lost && p.roundLossy && p.deliveryRate > 0
 	switch {
-	case delayed && !lost && p.stall.explains(now, p.signalDelay, p.congestionThreshold()):
+	case delayed && !lost && p.stall.explains(p.signalDelay, p.congestionThreshold()):
 		p.stalledSignal(now)
 	case lost || delayed:
 		if delayed {

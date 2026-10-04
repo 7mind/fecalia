@@ -120,7 +120,7 @@ func (t *Transport) reserve(now time.Time) {
 	bulkWaiting := len(t.queue) > 0
 	for _, p := range t.paths {
 		p.reserved, p.guaranteed, p.shared, p.copies, p.bulkElsewhere = [classBulk]float64{}, [classes]bool{}, bulkWaiting, 0, false
-		if p.up(now) && !p.stalled {
+		if p.eligible(classRealtime, now) {
 			lanes = append(lanes, p)
 		}
 	}
@@ -134,14 +134,20 @@ func (t *Transport) reserve(now time.Time) {
 	}
 	for c := classRealtime; c < classBulk; c++ {
 		// The lane with the most room left guarantees the next class.
-		guarantor := 0
-		for i := range lanes {
-			if free[i]-t.assignable(now, c, free, i) > free[guarantor]-t.assignable(now, c, free, guarantor) {
+		guarantor := -1
+		for i, p := range lanes {
+			if !p.eligible(c+1, now) {
+				continue
+			}
+			if guarantor < 0 || free[i]-t.assignable(now, c, lanes, free, i) > free[guarantor]-t.assignable(now, c, lanes, free, guarantor) {
 				guarantor = i
 			}
 		}
 		need := reservationHeadroom * t.demand[c].rate(now)
 		for i, p := range lanes {
+			if !p.eligible(c, now) {
+				continue
+			}
 			room := free[i]
 			if i == guarantor {
 				room -= float64(classBulk-c) * minimumClassShare * p.rate
@@ -153,12 +159,14 @@ func (t *Transport) reserve(now time.Time) {
 			need -= p.reserved[c]
 			free[i] -= p.reserved[c]
 		}
-		lanes[guarantor].guaranteed[c+1] = true
+		if guarantor >= 0 {
+			lanes[guarantor].guaranteed[c+1] = true
+		}
 		if c == classRealtime {
 			t.reserveCopies(now, lanes, free)
 			quiet := 0
 			for _, p := range lanes {
-				if p.reserved[classRealtime] == 0 {
+				if p.eligible(classBulk, now) && p.reserved[classRealtime] == 0 {
 					quiet++
 				}
 			}
@@ -175,26 +183,35 @@ func (t *Transport) reserve(now time.Time) {
 // lane's window and pacing slots, and the copy, which is sent with its
 // original or not at all, finds no room.
 func (t *Transport) reserveCopies(now time.Time, lanes []*lane, free []float64) {
-	var originals float64
+	var originals, suspect float64
 	for _, p := range lanes {
 		originals += p.reserved[classRealtime]
+		if p.liveness(now) == LaneSuspect {
+			suspect += p.reserved[classRealtime]
+		}
 	}
 	if originals == 0 || len(lanes) < 2 {
 		return
 	}
 	need := min(t.copyBudget(now), originals)
 	for i, p := range lanes {
-		p.copies = min(free[i], need*(1-p.reserved[classRealtime]/originals))
+		forced := suspect
+		if p.liveness(now) == LaneSuspect {
+			forced -= p.reserved[classRealtime]
+		}
+		p.copies = min(free[i], max(forced, need*(1-p.reserved[classRealtime]/originals)))
 		free[i] -= p.copies
 	}
 }
 
 // assignable estimates what the class would reserve on a lane if demand were
 // assigned in round-trip order without a guarantee.
-func (t *Transport) assignable(now time.Time, c class, free []float64, lane int) float64 {
+func (t *Transport) assignable(now time.Time, c class, lanes []*lane, free []float64, lane int) float64 {
 	need := reservationHeadroom * t.demand[c].rate(now)
 	for i := 0; i < lane; i++ {
-		need -= min(need, free[i])
+		if lanes[i].eligible(c, now) {
+			need -= min(need, free[i])
+		}
 	}
 	return min(need, free[lane])
 }
@@ -220,17 +237,11 @@ func (p *lane) latency() time.Duration {
 // full datagram ahead of a real-time one delays it by more than the queue the
 // lane is allowed: at 0.5 Mbit/s a bulk datagram is 24 ms of serialization,
 // for a third of a megabit of throughput.
-//
-// With no other lane for bulk, it holds only where real-time datagrams need
-// most of what the lane carries.
 func (p *lane) realtimeLane() bool {
 	if p.startup && p.control.capacity == 0 {
 		return false
 	}
-	if p.bulkElsewhere {
-		return fullDatagramWireBytes/p.rate*float64(time.Second) > float64(targetQueue)
-	}
-	return p.reserved[classRealtime] > realtimeLane*p.rate
+	return p.bulkElsewhere && fullDatagramWireBytes/p.rate*float64(time.Second) > float64(targetQueue)
 }
 
 // allowed is the rate a class may use on the lane: what higher classes have
@@ -275,8 +286,16 @@ func (t *Transport) chooseLane(now time.Time, c class, size int, exclude PathID,
 	var best *lane
 	var bestArrival time.Duration
 	contended := t.small[classRealtime].count+t.small[classSmall].count > 0
+	leased := 0
+	if c == classRealtime {
+		for _, p := range t.paths {
+			if p.up(now) {
+				leased++
+			}
+		}
+	}
 	for _, p := range t.paths {
-		if !p.up(now) || p.stalled || now.Before(p.drainUntil) && c == classBulk || avoid && p.id == exclude {
+		if !p.eligible(c, now) || now.Before(p.drainUntil) && c == classBulk || avoid && p.id == exclude {
 			continue
 		}
 		if now.Before(p.control.flushUntil) && c != classRealtime {
@@ -289,6 +308,7 @@ func (t *Transport) chooseLane(now time.Time, c class, size int, exclude PathID,
 		if c == classBulk && !contended {
 			lead = 0
 		}
+		classLead := lead
 		if c == classRealtime {
 			// A small datagram may borrow one datagram beyond a full window.
 			// Within the share of the window reserved for them, real-time
@@ -297,19 +317,20 @@ func (t *Transport) chooseLane(now time.Time, c class, size int, exclude PathID,
 			if p.inflight > window && float64(p.classInflight[c]) > float64(window)*(p.reserved[c]+p.copies)/p.rate {
 				continue
 			}
-			if avoid && p.copies > 0 {
-				// A copy cannot wait for its slot. Capacity is reserved for it, so
-				// it may lead the pacing clock by the datagram of a lower class
-				// that took the slot before it.
-				lead += time.Duration(float64(fullDatagramWireBytes) / p.rate * float64(time.Second))
+			// Voice may borrow one slot; a lower class in flight can occupy
+			// a full datagram's slot. Its bytes still advance the shared clock.
+			borrow := size
+			if leased == 1 || p.classInflight[classBulk] > 0 || p.classInflight[classSmall] > 0 || avoid && p.copies > 0 {
+				borrow = fullDatagramWireBytes
 			}
+			lead += time.Duration(float64(borrow) / p.rate * float64(time.Second))
 		} else if allowed := p.allowed(c); allowed == 0 || p.inflight+size > max(size, window) ||
-			p.classInflight[c]+size > max(size, int(float64(window)*allowed/p.rate)) {
+			p.classInflight[c]+size > p.classWindow(c, size, window, allowed) {
 			// A class is held to its own share of the window: the bytes of
 			// higher classes in flight must not shut it out.
 			continue
 		}
-		if p.classNext[c].After(now.Add(lead)) || p.nextSend.After(now.Add(lead)) {
+		if p.classNext[c].After(now.Add(classLead)) || p.nextSend.After(now.Add(lead)) {
 			continue
 		}
 		arrival := max(0, p.nextSend.Sub(now)) + p.latency()/2
@@ -318,6 +339,16 @@ func (t *Transport) chooseLane(now time.Time, c class, size int, exclude PathID,
 		}
 	}
 	return best
+}
+
+func (p *lane) classWindow(c class, size, window int, allowed float64) int {
+	share := max(size, int(float64(window)*allowed/p.rate))
+	if c == classBulk && p.reserved[classRealtime] > 0 &&
+		(p.control.capacity > 0 || p.reserved[classRealtime]+p.copies > allowed) &&
+		float64(size)/p.rate*float64(time.Second) > float64(targetQueue) {
+		return size
+	}
+	return share
 }
 
 // stale reports that a waiting real-time datagram should give way to the ones
@@ -342,7 +373,6 @@ func (t *Transport) stale(now time.Time, head *packet) bool {
 }
 
 func (t *Transport) send(now time.Time, out []Transmission) []Transmission {
-	t.reserve(now)
 	for c := classRealtime; c < classBulk; c++ {
 		queue := &t.small[c]
 		if c == classRealtime && queue.peek() == nil {
@@ -364,9 +394,12 @@ func (t *Transport) send(now time.Time, out []Transmission) []Transmission {
 			}
 			queue.pop()
 			out = append(out, t.transmit(p, path, now))
-			if c == classRealtime && t.redundancyTokens >= float64(size) {
+			forced := path.liveness(now) == LaneSuspect
+			if c == classRealtime && (forced || t.redundancyTokens >= float64(size)) {
 				if second := t.chooseLane(now, c, size, path.id, true); second != nil {
-					t.redundancyTokens -= float64(size)
+					if !forced {
+						t.redundancyTokens -= float64(size)
+					}
 					out = append(out, t.transmit(p, second, now))
 				}
 			}

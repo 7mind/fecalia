@@ -94,6 +94,8 @@ type LaneSnapshot struct {
 	PathDelaySeconds       float64 `json:"pathDelaySeconds"`
 	RankSeconds            float64 `json:"rankSeconds"`
 	Liveness               string  `json:"liveness"`
+	LivenessAgeSeconds     float64 `json:"livenessAgeSeconds"`
+	ACKProgressKnown       bool    `json:"ackProgressKnown"`
 	Up                     bool    `json:"up"`
 	Discovering            bool    `json:"discovering"`
 	TargetBps              float64 `json:"targetBps"`
@@ -456,6 +458,7 @@ func BuildSnapshot(src metrics.Source, info Info, revealAddressing, controlAvail
 			d := lane.Decisions
 			out.Lanes = append(out.Lanes, LaneSnapshot{
 				TransitFloorSeconds: lane.TransitFloor.Seconds(), TransitFloorKnown: lane.TransitFloorKnown, TransitFloorAgeSeconds: lane.TransitFloorAge.Seconds(), PathDelaySeconds: lane.PathDelay.Seconds(), RankSeconds: lane.Rank.Seconds(), Liveness: string(lane.Liveness),
+				LivenessAgeSeconds: lane.LivenessAge.Seconds(), ACKProgressKnown: lane.ACKProgressKnown,
 				Peer:               transport.Peer,
 				Path:               transport.LanePaths[lane.Path],
 				RemotePath:         uint8(lane.Path),
