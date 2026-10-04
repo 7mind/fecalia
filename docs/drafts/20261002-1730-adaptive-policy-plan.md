@@ -276,6 +276,13 @@ Each stage: failing model test first, then the change, then the lab on both
 profile families interleaved with the baseline, then the field. Code and docs
 in separate commits; `docs/design.md` updated with each behaviour change.
 
+**Operator amendment, 2026-10-04.** An unsatisfactory lab result does not
+veto a bounded temporary field trial. The field remains the behavioral
+reference. Record the candidate's model and lab failures before testing it;
+a field trial does not establish that those gates pass. This changes trial
+eligibility, not the fixed acceptance gates, stage order, restoration timers,
+management precautions or restriction against permanent deployment.
+
 **Stage 0 — measure, no behaviour change.**
 
 1. Bring the loose ends into git: merge `lab-tooling`; commit the WIP model
@@ -397,6 +404,112 @@ delay model is also what stage 3's congestion signal reads.
    numerical meanings for the qualitative gates. Those comparisons must
    expose uncertainty rather than inventing a tolerance. The existing
    numerical gates and deadlines remain unchanged.
+7. Temporary field trials may proceed despite unsatisfactory lab tests
+   (operator, 2026-10-04). A lab failure remains evidence to investigate;
+   host contention and physical-link behavior must be distinguished rather
+   than inferred from the overall verdict. Preserve the field trial's
+   candidate revision, outstanding failures and bounded workload.
 
 Open: the video gates of row 4 (300 ms gap, 2% loss) are a proposal; and how a
 video call is told from a QUIC download.
+
+## 8. Research follow-up — 2026-10-04
+
+This section proposes experiments, not an implemented policy or measured
+improvement. The deployed policy is unchanged. The
+[rejected stage 1 checkpoint](20261003-2245-adaptive-stage1-checkpoint.md)
+retains the observed deterministic failures. The rejected stage 1 replacement
+has never been tested in the field. Stage 0 field measurements are baseline
+evidence; section 1 separately records the earlier
+inconclusive `window-bound` prototype's field pair.
+
+**Observed in code:** ranking still uses idle RTT and variation; lane choice
+adds pacing wait to half that rank. It does not predict a datagram's
+serialization or bulk-stream completion. The survivor's legacy voice rule
+can cap bulk at 5% of its target. **Observed in the rejected attempt:** that
+cap is below the independent required goodput in the recorded radio
+direction; removing it regresses voice and does not restore TCP progress.
+**Inference:** estimator replacement alone is insufficient. Allocation,
+pacing and ordered delivery need to agree with the same lane model.
+
+### Relevant primary sources
+
+| Approach | What the source establishes | Implication for wanbond (inferred) |
+|---|---|---|
+| [BBRv3, IETF draft -06](https://datatracker.ietf.org/doc/html/draft-ietf-ccwg-bbr-06) | A transport-independent delivery sampler bounds the ACK rate by the corresponding send rate and identifies application-limited samples. Bandwidth and inflight models drive pacing. Section 3.8 explicitly warns that persistently application-limited audio/video can retain old bandwidth maxima. This is an experimental work in progress. | Use its sampling discipline, not an unmodified controller. A voice-only lane still needs capacity age and demand-triggered remeasurement. |
+| [Earliest Completion First](https://api.repository.cam.ac.uk/server/api/core/bitstreams/3ec47f93-4360-4630-bd4a-9e1ed23605fa/content) | The MPTCP scheduler considers RTT, subflow capacity and queued work; waiting for the faster path can complete a transfer sooner than immediately using a slower one. The paper measures improved utilization under heterogeneous paths. | Add completion-aware bulk scheduling, including the receiver's ordering constraint. These MPTCP results do not prove a gain for wanbond. |
+| [QUIC recovery, RFC 9002](https://datatracker.ietf.org/doc/html/rfc9002#section-6.2) | Probe-timeout expiry does not by itself establish packet loss. RTT variation and ACK delay enter recovery timing. | Preserve the separation between suspect liveness, capacity and confirmed loss. This supports removing the silent capacity cut; it does not prescribe wanbond's liveness thresholds. |
+| [SCReAMv2, IETF draft -01](https://datatracker.ietf.org/doc/html/draft-ietf-ccwg-rfc8298bis-screamv2-01) | Combines pacing, delay/loss feedback and an inflight reference for multimedia, including variable mobile access. Its discussion acknowledges scheduling jitter, reverse-feedback congestion and policer difficulties on satellite links. It is an experimental work in progress. | A useful comparison for latency control, but its media-rate control cannot regulate an opaque encrypted TCP/UDP workload. A full adoption needs a separate feedback compatibility audit. |
+
+[A 2026 Starlink TCP study](https://arxiv.org/html/2607.07133v1) reports a
+favorable throughput/delay/loss tradeoff for BBRv3. Its setup has one
+Australian Starlink terminal and six destination cities, not six independent
+Starlink access sites. **Document evidence:** this supports testing a
+model-based controller; it does not establish performance on this production
+pair, for UDP bonding or during voice failover. Enabling kernel TCP BBR alone
+would not control wanbond's outer UDP sender (inferred from the transport).
+
+[Starlink queue measurements](https://arxiv.org/html/2605.27717v1) report
+drop-front rather than drop-tail buffering and no per-flow fair queueing at
+two terminals. The authors also note that configuration may change and do
+not establish a causal explanation for TCP underutilization. **Inference:**
+retain drop-tail and policer fixtures, but add drop-front and burst/grant
+variants when validating the replacement. These observations do not
+establish this field link's queue configuration.
+
+### Recommended implementation experiments
+
+1. **Stage 1:** retain ACK-progress liveness and its removal of the silent
+   capacity cut, but test voice reservation and copy pacing as part of the
+   same lane wire budget. A copy or repair consumes real capacity. Bulk may
+   use measured residual service; it must not inherit a fixed 5% cap merely
+   because voice occupies the only survivor. Packet serialization still
+   limits voice latency, so removing the cap alone is already a rejected
+   experiment, not the proposed correction.
+2. **Stage 2:** keep separate aged estimates for transit floor and current
+   delay. A sliding minimum must not silently turn a standing queue into
+   propagation delay; test the plan's conditional drain before removing the
+   floor-test mechanism. Rank from fresh evidence with hysteresis. Use
+   completion estimates for bulk so the slower lane does not stall ordered
+   delivery on the faster one. Avoid counting pacing wait twice as backlog.
+3. **Stage 3:** sample corresponding send and receive flights, mark whether
+   traffic was limited by application demand, scheduling or the path, and
+   expire unsupported capacity confidence. An ACK with no new measurement
+   must not refresh an estimate's evidence age. Trigger bounded upward pushes
+   of queued real data from tunnel demand, including lanes kept off bulk for
+   voice; retain the operator's conditional redundancy fallback. Confirm loss
+   lowers the target even during a light workload.
+
+**Wire compatibility, inferred from code:** ACK v1 already carries physical
+lane receipts, cumulative received wire bytes, receiver elapsed time and ACK
+delay; local attempts carry send time and wire size. These are sufficient
+inputs to prototype a sender-side delivery sampler and relative transit
+model without adding a field. This is not proof of an exact BBRv3 or
+SCReAMv2 implementation. In particular, elapsed time anchors the highest
+lane sequence whereas the byte count includes later-arriving older
+attempts: sampling intervals must be aligned and tested under reordering.
+Tests must also cover compressed ACKs, sparse feedback, receipt-bitmap
+turnover and copies; global delivery alone cannot identify which physical
+attempt arrived. Independent lane clock origins also prevent treating their
+relative transit values as absolute one-way delays. Use RTT evidence for cross-lane timing
+and retain the uncertainty; stop if the implementation requires new feedback.
+
+For each experiment, reproduce its claimed defect first and remove the rules
+it replaces in the same code change. Keep the required outcome-test
+restatements separate. Do not combine stages to obtain a passing verdict.
+
+### Field comparison
+
+Run voice first, using temporary candidates with verified restoration and
+single-WAN removal timers. Interleave baseline and candidate rounds; measure
+Starlink, 5G and tunnel in that order immediately before each comparison.
+Keep both directions and their contemporaneous variability. A rate-capped
+measurement which reaches its offered ceiling is a capacity lower bound,
+not an aggregation or full-capacity result.
+
+Observe application-delivered TCP bytes and voice losses/gaps/latency, along
+with physical lane receipt progress, ACK intervals, inflight wire bytes,
+queue age, repairs, copies and actual metered MB. Where cap or RF variability
+prevents a comparison, retain the uncertainty. Use captured behavior to
+challenge model assumptions; neither a poor lab result nor a favorable
+field round is sufficient to declare stages 1–3 proved.

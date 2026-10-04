@@ -2227,3 +2227,27 @@ Observed after restoration: the full AGENTS.md non-privileged gate and
 (`stage1-restored-nonprivileged-v1.txt`,
 `stage1-restored-nix-build-v1.txt`). These results validate the restored
 stage 0 source, not the rejected attempt.
+
+### Field trial eligibility and policy research — 2026-10-04
+
+Operator direction: an unsatisfactory lab result does not veto a bounded
+temporary field trial. The field remains the behavioral reference. Record
+the candidate's outstanding model and lab failures alongside its revision
+and results; a field result does not establish the required three-run lab
+gates. This changes trial eligibility, not the acceptance gates or stage
+order. The previous stage 1 rejection is deterministic model evidence, not
+a lab-host timing result, and its code remains unmerged and untested in the
+field.
+
+Use `candidate.sh` with verified automatic restoration, gzip binaries for
+the edge, begin with voice, and cap subsequent bulk traffic. Preserve
+Starlink/5G/tunnel direct-before-tunnel ordering and report actual mobile
+MB. Each single-WAN impairment still needs its own verified removal timer
+and the current management-path check. Permanent deployment remains outside
+the goal.
+
+The [research follow-up](../../docs/drafts/20261002-1730-adaptive-policy-plan.md#8-research-follow-up--2026-10-04)
+compares BBRv3 delivery sampling, completion-aware scheduling, QUIC recovery
+principles and SCReAMv2 with the retained wanbond failures. Its implementation
+experiments are proposals, not measured improvements. No policy code or field
+state changed during this research.

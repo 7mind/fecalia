@@ -344,6 +344,15 @@ the measured outcomes, the direction-specific scheduler bound and retained
 source. Stages 1–3 remain unproved; later estimator replacements are not
 treated as evidence that these failures are resolved.
 
+Operator direction on 2026-10-04 permits bounded temporary field trials
+despite unsatisfactory lab results. The outstanding model and lab failures
+must accompany those results; stage acceptance and permanent deployment
+restrictions are unchanged. The plan's
+[research follow-up](drafts/20261002-1730-adaptive-policy-plan.md#8-research-follow-up--2026-10-04)
+proposes delivery sampling, a shared lane wire budget and completion-aware
+scheduling. These are unimplemented experiments, not measured improvements
+or changes to the transport described below.
+
 **Paths and epochs.** An unpadded challenge-protected PROBE carries a 22-byte
 capability record: `bond`, version 1, physical path ID, process Boot ID and Bind
 Open generation. Padded PMTU probes retain their original size. A logical lane
