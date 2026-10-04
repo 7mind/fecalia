@@ -525,6 +525,15 @@ restatements separate. Do not combine stages to obtain a passing verdict.
 
 ### Field comparison
 
+**Operator evidence, 2026-10-04:** current Starlink standby is capped at
+0.5 Mbit/s symmetric; 5G at 100 Mbit/s down and 10 Mbit/s up. These maxima
+do not establish sustainable service under current RF conditions. The
+retained radio fixture (0.5/0.4 plus 100/1.25) and built-in `FIELD` fixture
+(0.5/0.5 plus 50/10) do not reproduce those caps. Gigaradio remains a
+300+300 Mbit/s stress requirement; its goodput bound is not a field bound.
+Retain those historical conditions and measure the current direct links
+before deriving field goodput references. This changes no scenario gate.
+
 Run voice first, using temporary candidates with verified restoration and
 single-WAN removal timers. Interleave baseline and candidate rounds; measure
 Starlink, 5G and tunnel in that order immediately before each comparison.

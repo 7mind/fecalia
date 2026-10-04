@@ -52,6 +52,23 @@ and shrinking time envelope are replaced by a receipt-progress boundary.
 
 ## Field baseline and collection defects
 
+**Operator evidence, 2026-10-04:** the current field configuration is
+Starlink standby, capped at 0.5 Mbit/s in both directions, and 5G capped at
+100 Mbit/s downlink and 10 Mbit/s uplink. These are configured maxima,
+not observed sustainable service under current RF conditions. The gross
+pair ceilings are therefore 100.5 Mbit/s down and 10.5 Mbit/s up before
+voice and protocol overhead; direct-before-tunnel measurements still define
+the contemporaneous field reference.
+
+**Observed in source:** `radio.json` and the deterministic radio fixture
+instead use Starlink 0.5 down/0.4 up and mobile 100 down/1.25 up. The
+collector's built-in `FIELD` uses Starlink 0.5 symmetric and mobile 50 down/10
+up. Those retained fixtures do not reproduce the newly stated field caps.
+The 300+300 Mbit/s `gigaradio` failure below is a required stress-test failure,
+not the field's required goodput or an observation of its controller state.
+The earlier capped field rounds remain bounded observations; they do not
+establish either a gain or a failure at the current full-capacity reference.
+
 **Observed:** the deployed executable on both hosts has SHA256
 `f0cb62b2e221b413436c76a428e58dc177110deace3d70d87ee7db08eeec1375`.
 The first mobile-blackout preflight stopped before any impairment because

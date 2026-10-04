@@ -427,6 +427,13 @@ fails at 151 ms voice p99, superseding its older-input pass for current
 acceptance; bulk still passes. No gate was weakened. The restored main branch
 passes the full non-privileged gate and `nix build`.
 
+The operator's current field caps (2026-10-04) are Starlink standby at
+0.5 Mbit/s symmetric and 5G at 100 Mbit/s down/10 Mbit/s up. These are
+operator evidence for configured maxima, not measured RF service. The
+retained radio and built-in field fixtures differ; the 300+300 Mbit/s
+gigaradio failure is a stress result rather than the field's required
+goodput. Field references require contemporaneous direct-link measurements.
+
 **Paths and epochs.** An unpadded challenge-protected PROBE carries a 22-byte
 capability record: `bond`, version 1, physical path ID, process Boot ID and Bind
 Open generation. Padded PMTU probes retain their original size. A logical lane

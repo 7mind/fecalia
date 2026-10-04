@@ -66,6 +66,17 @@ TCP there while the radio profile did not move.
 | `flood.py` | A call in both directions while one side offers 400 Mbit/s of UDP to `profiles/fast.json` | Each voice stream has <1% loss |
 | `continuity.py` | Simultaneous TCP in both directions plus two 50 Hz, 160-byte UDP echo streams | TCP completes 65 seconds and meets the progress rule below; each UDP stream has <1% loss and meets the gap and latency rules below (`continuity_gates.py`) |
 
+**Current field caps, operator evidence 2026-10-04:** Starlink standby is
+0.5 Mbit/s symmetric; 5G is at most 100 Mbit/s down and 10 Mbit/s up.
+These are ceilings, not measured goodput. The retained radio family uses
+0.5/0.4 Mbit/s Starlink and 100/1.25 Mbit/s mobile; `adapt.py`'s built-in
+`FIELD` fixture uses 0.5/0.5 and 50/10. Neither reproduces those current
+caps. Gigaradio's 300+300 Mbit/s conditions are a separate stress requirement.
+Field comparisons require current direct uplink measurements before the
+tunnel and independent references after voice and protocol overhead. Prior
+fixture results retain their original conditions and are not relabelled as
+measurements of this field configuration.
+
 Continuity accepts `--profile`, defaulting to `profiles/basic.json`. At 15
 seconds WAN1 is capped at 0.5 Mbit/s in each direction; lower profile rates are
 preserved. At 25 seconds it loses all packets, and at 30 seconds its profile
