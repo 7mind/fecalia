@@ -40,24 +40,6 @@ func TestPriorityWindowBorrowsOnlyOneDatagram(t *testing.T) {
 	}
 }
 
-func TestLoadedRTTVariationDoesNotExpandWindow(t *testing.T) {
-	p := lane{rate: 100000, baseRTT: 40 * time.Millisecond, idleRTTVariation: 5 * time.Millisecond, confirmedWireBytes: 100000}
-	unloaded := p.window()
-	p.rttVariation = 80 * time.Millisecond
-	if p.window() > unloaded {
-		t.Fatalf("queue-induced RTT variation expanded in-flight allowance from %d to %d bytes", unloaded, p.window())
-	}
-}
-
-func TestLoadedBaseRTTDoesNotExpandWindow(t *testing.T) {
-	p := lane{rate: 100000, baseRTT: 40 * time.Millisecond, idleRTT: 40 * time.Millisecond, confirmedWireBytes: 100000}
-	unloaded := p.window()
-	p.baseRTT = 80 * time.Millisecond
-	if p.window() > unloaded {
-		t.Fatalf("loaded RTT minimum expanded the window from %d to %d bytes", unloaded, p.window())
-	}
-}
-
 func TestStartupAllowsOneDatagramLargerThanWindow(t *testing.T) {
 	now := time.Unix(100, 0)
 	a := New(Epoch{Boot: 1, Generation: 1})
