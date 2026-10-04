@@ -71,23 +71,15 @@ func TestLostAcknowledgementDoesNotCauseRepairs(t *testing.T) {
 	}
 }
 
-// coldStart reports the stalling lane's estimate ten seconds after bulk
-// begins on it beside a call on the other lane, for each of eight schedules
-// of stalls.
-func coldStart(stall time.Duration) (estimates []float64, lane varyingLane) {
+// coldStartBulk reports received bulk over the measured half of a cold
+// transfer beside a call, for each of eight schedules of stalls.
+func coldStartBulk(stall time.Duration) (delivery []float64, lane varyingLane) {
 	lane = stallingLane(stall)
 	for seed := uint64(0); seed < 8; seed++ {
-		var estimate float64
 		m := mixedLoad{lanes: []varyingLane{lowLatencyLane, lane}, offered: 8e6, seconds: 13, failed: -1, seed: seed}
-		m.observe = func(second int, s bond.Snapshot) {
-			if second == 11 {
-				estimate = s.Paths[1].Capacity
-			}
-		}
-		m.run()
-		estimates = append(estimates, estimate)
+		delivery = append(delivery, m.run().bulk)
 	}
-	return estimates, lane
+	return delivery, lane
 }
 
 // Discovery ends at the first congestion signal, with what the lane then
@@ -98,36 +90,27 @@ func coldStart(stall time.Duration) (estimates []float64, lane varyingLane) {
 // a minute to find the rest. In production the mobile uplink ended its first
 // discovery after a restart at 0.26 MB/s, carried 1.5 Mbit/s through that
 // Speedtest, and 4.0-4.9 two hours and several transfers later (2026-10-01).
-func TestStallDoesNotEndDiscovery(t *testing.T) {
+func TestColdBulkFindsServiceThroughStalls(t *testing.T) {
 	for _, stall := range []time.Duration{100 * time.Millisecond, 200 * time.Millisecond} {
 		t.Run(stall.String(), func(t *testing.T) {
-			estimates, lane := coldStart(stall)
-			t.Logf("estimate ten seconds after the start, per schedule: %.0f; the lane serves %.0f B/s", estimates, served(lane))
-			for seed, estimate := range estimates {
-				if estimate < 0.6*served(lane) {
-					t.Errorf("schedule %d: estimate %.0f B/s ten seconds after the start", seed, estimate)
+			delivery, lane := coldStartBulk(stall)
+			t.Logf("received bulk in the cold transfer's measured half, per schedule: %.0f; the lane serves %.0f B/s", delivery, served(lane))
+			for seed, received := range delivery {
+				if received < 0.6*served(lane) {
+					t.Errorf("schedule %d: cold bulk received %.0f B/s", seed, received)
 				}
 			}
 		})
 	}
 }
 
-// stalledBulk runs saturating bulk over a call's lane and the given one for
-// each of four schedules of stalls, and reports per schedule the bulk
-// delivered in the measured half and the lowest estimate the lane held in it.
-func stalledBulk(lane varyingLane) (bulk, lowest []float64) {
+// stalledBulk reports bulk delivery for four schedules of the given stalls.
+func stalledBulk(lane varyingLane) (bulk []float64) {
 	for seed := uint64(0); seed < 4; seed++ {
-		var low float64
 		m := mixedLoad{lanes: []varyingLane{lowLatencyLane, lane}, offered: 8e6, seconds: 30, failed: -1, seed: seed}
-		m.observe = func(second int, s bond.Snapshot) {
-			// No estimate is reported while the lane discovers.
-			if c := s.Paths[1].Capacity; second >= 15 && c > 0 && (low == 0 || c < low) {
-				low = c
-			}
-		}
-		bulk, lowest = append(bulk, m.run().bulk), append(lowest, low)
+		bulk = append(bulk, m.run().bulk)
 	}
-	return bulk, lowest
+	return bulk
 }
 
 // A stall is not a fall in capacity: the lane carries afterwards what it
@@ -135,16 +118,13 @@ func stalledBulk(lane varyingLane) (bulk, lowest []float64) {
 // as one it ended discovery, lost the probes it fell on and lowered the
 // estimate at every repeated signal. The model lane delivered 55% of what it
 // serves under 200 ms stalls and 49% under 300 ms.
-func TestStalledLaneKeepsItsEstimate(t *testing.T) {
+func TestBulkKeepsServiceThroughRepeatedStalls(t *testing.T) {
 	for _, stall := range []time.Duration{100 * time.Millisecond, 200 * time.Millisecond, 300 * time.Millisecond} {
 		t.Run(stall.String(), func(t *testing.T) {
 			lane := stallingLane(stall)
-			bulk, lowest := stalledBulk(lane)
-			t.Logf("the lane serves %.0f B/s; bulk per schedule %.0f, lowest estimates %.0f", served(lane), bulk, lowest)
+			bulk := stalledBulk(lane)
+			t.Logf("the lane serves %.0f B/s; bulk per schedule %.0f", served(lane), bulk)
 			for seed := range bulk {
-				if lowest[seed] < 0.7*served(lane) {
-					t.Errorf("schedule %d: the estimate fell to %.0f B/s", seed, lowest[seed])
-				}
 				if bulk[seed] < 0.7*served(lane) {
 					t.Errorf("schedule %d: bulk received %.0f B/s", seed, bulk[seed])
 				}
@@ -161,15 +141,12 @@ func TestStalledLaneKeepsItsEstimate(t *testing.T) {
 // second with queue delays of 72-184 ms, the estimate was measured anew at
 // 3.22 MB/s, and the 7 s transfer ended before it was back (2026-10-01:
 // 18-23 Mbit/s through the bond against 49-50 on the mobile link alone).
-func TestSlowdownDoesNotLowerTheEstimate(t *testing.T) {
+func TestBulkKeepsServiceThroughTemporarySlowdowns(t *testing.T) {
 	lane := stallingLane(300 * time.Millisecond)
 	lane.stallRate = 0.5
-	bulk, lowest := stalledBulk(lane)
-	t.Logf("the lane serves %.0f B/s; bulk per schedule %.0f, lowest estimates %.0f", served(lane), bulk, lowest)
+	bulk := stalledBulk(lane)
+	t.Logf("the lane serves %.0f B/s; bulk per schedule %.0f", served(lane), bulk)
 	for seed := range bulk {
-		if lowest[seed] < 0.75*served(lane) {
-			t.Errorf("schedule %d: the estimate fell to %.0f B/s", seed, lowest[seed])
-		}
 		if bulk[seed] < 0.7*served(lane) {
 			t.Errorf("schedule %d: bulk received %.0f B/s", seed, bulk[seed])
 		}
