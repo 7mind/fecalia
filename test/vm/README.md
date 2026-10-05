@@ -2656,3 +2656,19 @@ Owned `/run` reference artifacts and temporary binaries are removed after
 archive verification. The
 [execution record](../../docs/drafts/20261002-1730-adaptive-policy-plan.md#estimator-replacement-field-tradeoff--2026-10-05)
 retains source, uncertainty, reproduction and the next experiment.
+
+The post-push qualifier follow-up (`ef36799`) also remains unaccepted. In a
+second bounded field set, low-rate payload rises from about 0.15 to 0.24
+Mbit/s with separated report bounds; later recovery is 1.41 / 1.56 / 1.39
+Mbit/s with overlapping bounds. Voice has zero loss but candidate edge/hub
+p99 is 100/118 ms, above the baseline. Both hosts are restored and verified;
+the comparison uses 27.367 mobile RX+TX MB, 32.391 MB through cleanup.
+
+Later isolated byte-clock and ACK-round-aging corrections pass small-backlog,
+batched-receipt, directional-noise and upgrade outcomes three times, including
+186,000/168,960 B/s upgrade delivery and zero voice loss at 36 ms p99. Slow
+voice, ACK backlog and steady utilization still fail. These later sources
+have no field result and no accepted lab series. The
+[follow-up record](../../docs/drafts/20261002-1730-adaptive-policy-plan.md#post-push-correction-and-sampling-follow-up--2026-10-05)
+retains the fail-first reproductions, source versions, all paired baselines
+and rejected probe trials.

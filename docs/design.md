@@ -571,6 +571,17 @@ is unchanged. The
 retains source, differing baseline runs, failed checks, accounting and the
 post-push delay-qualification hypothesis for the next experiment.
 
+A follow-up candidate (`ef36799`) corrects that qualification. Its paired
+field low-rate payload increases (0.15 / 0.24 / 0.15 Mbit/s); later recovery
+is 1.41 / 1.56 / 1.39 Mbit/s with overlapping report bounds. Voice loses none,
+but candidate edge/hub p99 remains higher at 100/118 ms. Baseline recovery
+varies between paired sets, so the correction's field effect is not isolated.
+Both hosts are verified restored. Later isolated sampler corrections advance
+the delivery-byte anchor on every fresh ACK and age capacity over complete
+ACK rounds; selected model service outcomes pass three times, while slow voice
+and utilization still fail. Those corrections have no field result. See the
+[follow-up record](drafts/20261002-1730-adaptive-policy-plan.md#post-push-correction-and-sampling-follow-up--2026-10-05).
+
 **Paths and epochs.** An unpadded challenge-protected PROBE carries a 22-byte
 capability record: `bond`, version 1, physical path ID, process Boot ID and Bind
 Open generation. Padded PMTU probes retain their original size. A logical lane

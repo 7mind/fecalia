@@ -1261,3 +1261,64 @@ Raw records, source identity, bounded analysis, timers and cleanup checks are
 in `/srv/nvme/tmp/wanbond-adaptive-evidence/estimator-field-upgrade-20261005/`.
 Main retains the installed baseline policy. Failed experiments guide further
 work; the revised improvement objective in section 11 remains unfinished.
+
+### Post-push correction and sampling follow-up — 2026-10-05
+
+**Observed:** candidate `ef36799` excludes drain-phase samples from unloaded
+path-delay evidence after the failing reproduction above. Its executable
+SHA-256 is `7ed29ceb9a5496545481bd302f262158c64a79ed307b103a8733c9ccd33fd5f0`.
+Another temporary cold baseline → candidate → baseline set retains the same
+voice-first ordering, immediate capped references, 400 kbit/s → 2 Mbit/s
+mobile-UDP shaping, three-Mbit/s TCP offer and restoration timers.
+
+| Observed measurement | Baseline before | Candidate | Baseline after |
+|---|---:|---:|---:|
+| Approximate TCP payload in receiver seconds [5,15), Mbit/s | 0.154 | 0.239 | 0.148 |
+| Whole-report bounds for [5,15), Mbit/s | 0.139–0.170 | 0.218–0.264 | 0.132–0.180 |
+| Approximate TCP payload in receiver seconds [25,30), Mbit/s | 1.412 | 1.564 | 1.392 |
+| Whole-report bounds for [25,30), Mbit/s | 1.133–1.672 | 1.246–1.866 | 1.116–1.678 |
+| Guarded voice p99 edge/hub RTT, ms | 49.5 / 50.6 | 99.9 / 118.2 | 41.7 / 70.0 |
+| Guarded voice losses, edge/hub | 0 / 0 | 0 / 0 | 0 / 0 |
+
+The low-rate payload increase survives report bounds; the late-window bounds
+overlap, so a recovery gain is not established. Voice p99 and receive gaps
+still regress against both surrounding baselines. The lower candidate p99
+than the preceding experiment does not isolate the correction's effect:
+baseline recovery also changes from about 0.28 to 1.4 Mbit/s. Direct mobile
+references are 3.015 / 2.938 / 2.960 Mbit/s at a 3 Mbit/s offer; Starlink is
+0.518 / 0.519 / 0.516 Mbit/s. These remain capped references, not RF capacity
+ceilings. No all-metric improvement or three-run acceptance is established.
+
+Both hosts are independently verified restored to `b444920`, with empty
+overrides, inactive trial timers, cleared test firewall rules, `noqueue` WANs
+and exit policy `auto`. The comparison uses 27.367 mobile RX+TX MB and the
+enclosing interval through cleanup 32.391 MB. The interval enclosing both
+estimator comparisons through this cleanup uses 64.383 MB, including
+management/background and intervening work; these overlapping intervals must
+not be added. Three owned `/run` reference directories are verified against
+their archive before removal; both trial executables are removed. The edge
+has only active `/run/wanbond` configuration and an empty candidate directory
+among the inspected wanbond/reference paths; `/run` is 4% used. Archive
+`/var/tmp/wanbond-estimator-drain-reference-archive-20261005.tar.gz` has SHA-256
+`3de250d9db316ff06de2f49302de99015250aa7a556dee4a17bb370423076dc3`.
+Commands, source identities, bounded analysis and postconditions are retained
+in `/srv/nvme/tmp/wanbond-adaptive-evidence/estimator-drain-field-upgrade-20261005/`.
+
+**Observed isolated model follow-up, not field source:** a fresh physical ACK
+whose highest attempt has retired fails to advance the experimental sampler's
+byte anchor. The next flight counts old delivery again: the failing test gives
+15,000 B/s for 1000 new bytes in 200 ms, rather than 5000 B/s. Updating the
+anchor for every fresh ACK corrects it. An unmatched ACK advances accounting
+without fabricating a rate sample. Propagation-only capacity aging also fails
+small-backlog discovery at 189,600 bytes in five seconds; including the peer's
+ACK cadence in the aging round makes that existing outcome pass. Together,
+the corrected clock and aging pass small-backlog discovery, batched receipts,
+directional-noise service and the two-lane upgrade three times. Upgrade
+deadline/sustained payload is 186,000/168,960 B/s with zero voice loss and
+36 ms p99. Slow-lane voice, ACK backlog and 1.25 Mbit/s utilization still fail.
+The candidate branch records these later corrections as separate code/docs
+commits. Gentler probe trials improve some voice outcomes but fail discovery,
+service or deadlines; their sources and outputs are retained as rejected
+experiments. Main still has no production policy change. Next work must
+resolve application-limited sampling and excessive queued probe service,
+then compare delivery, latency and repair/expiry cost together in the field.
