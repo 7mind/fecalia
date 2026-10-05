@@ -3112,3 +3112,20 @@ Neither predicts service throughout a later tunnel phase. A further public
 reproduction shows bulk suspended before a known 100 ms round trip; the
 liveness correction passes that check three times but has no field result.
 See the [measurement and timing record](../../docs/drafts/20261002-1730-adaptive-policy-plan.md#receipt-endpoint-field-result-and-feedback-timing--2026-10-05).
+
+### Current-delay field comparison — 2026-10-05
+
+Unaccepted `684b193` passes its targeted ACK/window guards and Nix/ARM builds,
+but fails 25 default bond checks. B/C/B field low-upload bounds are
+0.135–0.170 / 0.197–0.241 / 0.149–0.188 Mbit/s; late bounds overlap.
+Loaded voice p99 is 72/66 / 111/157 / 65/88 ms edge/hub. All 2750 echoes per
+direction arrive in every phase. Candidate real-time local residence p99 is
+at most 5/1 ms with no stale real-time drops; TBF backlog/rate remains a proxy,
+not measured packet latency. The throughput gain does not satisfy the voice
+goal. Both boot identities remain stable; deployed source/hash, original
+exit policy and network state are independently verified after restoration
+and owned inactive files are removed. Mobile RX+TX through cleanup is
+27.833 MB, plus 0.874 MB separate staging; the 26.980 MB comparison interval
+is nested and must not be added. Evidence is
+`estimator-current-delay-field-upload-20261005/`. Field comparisons determine
+performance acceptance; host-loaded lab throughput and tails remain diagnostic.

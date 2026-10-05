@@ -2611,3 +2611,61 @@ three-run logs are retained as `stage23-c8-qualified-quiet-lane-*` and
 `stage23-c8-no-optional-copy-diagnostic.*`. Copies alone do not explain that
 model deficit. Main policy and release remain unchanged; host-loaded lab
 latency/goodput is diagnostic and field comparisons determine gains.
+
+### Current-delay field comparison — 2026-10-05
+
+**Observed source:** unaccepted `684b1939dcdb012c9cb046d591cda45c11826386`,
+SHA-256 `164f8a7e894d44987813cde5511e944a9674d5f6cc1afbe979fefd8de8c0e7aa`.
+The liveness-only revision fails 25 default bond checks; consistent packet-flight
+capacity sampling changes that to 22. A public sparse-ACK reproduction then
+fails three times: 100/200 ms physical RTTs leave current delay at the 100 ms
+minimum, unknown. Five window/congestion guards are restated in a preceding
+commit and pass three times before and after replacement. Sampling every timed
+physical ACK fixes that reproduction; native/ARM builds and Nix pass, but 25
+default bond checks still fail. Quiet upload reaches 508800 B/s with a retained
+four-expiration burst; primed upload is zero at the deadline. Evidence is
+`stage23-current-path-delay-{red,green-attempt,full-nonprivileged-gate,buffered-and-primed,nix-build,arm-build}.txt`
+and `stage23-current-delay-all-mechanisms-restated.txt`.
+
+Its timer-backed 400 kbit/s → 2 Mbit/s B/C/B field comparison completes:
+
+| Observed metric | Baseline before | Candidate | Baseline after |
+|---|---:|---:|---:|
+| Low-window upload bounds, Mbit/s | 0.135–0.170 | 0.197–0.241 | 0.149–0.188 |
+| Late-window upload bounds, Mbit/s | 1.046–1.446 | 1.154–1.759 | 1.069–1.668 |
+| TCP-active voice RTT p99, edge/hub ms | 72.3/66.0 | 110.6/157.3 | 64.6/88.2 |
+| Whole-phase voice median RTT, edge/hub ms | 37.0/37.7 | 31.7/33.0 | 36.5/34.3 |
+| Missing echoes of 2750, edge/hub | 0/0 | 0/0 | 0/0 |
+| Whole-phase maximum receive gap, edge/hub ms | 73.7/77.2 | 99.9/83.6 | 94.1/105.9 |
+
+The candidate lower low-upload bound exceeds both baseline upper bounds;
+late-window bounds overlap. Median delay improves, loaded p99 regresses, and
+promotion is rejected. Bounds use whole receiver reports, not exact deadline
+measurements. Immediate direct upload references to the different OCI route
+are Starlink 0.493/0.513/0.512 and 5G 2.842/2.980/2.994 Mbit/s under 1/3 Mbit/s
+offers; near-offer rates are service lower bounds, not capacity. Source-bound
+idle ICMP to the concentrator itself gives Starlink p99 49.8/59.8/42.5 ms,
+5G 134/70.6/97.9 ms, with 100 replies per sample. These measurements cannot
+establish UDP service throughout the later loaded interval.
+
+The candidate has no stale real-time queue drops and local real-time residence
+p99 bounds of 5/1 ms. Guarded expired-original deltas are 8/0 edge/hub, versus
+24/1 before; expiry does not alone prove non-delivery. Candidate low-rate TBF
+backlog/rate p99 is 150 ms, a service-time proxy rather than packet delay.
+Both boot identities remain unchanged. Deployed b444920 hashes, original
+`auto` policy, empty overrides, unshaped queues and absence of temporary
+firewall rules/timers are independently verified before and after owned runtime
+cleanup. Mobile RX+TX including background is 26.980 MB during comparison,
+27.833 MB through cleanup (overlapping), plus 0.874 MB separate staging.
+Evidence is `estimator-current-delay-field-upload-20261005/`.
+
+**Inferred from code:** the raw current-RTT experiment puts self-queue delay
+into rank, departing from the intended unloaded-delay model. Its contribution
+to the field tail is unproved. **Intended next correction:** retain unloaded
+qualification, removing the settled delivery-rate prerequisite that prevents
+the first sparse physical ACKs from refreshing delay. That targeted variant
+passes the unchanged sparse-ACK values and window/congestion guards three
+times; broader checks and field performance remain pending. No new estimate,
+constant, synthetic probe, optional-copy trigger or wire field is added.
+The installed baseline remains `b444920` / `v0.0.3`. Host CPU spikes can distort
+lab timings; performance acceptance rests on field comparisons.

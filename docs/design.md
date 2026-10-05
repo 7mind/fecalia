@@ -2628,3 +2628,14 @@ A later public timing reproduction also finds bulk suspended before its known
 path round trip can return feedback. Including aged path delay/jitter in the
 suspicion interval fixes that case; its broader checks and field behavior
 remain unproved. See the [endpoint field and timing record](drafts/20261002-1730-adaptive-policy-plan.md#receipt-endpoint-field-result-and-feedback-timing--2026-10-05).
+
+The later current-delay/flight-cohort experiment (`684b193`) again improves
+bounded low-rate field upload, while worsening loaded voice p99 against both
+adjacent baselines. All phases deliver 2750/2750 echoes per direction; no source
+is promoted. This experiment samples current RTT from every timed physical ACK
+and bounds flight by an aged minimum, but includes self-queue delay in ranking.
+The next unaccepted correction removes the settled delivery-rate prerequisite
+for sparse unloaded-delay learning while retaining congestion qualification.
+Model and field observations remain separate; CPU-distorted lab elapsed times
+cannot establish a field performance gain. See the
+[current-delay field record](drafts/20261002-1730-adaptive-policy-plan.md#current-delay-field-comparison--2026-10-05).
