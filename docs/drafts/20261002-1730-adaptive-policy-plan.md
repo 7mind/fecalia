@@ -2783,3 +2783,38 @@ new field comparison. This is a hypothesis about the field tail, not its
 established cause. `b444920` / `v0.0.3` remains the baseline; all outstanding
 model/lab gates stay visible. Field measurements determine performance gains;
 local host CPU load cannot establish or refute one.
+
+### Rejected lower-class flight diagnostics — 2026-10-05
+
+**Observed in deterministic virtual time:** the feedback-round source fails
+slow-lane voice isolation (38 ms one-way p99 versus the existing 25 ms gate)
+and cold standby delivery (90/100 versus at least 97), identically three times.
+A queue-only lower-class flight cap fixes buffered rate-fall expiry and gives
+52/57 ms primed-upload voice RTT p99, but single-lane bulk discovery falls to
+12000 B/s. It fails 24 default bond cases against 18 before; build/vet,
+formatting and other Go packages pass. This is rejected, not a field candidate.
+
+Retaining propagation and ACK cadence restores fast two-lane sharing to
+802880 B/s but leaves single-lane service at 108000 B/s. Removing the pre-push
+holding cap then restores single-lane bulk to 467120/5440800 B/s while raising
+voice one-way p99 to 99/94 ms, still failing its unchanged gates. Limiting push
+excess while voice reserves capacity gives 5085040 B/s at 34 ms on the fast
+single lane, but the slow case stays at 120000 B/s and buffered expiry still
+bursts by four. Each diagnostic repeats three times; all are archived and
+reverted, with no field activation. None proves an improvement across metrics.
+
+**Inference from code and these counterexamples:** propagation flight cannot
+be treated as queue occupancy, while retaining the previous holding flight
+allowance can prevent a capacity push from demonstrating more service. Removing
+that allowance alone sacrifices voice delay. This does not establish which
+mechanism caused the measured field tail or justify another scalar cap.
+**Intended next investigation:** reproduce capacity qualification and record
+per-lane rejection of fresh real-time submissions, preserving existing outcome
+gates, before choosing another policy replacement. Field comparisons remain
+the performance reference and installed `b444920` remains the baseline.
+Evidence under `/srv/nvme/tmp/wanbond-adaptive-evidence` is
+`stage23-realtime-flight-budget-{red,green-attempt,sharing-and-upgrade,go-gate}.txt`,
+`stage23-realtime-flight-budget-rejected.patch`,
+`stage23-propagation-and-queue-flight-budget-{diagnostic.txt,rejected.patch}`,
+`stage23-propagation-flight-without-holding-clamp-{diagnostic.txt,rejected.patch}`,
+and `stage23-voice-queue-budget-push-{diagnostic.txt,rejected.patch}`.
