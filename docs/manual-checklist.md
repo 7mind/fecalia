@@ -110,6 +110,11 @@ Prerequisites (all phases):
       [estimator field comparison](drafts/20261002-1730-adaptive-policy-plan.md#estimator-replacement-field-tradeoff--2026-10-05)
       observes that tradeoff; retain all baseline sets and report uncertainty
       rather than selecting the baseline that makes the candidate look best.
+      The [eligible-backlog comparison](drafts/20261002-1730-adaptive-policy-plan.md#eligible-backlog-field-comparison--2026-10-05)
+      retains the three subsequent rejected candidates and their voice tails.
+      Raw repair, expiry and AQM counters include other peer traffic and do
+      not establish useful TCP efficiency. Preserve and verify the operator's
+      selected exit policy across candidate and baseline restarts.
 - [ ] Record the removal timer's accuracy and actual firing time. For a
       latency-rise measurement, remove netem after receipt collection:
       deleting it while voice packets are queued can contaminate the loss
