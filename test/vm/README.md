@@ -2862,3 +2862,20 @@ exposes release-order dependence; sampling after all physical releases fixes
 that reproduction, but noisy bulk, steady queueing and voice-loss outcomes
 still fail. Those sampling choices remain rejected. See the plan's
 receipt-period reproduction; no field gain is claimed for them.
+
+The accepted-policy component control `38a58f7` has zero guarded voice loss,
+64/59 ms voice RTT p99, local real-time wait p99 bounded by 1/1 ms and 4.3 KB
+maximum shaper backlog. The fresh direct 5G reference drops to 1.117 Mbit/s;
+raw throughput is not a matched comparison with C20. The runner completes and
+both baseline services/network state are independently verified restored.
+Mobile use is 8.375 MB during the run / 11.701 through cleanup, overlapping
+intervals. Evidence is `baseline-residence-field-diagnostic-20261005/`.
+
+An overdue-original recovery reproduction fails three times on C20 and
+`b444920` while the original's lane remains live. Replacing that first-copy
+trigger passes the reproduction and three selected model runs, preserving
+noisy bulk while changing constant-delay voice p99 from 83/175 to 120/133 ms.
+The opposite-direction and later-tail tradeoffs are retained. Field and full
+candidate gates remain pending; installed `v0.0.3` is still the reference.
+The rejected receipt-time delay choice separately has 22 default bond failures
+and a passing Nix build. No new complete VM/profile gate is claimed.

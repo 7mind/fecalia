@@ -1272,6 +1272,13 @@ lane's congestion allowance exceeds 200 ms. This narrows the observed delay
 components without attributing individual echoes or proving a policy cause.
 The [plan's measurement record](drafts/20261002-1730-adaptive-policy-plan.md#queue-residence-field-diagnostic--2026-10-05)
 retains counter windows, extraction recovery, restoration and metering.
+The same component control on accepted C8 behavior has zero guarded voice
+loss, 64/59 ms RTT p99 and local real-time wait p99 bounded by 1 ms on both
+hosts. Its fresh direct 5G reference differs, so the two diagnostics do not
+establish a raw-throughput comparison. A public reproduction additionally
+shows that lane-wide progress does not certify an older missing real-time
+datagram. Per-datagram overdue recovery is an isolated experiment; one model
+voice direction improves while the opposite tail worsens. It is unaccepted.
 The deterministic transport and real UDP adapter share a delivery contract test;
 the [KVM lab](../test/vm/README.md) adds actual encryption, TUN interfaces, TCP
 and independently shaped WANs.

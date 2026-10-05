@@ -2012,3 +2012,66 @@ Additional evidence is `stage23-current-receipt-delay-model-repeat.txt`,
 tradeoffs in unaccepted sampling choices, not an accepted policy correction.
 The next field control uses C8 behavior plus passive telemetry to measure the
 same components on the accepted policy before further estimator changes.
+
+### Baseline component control and overdue originals — 2026-10-05
+
+**Observed:** temporary `38a58f7` runs the accepted C8 policy with passive
+telemetry. Voice-only preflight precedes immediate direct references: Starlink
+0.523 Mbit/s and 5G 1.117 Mbit/s by receiver first-to-last timing. This changed
+5G reference prevents a raw-throughput comparison with the earlier 2.091 Mbit/s
+C20 diagnostic. The same bounded shaper procedure gives:
+
+| Measurement | Edge client | Hub client |
+|---|---:|---:|
+| Guarded voice RTT p99 | 64.1 ms | 59.3 ms |
+| Guarded voice loss | 0/1468 | 0/1460 |
+| Local real-time queue-wait p99 upper bound | 1 ms | 1 ms |
+| Local real-time queue-wait mean | 0.011 ms | 0.017 ms |
+| Opposite echo handling maximum | 0.244 ms | 0.152 ms |
+
+There are no guarded local small-queue drops. Shaper backlog peaks at 4,336
+bytes, 473/1,462 samples are nonempty and its guarded drop delta is zero.
+Sample duration p99/max is 4.36/5.38 ms. The baseline's fixed lane thresholds
+are 15.7/18.1 ms, against the C20 diagnostic's maximum above 200 ms. This
+controls the component observation without proving a throughput gain or
+per-echo path cause. Low upload bounds are 0.156–0.187 Mbit/s (estimate 0.173);
+late bounds 0.547–0.833 (estimate 0.731). The runner completes, including
+extraction under an explicit 40 MB sampler bound. Both exact deployed baseline
+hashes, operator exit, runtime overrides, timers and network restoration are
+independently verified. Owned references are archived/content-verified/removed
+and inactive instrumentation binaries removed. Mobile RX+TX is 8.375 MB during
+the run / 11.701 through cleanup; the enclosing eight-set interval is 428.677
+MB including gaps/background. These are overlapping intervals, not additive.
+Evidence is `baseline-residence-field-diagnostic-20261005/`.
+
+**Inferred, then tested:** shortening the fixed ranking waits does not repair
+C20's 175 ms voice-first model tail. That variant preserves noisy bulk and
+steady utilization but remains rejected; source snapshots and three-run
+results are retained as `stage23-rejected-feedback-round-ranking-*` and
+`stage23-feedback-round-ranking-{red,repeat}.txt`.
+
+A separate public two-transport reproduction drops one real-time original
+while delivering later small-TCP traffic and authenticated feedback. The lane
+stays live, yet no alternate delivers that original within two ACK cadences.
+It fails three times on unchanged C20 and on `b444920`; the first attempt to
+compile the fixture is retained separately and is not counted as reproduction.
+The prototype replaces the lane-wide suspect/dead predicate for the first
+real-time recovery copy with an overdue-original predicate using the existing
+two-ACK-cadence interval. It adds no estimator, constant, synthetic probe or
+wire field, and preserves one-copy recovery and the bulk repair rules.
+
+The public reproduction then passes three times. Voice-first constant-delay
+p99 changes from 83/175 to 120/133 ms with zero loss during the measured early
+window; later p99 changes from 41/41 to 59/62 ms. Varying-delay loss remains
+2/500 in one direction and zero in the other. Noisy bulk remains 881,520 B/s
+with 134 ms voice p99; steady utilization/queue outcomes are unchanged.
+These observations improve one failed gate and disclose the other-direction
+tail tradeoff. They do not establish all-metric improvement. Field comparison
+and the complete gate remain to be measured for this recovery choice.
+Evidence is `stage23-late-realtime-{live-lane-red,live-lane-green,b444920-red,fallback-model-repeat}.txt`.
+
+The separately rejected current-receipt delay branch `15f8a01` completes the
+non-privileged gate with 22 bond failures; frontend's 44 tests, build/vet,
+patched engine, formatting and every other Go package pass. Its Nix build
+passes. Main's `38a58f7` Nix build passes; its code is unchanged from the earlier
+fully passing main gate. No failed estimator choice is merged into main.

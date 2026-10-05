@@ -144,6 +144,12 @@ Prerequisites (all phases):
       archive member names and explicit size limits before local extraction;
       expanded metric logs can exceed earlier harness limits. Preserve failed
       manifests and record local recovery without repeating field traffic.
+      The accepted-policy component control retains zero guarded loss and
+      64/59 ms voice RTT p99, but its direct 5G reference changes. Preserve
+      those reference rates and reject raw cross-run throughput comparisons.
+      Later lane ACK progress cannot establish receipt of every older real-time
+      original; test missing-original recovery under continuing physical
+      progress and measure additional copies/MB before accepting a change.
 - [ ] Record the removal timer's accuracy and actual firing time. For a
       latency-rise measurement, remove netem after receipt collection:
       deleting it while voice packets are queued can contaminate the loss
