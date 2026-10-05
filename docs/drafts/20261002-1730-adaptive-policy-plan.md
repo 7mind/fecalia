@@ -3017,3 +3017,19 @@ radio service, delay noise, policing, stalls, startup and voice/bulk sharing.
 Retaining smoothing still fails low-latency-lane voice at 77 ms against 70 ms.
 Neither diagnostic is in the field binary. Logs and overlays:
 `/srv/nvme/tmp/wanbond-adaptive-evidence/c8-voice-demand-step-repro`.
+
+**Observed follow-up:** direct ICMP idle p99 in the demand-step field set is
+Starlink 57.6/37.6/42.0 ms and 5G 170/71/96.5 ms, before/during/after the
+candidate. Service-rate references alone do not establish stable latency;
+the lower candidate median/p95 cannot be attributed solely to policy. Raw
+ping reports retain transmitted/received counts and loss. Field scheduler
+observer maxima are 1.61/3.41/24.68 ms on the edge and 0.85/4.32/1.32 ms on
+the concentrator; these are observations, not estimates of network delay.
+
+Before changing ordinary-copy policy, `TestVoiceCopiesHaveRoomOnTheOtherLane`
+is restated as `TestVoiceLossDoesNotExceedLatencyBudget` in a separate test
+commit. It retains at least 99.9% delivery and at most 0.1% later than
+150 ms; only the requirement for at least 95% copied datagrams is removed.
+Before and after, three virtual-time runs deliver 5,500/5,500, none later
+than 150 ms, maximum 110 ms. Copy counts remain diagnostics. No production
+copy behavior changes in this commit.
