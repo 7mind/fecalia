@@ -2733,3 +2733,24 @@ non-privileged checks pass. The next failing reproduction isolates reuse of a
 pre-congestion capacity sample; its role in this field regression remains a
 hypothesis. See the plan's execution record for raw-counter limitations and
 exact source identity.
+
+### Congestion-history field checkpoint — 2026-10-05
+
+One paired set for `5540733` has late upload 0.232/1.511/1.388 Mbit/s. Candidate
+bounds overlap the final baseline, while voice RTT p99 is 156/123 ms versus
+baselines 55/54 and 65/63 ms. It loses 2/1410 edge-origin voice datagrams;
+both baselines lose none. Reject promotion despite improved tails against the
+preceding experiment. Direct Starlink references are about 0.52 Mbit/s and
+5G reaches the 3 Mbit/s offer. No download or three-run acceptance is claimed.
+Both baseline binaries, policy and cleared network state are independently
+verified; owned edge runtime references and inactive binaries are removed.
+`congestion-history-field-upgrade-20261005/` records 23.517 mobile RX+TX MB
+for comparison, 28.902 through cleanup. Both new sets' enclosing interval is
+63.778 MB including background/gap; these intervals overlap.
+
+The next separate sampler reproduction fails three times: bulk queued for
+another lane certifies sparse protected voice service as capacity (14,450 B/s),
+though this lane has unused service. The initial fixture-age failure is retained
+separately and is not evidence for the defect. This is a model finding, not a
+proven explanation of the field result. Replace global sampling qualification
+with existing per-lane class demand before another capped trial.

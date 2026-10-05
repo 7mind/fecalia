@@ -614,6 +614,20 @@ can undo a congestion cut using the preceding capacity sample without a new
 delivery measurement; that defect is observed in the model, while its
 contribution to the field regression remains inferred.
 
+**Congestion-history field checkpoint, 2026-10-05.** Source `5540733`
+has late upload 0.232/1.511/1.388 Mbit/s; the returning baseline overlaps the
+candidate's throughput bounds. Candidate voice p99 is 156/123 ms versus
+baselines 54–65 ms and it loses two edge-origin voice datagrams. No promotion
+or all-metric improvement follows. Both deployed binaries and network/policy
+state are verified restored, and owned runtime references/binaries are removed.
+The comparison uses 23.517 mobile RX+TX MB, 28.902 through cleanup; the enclosing
+interval of this and the preceding new set is 63.778 MB including background.
+Those intervals overlap. The execution record retains exact source and bounds.
+A subsequent sampler reproduction finds that global queued bulk certifies
+sparse voice service on a protected lane that cannot carry that bulk. Per-lane
+eligible demand must qualify capacity sampling. This finding is observed in the
+model; its role in the field regression remains inferred.
+
 **Paths and epochs.** An unpadded challenge-protected PROBE carries a 22-byte
 capability record: `bond`, version 1, physical path ID, process Boot ID and Bind
 Open generation. Padded PMTU probes retain their original size. A logical lane

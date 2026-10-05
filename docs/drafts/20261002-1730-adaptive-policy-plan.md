@@ -1535,3 +1535,66 @@ remains an inference. Replace reuse of contradicted capacity history with
 revision of the existing model, then rerun service/voice/queue outcomes before
 another capped field comparison. This rejects an experiment, not the authorized
 improvement objective; installed `v0.0.3` remains the reference.
+
+### Congestion-history field comparison and per-lane demand reproduction — 2026-10-05
+
+**Observed temporary source:** `55407336fd88e17822971648093204ea9573a13f`
+(code `99b9c25`), SHA-256
+`439a5b26a294d375ca885b42468b43ebb9514217fc152cefa6cf57bd75247281`.
+This is one new paired set, not a repetition of the preceding source.
+
+| Guarded measurement | Baseline before | Candidate | Baseline after |
+|---|---:|---:|---:|
+| Low-rate upload, estimated Mbit/s | 0.276 | 0.175 | 0.172 |
+| Late upload, estimated Mbit/s | 0.232 | 1.511 | 1.388 |
+| Late whole-report bounds, Mbit/s | 0.188–0.292 | 1.185–1.809 | 1.114–1.651 |
+| Edge voice RTT p99, ms | 54.9 | 156.3 | 65.3 |
+| Hub voice RTT p99, ms | 53.7 | 123.3 | 62.7 |
+| Edge maximum receive gap, ms | 51.0 | 85.9 | 75.3 |
+| Hub maximum receive gap, ms | 49.3 | 109.0 | 69.3 |
+| Edge voice loss, % | 0 | 0.142 (2/1410) | 0 |
+| Hub voice loss, % | 0 | 0 | 0 |
+| Raw peer repairs / expirations / AQM drops | 1879 / 3 / 77 | 2070 / 8 / 22 | 2222 / 3 / 65 |
+
+The first baseline does not adapt to the rate increase; the last does.
+Immediate direct Starlink service is 0.521/0.522/0.510 Mbit/s, and 5G reaches
+the 3 Mbit/s offered cap (3.003/2.987/3.038). This shows variation in the
+transport result even with similar capped references; it does not prove RF
+conditions were identical. All voice-only preflights receive 500/500.
+Throughput estimates/bounds and guarded local voice windows use the preceding
+set's method. The raw peer counters are not efficiency ratios per unique TCP byte.
+
+**Decision:** no promotion or all-metric gain. The candidate improves late
+service against the first baseline and has better voice tails than the
+preceding experimental source, but candidate service overlaps the returning
+baseline, edge p99 exceeds 150 ms, and it loses the zero-loss baseline property.
+No download/combined measurement or three-run field acceptance is established.
+The model now passes tagged bidirectional-noise service three times at 148 ms
+RTT p99, but the upgrade deadline and 17 default bond tests remain failed.
+
+Both exact deployed baseline binaries, empty overrides, absence of owned
+timers/firewall rules, `noqueue` WAN qdiscs and the initial `raspi5l` policy are
+independently verified restored. Owned edge `/run` references are archived,
+content-compared and removed; verified inactive candidate binaries are removed
+from both hosts. Evidence is `congestion-history-field-upgrade-20261005/` and
+`field-direct-before-tunnel-congestion-history-*`. Mobile RX+TX is 23.517 MB
+for the comparison and 28.902 MB through cleanup. The enclosing interval of
+both new field sets through final cleanup is 63.778 MB, including their gap
+and background traffic; these nested intervals must not be added.
+
+**New observed sampler reproduction:** bulk is queued for an alternate lane
+while this lane reserves voice and admits no bulk. Two sparse voice receipts
+nevertheless certify 14,450 B/s as this lane's capacity after its earlier
+50,000 B/s estimate expires. Global backlog marks this lane's unsaturated
+flight as non-application-limited. The new outcome fails three times for that
+reason (`stage23-lane-sampling-demand-red.txt`) and is committed before
+replacement. Its first draft failed a fixture age precondition instead; that
+output is retained as `stage23-lane-sampling-demand-fixture-red.txt` and is not
+claimed as reproduction evidence. Per-lane eligible demand must qualify rate
+samples; a peer-wide queue cannot establish saturation of every lane. This
+is a code/model finding; its contribution to field tails remains inferred.
+Replace that qualification using existing class demand/reservations, rerun
+voice, service, aging and upgrade outcomes, and hold further metered trials
+until this narrower correction is reviewed by those outcomes. Installed
+`v0.0.3` remains the best accepted candidate and the improvement objective
+remains unfinished.
