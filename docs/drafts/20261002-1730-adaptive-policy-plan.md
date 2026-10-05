@@ -2156,7 +2156,9 @@ zero in this scheduler-only model, with all 19 older originals recovered,
 three times. The complete bond suite passes, as do three repetitions of the
 buffered rate/outage, standby startup and voice-lane failure guards. This
 establishes a scheduler correction, not an end-to-end latency or throughput
-gain. Full non-privileged, Nix and field verification are pending. Accepted
-policy remains `b444920` / `v0.0.3`.
+gain. The full non-privileged gate and Nix build pass on the isolated branch;
+frontend has 44 passing tests and all root/patched-engine checks pass. Main's
+documentation-only Nix build also passes. Field verification remains pending;
+accepted policy remains `b444920` / `v0.0.3`.
 Evidence is `stage23-{c8,b444920}-original-priority-red.txt`,
-`stage23-c8-original-priority-{green,green-measured,bond-gate}.txt`.
+`stage23-c8-original-priority-{green,green-measured,bond-gate,full-nonprivileged-gate,nix-build}.txt`.

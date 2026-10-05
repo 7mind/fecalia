@@ -2895,10 +2895,11 @@ scheduler choice `388a6d6` sends fresh small datagrams before pending repairs
 and fresh bulk. Fresh scheduler wait becomes zero three times, all 19 older
 originals still recover, and the full bond suite passes. The existing buffered
 rate/outage, standby startup and voice-lane failure guards pass three times.
-No estimator, copy trigger, constant or wire field changes. End-to-end field,
-full non-privileged and Nix verification remain pending; no VM/profile gate
-is inferred from the model. Evidence is
+No estimator, copy trigger, constant or wire field changes. Its full
+non-privileged gate and Nix build pass, including frontend's 44 tests and the
+patched engine. End-to-end field verification remains pending; no VM/profile
+gate is inferred from the model. Evidence is
 `stage23-{c8,b444920}-original-priority-red.txt` and
-`stage23-c8-original-priority-{green,green-measured,bond-gate}.txt`.
+`stage23-c8-original-priority-{green,green-measured,bond-gate,full-nonprivileged-gate,nix-build}.txt`.
 The rejected receipt-time delay choice separately has 22 default bond failures
 and a passing Nix build. No new complete VM/profile gate is claimed.
