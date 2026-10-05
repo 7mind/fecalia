@@ -1307,6 +1307,13 @@ mobile RX+TX is 9.665 MB during the diagnostic / 10.678 through cleanup.
 See the [attribution record](drafts/20261002-1730-adaptive-policy-plan.md#small-queue-attribution-in-the-field--2026-10-05)
 for timing, provenance and the still-unproven connection to pacing recovery.
 
+The experimental branch now retains qualified recovery evidence separately
+from raw congestion evidence, with observation age and the physical attempt's
+send time. Its two narrow recovery reproductions pass three times. Broader
+voice and utilization outcomes still fail, so this source is not promoted;
+main retains the baseline policy. See the [recovery-cohort checkpoint](drafts/20261002-1730-adaptive-policy-plan.md#recovery-cohort-checkpoint--2026-10-05)
+for the measured limitations and rejected alternatives.
+
 ### The multipath Bind — `internal/bind`
 
 The heart of wanbond: the `conn.Bind` implementation the engine drives. It:

@@ -2809,3 +2809,13 @@ intervals. Evidence is `queue-cause-field-diagnostic-20261005/`. The detailed
 numerical gates remain fixed. The default standby startup test separately
 reproduces 12 stale real-time drops and 88/100 delivery three times; it does
 not reproduce this field trace.
+
+
+The recovery-cohort prototype passes new actual-receipt reproductions for a
+qualified sample followed by sparse traffic and a late pre-response cohort.
+Observation age and physical send time serve different checks. Its existing
+steady/noise outcomes pass three times, but upgrade service is 280,320 B/s
+against a 75% gate on 417,458 B/s; voice-first constant-delay p99 is 83/175 ms.
+Startup and sole slow-lane failures remain. This is an experimental model
+checkpoint, not completed VM gates or a field improvement. Evidence is
+`stage23-post-response-qualified-recovery-repeat.txt`.

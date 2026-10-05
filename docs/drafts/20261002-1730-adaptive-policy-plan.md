@@ -1809,3 +1809,42 @@ The complete-ACK-round push experiment is also retained as rejected:
 but bidirectional noise rises to 158 ms p99, steady utilization falls to
 68.8%/78.8%, and upgrade service is 0/600 B/s. Extending every push is not
 an accepted correction (`stage23-fresh-pacing-complete-round-push-repeat.txt`).
+
+
+### Recovery cohort checkpoint — 2026-10-05
+
+Two recovery reproductions fail three times before correction: a sparse
+receipt hides a fresh qualified delivery sample, and a receipt arriving after
+a congestion response describes traffic sent before that response. The latter
+raises pacing from 18,050 to 57,000 B/s without observing service under the
+new target (`stage23-pre-response-cohort-recovery-red.txt`). Recovery beneath
+an older, larger capacity maximum is also covered using actual delivery
+observations (`stage23-qualified-recovery-old-maximum-red.txt`).
+
+The experimental replacement keeps the latest raw sample for congestion
+assessment and retains the latest qualified sample for recovery inside the
+same capacity model. Each keeps its observation timestamp; the qualified
+sample also carries the existing physical attempt's send time. Holding can
+recover only from fresh qualified traffic sent after the last response and
+only after the acknowledged drain. This replaces the raw-latest-receipt
+recovery rule; no synthetic traffic, wire field or constant is added. The
+controller still has 8 constants against baseline 31.
+
+All narrow recovery, sample-quality, clock and aging checks pass three times.
+Bidirectional-noise service remains at 134 ms RTT p99 with zero losses in
+900 sends per direction, and steady utilization remains 94.4%/99.0% with
+9.2/16.4 ms queue p90. The formerly slow lane improves to 280,320 B/s but
+still fails its 75% service gate against 417,458 B/s available service.
+Voice-first constant-delay p99 rises to 83/175 ms, exceeding its gate in one
+direction; standby startup remains 88/100 and sole slow-lane voice 77 ms.
+These are model observations, not a field improvement or accepted candidate.
+Evidence is `stage23-post-response-qualified-recovery-repeat.txt`.
+
+Rejected alternatives are retained: recovery from the largest retained
+capacity produces only 36,360 B/s upgrade service because the old maximum's
+age hides newer lower service. Replacing raw latest delivery with qualified
+latest delivery changes congestion assessment as well; it gives 345,600 B/s
+upgrade service but 151 ms noise p99 and 5/500 voice losses in the varying-delay
+startup model. Separating the uses fixes the narrow defect, but does not
+complete the voice or utilization gates. The relationship between these
+model defects and the field's stale real-time drops remains unproven.
