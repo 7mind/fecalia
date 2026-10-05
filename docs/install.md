@@ -391,6 +391,13 @@ queue drops. `small_queue_drops_total{class,cause}` splits that counter into
 `stale` (persistent real-time backlog shedding). The six series sum to the
 aggregate; they count drops before first transmission, excluding repair expiry
 and TCP ACK coalescing. They classify size/protocol, not applications.
+`small_queue_residence_seconds{class}` is a cumulative histogram of local
+queue wait from admission to first transport submission, with 1/5/10/20/50/100 ms
+buckets (plus `+Inf`), count and sum. It uses the same two classes and excludes
+copies, repairs, superseded ACKs and queued drops. Calculate interval bucket
+increments across snapshots of the same process; a restart resets the histogram.
+It does not measure socket/kernel/upstream queueing or confirmed transmission,
+and its distribution cannot be assigned to a specific application or echo.
 `interactive_queued_packets` counts small datagrams awaiting
 their first transmission. These distinguish local priority-queue contention
 from datagrams lost after transmission. `admission_drops_total` counts datagrams

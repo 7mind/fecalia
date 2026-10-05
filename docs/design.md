@@ -1259,6 +1259,12 @@ admission, expired residence deadline, or persistent real-time backlog shedding.
 The two class counters (`realtime`, `small_tcp`) each expose three causes;
 their sum equals the existing small-packet drop aggregate. Counting preserves
 the queue rules and adds no packet/application identification or wire field.
+Small-class queue residence is recorded once when a datagram leaves the local
+queue for its first transport submission. Its cumulative histogram separates
+this local wait from the lane's measured transit; repairs, copies, unsent drops
+and superseded ACKs are excluded. Snapshot counters remain passive and alter
+no pacing or scheduling decision. Transport submission does not establish a
+successful socket write; later socket/kernel/upstream waits are outside it.
 The deterministic transport and real UDP adapter share a delivery contract test;
 the [KVM lab](../test/vm/README.md) adds actual encryption, TUN interfaces, TCP
 and independently shaped WANs.

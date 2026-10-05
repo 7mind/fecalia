@@ -132,6 +132,11 @@ Prerequisites (all phases):
       has no small-queue drops but still has a 173 ms hub voice tail. Measure
       local queue residence separately from path transit before assigning
       that latency to a scheduling mechanism.
+      Collect interval increments of `small_queue_residence_seconds` count,
+      sum and buckets on both hosts alongside the local echo timestamps and
+      kernel shaper backlog. Reject reset/missing histogram windows. Queue
+      residence ends at first transport submission and excludes subsequent
+      socket or path waits; class histograms are not per-echo traces.
 - [ ] Record the removal timer's accuracy and actual firing time. For a
       latency-rise measurement, remove netem after receipt collection:
       deleting it while voice packets are queued can contaminate the loss

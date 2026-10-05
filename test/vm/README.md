@@ -2832,3 +2832,12 @@ restored; owned runtime references are archived/verified/removed. Mobile
 RX+TX is 25.009 MB during comparison / 26.618 through cleanup, overlapping
 intervals. Evidence is `qualified-cohort-field-upgrade-20261005/`; no new
 completed VM/profile gate or repeatable all-metric gain is claimed.
+
+
+Passive `small_queue_residence_seconds` histograms distinguish admission-to-first
+transport-submission waits from later socket/kernel/path time. The public
+transport/collector test first fails three times with 50/25 ms observed waits
+but no export, then passes with counting added. Repairs and queued expiry do
+not add residence samples. This changes no scheduler or wire field and has
+not yet localized the field tail. Evidence is
+`stage23-small-queue-residence-{red,green}.txt`.

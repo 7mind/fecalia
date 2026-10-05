@@ -1909,3 +1909,21 @@ binaries are removed. Mobile RX+TX is 25.009 MB during comparison and
 26.618 MB through cleanup. The enclosing interval of six sets, gaps and
 background is 281.832 MB. These intervals overlap; do not add them. Evidence
 is `qualified-cohort-field-upgrade-20261005/`.
+
+
+### Queue-residence measurement preparation — 2026-10-05
+
+The qualified-cohort field set has a 173 ms voice tail with no small-queue
+drops. The next component measurement adds passive local queue-residence
+histograms to the unchanged baseline policy. Before implementation, the
+public transport/collector reproduction fails three times on `a13f6eb`:
+two actual first submissions occur after 50/25 ms queue waits, but no
+residence metric is exported (`stage23-small-queue-residence-red.txt`).
+
+Counting then passes three times. A real retransmission and a separately
+expired queued datagram leave the original two histogram observations
+unchanged; six finite buckets retain the correct cumulative counts.
+Metrics, monitor and bind tests pass. This is an observation feature, not a
+policy estimator or throughput correction. No controller constant or wire
+field changes. The full gate and Nix build must pass before handover;
+field decomposition remains to be measured.
