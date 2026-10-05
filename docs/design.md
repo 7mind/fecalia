@@ -1314,6 +1314,15 @@ voice and utilization outcomes still fail, so this source is not promoted;
 main retains the baseline policy. See the [recovery-cohort checkpoint](drafts/20261002-1730-adaptive-policy-plan.md#recovery-cohort-checkpoint--2026-10-05)
 for the measured limitations and rejected alternatives.
 
+The qualified-cohort paired field set rejects promotion again: candidate
+late upload overlaps the returning baseline, while hub voice RTT p99 is
+172.9 ms against baseline 63.5/57.4 ms. No local small-queue drop occurs,
+so the large tail remains a separate unlocalized defect. Both deployed
+baseline binaries and temporary state are verified restored. Mobile RX+TX
+is 25.009 MB during comparison / 26.618 through cleanup. The
+[paired checkpoint](drafts/20261002-1730-adaptive-policy-plan.md#qualified-cohort-field-comparison--2026-10-05)
+records variation, 19 default bond failures and the still-incomplete gates.
+
 ### The multipath Bind — `internal/bind`
 
 The heart of wanbond: the `conn.Bind` implementation the engine drives. It:

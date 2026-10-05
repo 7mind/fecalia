@@ -1848,3 +1848,64 @@ upgrade service but 151 ms noise p99 and 5/500 voice losses in the varying-delay
 startup model. Separating the uses fixes the narrow defect, but does not
 complete the voice or utilization gates. The relationship between these
 model defects and the field's stale real-time drops remains unproven.
+
+
+### Qualified-cohort field comparison — 2026-10-05
+
+**Observed experimental source:** `0e5de63c219f4f890301370dbb2a891f03e8f808`
+(code `568b5a8`), SHA-256
+`f14f738dbfe430bd603b7e070358801164ff415ff93ba6c3672987d44806baa1`.
+The completed non-privileged gate has 19 bond failures. Frontend's 44 tests,
+build, vet, patched-engine tests, formatting and all other Go packages pass;
+Nix build passes. This source remains experimental.
+
+The paired field set uses fresh starts, identical pinned host executables,
+voice-only preflights (500/500 on both hosts in all three rounds), immediate
+capped direct references and the same selective 400 kbit/s → 2 Mbit/s
+uplink change. No WAN is blacked out.
+
+| Guarded local measurement | Baseline before | Candidate | Baseline after |
+|---|---:|---:|---:|
+| Low-rate upload estimate, Mbit/s | 0.240 | 0.267 | 0.152 |
+| Low-rate whole-report bounds, Mbit/s | 0.217–0.264 | 0.243–0.275 | 0.137–0.181 |
+| Late upload estimate, Mbit/s | 0.282 | 1.338 | 1.395 |
+| Late whole-report bounds, Mbit/s | 0.213–0.346 | 1.091–1.651 | 1.114–1.678 |
+| Edge voice RTT p99, ms | 45.2 | 79.4 | 56.5 |
+| Hub voice RTT p99, ms | 63.5 | 172.9 | 57.4 |
+| Edge/hub maximum receive gap, ms | 64.3/73.1 | 69.5/72.8 | 58.0/57.1 |
+| Edge/hub voice losses | 0/1424 / 0/1405 | 0/1417 / 1/1398 | 0/1418 / 0/1414 |
+| Raw edge peer repairs / expirations / AQM drops | 1792 / 7 / 81 | 1870 / 1 / 21 | 2386 / 3 / 60 |
+| Raw edge/hub small-queue drops | 0/0 | 0/0 | 0/0 |
+
+**Decision:** reject promotion. Low-rate bounds overlap the first baseline,
+and late bounds overlap the returning baseline. Hub voice p99 exceeds
+150 ms and both baseline tails; one hub echo is lost where both baselines
+lose none. The first baseline's low late throughput is retained rather than
+selected as sole comparison. No repeatable all-metric gain, download gain or
+completed stage is established.
+
+Direct receiver first-to-last upload rates are 0.503/0.525/0.527 Mbit/s
+Starlink and 2.942/2.938/2.934 Mbit/s 5G at a 3 Mbit/s offered ceiling.
+They are contemporaneous references, not proof of identical RF conditions
+or uncapped 5G capacity. The candidate's complete local trace has no small
+queue drops, and every six-series sum matches its aggregate. Therefore the
+remaining large voice tail cannot be assigned to the queue-shedding cause
+observed in the preceding diagnostic; its component and the lost echo's
+cause remain unknown. Queue residence and path transit need separate
+measurements before another scheduling correction.
+
+Candidate observer maximum wake delay is 1.737 ms edge / 0.241 ms hub;
+maximum aggregate busy CPU is 21.1%/18.6% over guarded local intervals.
+Disabled scheduler statistics and the observer's own wakes do not establish
+wanbond scheduling latency or exclude a short busy-core interval. Peer
+repair/copy/expiry counters include voice, feedback and other peer traffic;
+they are not useful TCP byte efficiency ratios.
+
+Both exact deployed baseline hashes, empty overrides, absence of owned
+timers/firewall rules, original WAN qdiscs and the initial `raspi5l` policy
+are independently verified restored. Owned edge runtime references are
+archived, content-compared and removed; both verified inactive candidate
+binaries are removed. Mobile RX+TX is 25.009 MB during comparison and
+26.618 MB through cleanup. The enclosing interval of six sets, gaps and
+background is 281.832 MB. These intervals overlap; do not add them. Evidence
+is `qualified-cohort-field-upgrade-20261005/`.

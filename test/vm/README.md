@@ -2819,3 +2819,16 @@ against a 75% gate on 417,458 B/s; voice-first constant-delay p99 is 83/175 ms.
 Startup and sole slow-lane failures remain. This is an experimental model
 checkpoint, not completed VM gates or a field improvement. Evidence is
 `stage23-post-response-qualified-recovery-repeat.txt`.
+
+
+The subsequent `0e5de63` field comparison retains both baselines: candidate
+late upload bounds 1.091–1.651 Mbit/s overlap the returning baseline's
+1.114–1.678. Hub voice p99 is 172.9 ms versus 63.5/57.4 ms baseline, with
+one lost echo and no local small-queue drops. Promotion is rejected; the
+component causing the tail is unknown. The completed default gate has 19
+bond failures; all other non-privileged parts and Nix build pass. Both exact
+deployed baselines and temporary network state are independently verified
+restored; owned runtime references are archived/verified/removed. Mobile
+RX+TX is 25.009 MB during comparison / 26.618 through cleanup, overlapping
+intervals. Evidence is `qualified-cohort-field-upgrade-20261005/`; no new
+completed VM/profile gate or repeatable all-metric gain is claimed.

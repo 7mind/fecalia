@@ -128,6 +128,10 @@ Prerequisites (all phases):
       observes real-time backlog shedding. Preserve startup samples outside
       the guarded performance window; metric intervals and missing echo
       sends give timing correlation, not identification of the lost leg.
+      The [qualified-cohort set](drafts/20261002-1730-adaptive-policy-plan.md#qualified-cohort-field-comparison--2026-10-05)
+      has no small-queue drops but still has a 173 ms hub voice tail. Measure
+      local queue residence separately from path transit before assigning
+      that latency to a scheduling mechanism.
 - [ ] Record the removal timer's accuracy and actual firing time. For a
       latency-rise measurement, remove netem after receipt collection:
       deleting it while voice packets are queued can contaminate the loss
