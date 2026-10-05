@@ -2754,3 +2754,22 @@ though this lane has unused service. The initial fixture-age failure is retained
 separately and is not evidence for the defect. This is a model finding, not a
 proven explanation of the field result. Replace global sampling qualification
 with existing per-lane class demand before another capped trial.
+
+### Eligible-backlog field checkpoint — 2026-10-05
+
+Source `fd088cc` passes the new sampling outcomes, tagged upgrade and fast
+shared-lane service three times; 16 default bond outcomes remain failed. Its
+new field comparison is rejected: estimated late upload 1.425 Mbit/s overlaps
+before/after bounds, while edge/hub voice RTT p99 reaches 188/175 ms and
+reply loss rises from zero to 4/1412 and 1/1402. No download or three-run
+acceptance is claimed. Evidence is `lane-demand-field-upgrade-20261005/`.
+Both baseline binaries and cleared temporary state are independently verified;
+owned runtime references are archived/content-compared and removed. Mobile
+RX+TX is 26.179 MB for comparison and 28.218 MB through cleanup; the enclosing
+three-set interval is 108.600 MB including gaps/background, not an additive sum.
+
+Two new reproductions show congestion handling revising fresh capacity from
+application-limited voice or expired delivery (`stage23-congestion-sample-quality-red.txt`).
+The initial correction passes them but regresses sole slow-lane voice to
+497/500 at 97 ms one-way p99; it is withheld from field testing. Numerical
+gates remain unchanged and installed `v0.0.3` remains the reference.

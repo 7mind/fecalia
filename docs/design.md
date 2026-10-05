@@ -614,6 +614,16 @@ can undo a congestion cut using the preceding capacity sample without a new
 delivery measurement; that defect is observed in the model, while its
 contribution to the field regression remains inferred.
 
+**Eligible-backlog field checkpoint, 2026-10-05.** Experimental source
+`fd088cc` delivers estimated late upload 1.425 Mbit/s against 1.231/1.385
+before/after; whole-report bounds overlap. Voice RTT p99 is 188/175 ms with
+4/1412 and 1/1402 lost replies, while both baselines are lossless. It is
+rejected for promotion. Both exact baseline executables and cleared temporary
+network/runtime state are independently verified. The next reproduced defects
+are unqualified sparse and expired samples revising capacity during congestion;
+the first correction regresses sole slow-lane voice and is withheld from field
+testing. These observations do not establish a field cause or all-metric gain.
+
 **Congestion-history field checkpoint, 2026-10-05.** Source `5540733`
 has late upload 0.232/1.511/1.388 Mbit/s; the returning baseline overlaps the
 candidate's throughput bounds. Candidate voice p99 is 156/123 ms versus

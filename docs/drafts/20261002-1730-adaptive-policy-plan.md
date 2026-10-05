@@ -1598,3 +1598,53 @@ voice, service, aging and upgrade outcomes, and hold further metered trials
 until this narrower correction is reviewed by those outcomes. Installed
 `v0.0.3` remains the best accepted candidate and the improvement objective
 remains unfinished.
+
+### Eligible-backlog field comparison — 2026-10-05
+
+**Observed temporary source:** `fd088cc590001d9e0efe9fe0b901337dc8aa8181`
+(code `7bc31b5`), SHA-256
+`f9aa0ce857cd5486233466c4775b798f3006432c59f015db84581babad376c96`.
+This is one paired set, using the same bounded direct references, cold restarts,
+voice-first preflights, 400 kbit/s → 2 Mbit/s selective uplink shape and
+baseline/candidate/baseline method as the preceding sets.
+
+| Guarded measurement | Baseline before | Candidate | Baseline after |
+|---|---:|---:|---:|
+| Low-rate upload, estimated Mbit/s | 0.158 | 0.186 | 0.151 |
+| Late upload, estimated Mbit/s | 1.231 | 1.425 | 1.385 |
+| Late whole-report bounds, Mbit/s | 1.002–1.513 | 1.162–1.734 | 1.121–1.661 |
+| Edge voice RTT p99, ms | 71.6 | 188.2 | 51.1 |
+| Hub voice RTT p99, ms | 77.3 | 175.0 | 47.5 |
+| Edge maximum receive gap, ms | 63.1 | 85.0 | 73.3 |
+| Hub maximum receive gap, ms | 326.7 | 92.1 | 76.1 |
+| Edge voice loss, % | 0 | 0.283 (4/1412) | 0 |
+| Hub voice loss, % | 0 | 0.071 (1/1402) | 0 |
+| Raw peer repairs / expirations / AQM drops | 2242 / 0 / 31 | 1839 / 14 / 27 | 2494 / 1 / 48 |
+
+The baseline's isolated 326.7 ms hub gap is retained; its cause is unknown.
+Throughput bounds overlap, while candidate voice violates 150 ms p99 and
+loses the zero-loss baseline property. **Decision:** reject promotion; no
+repeatable all-metric gain is established. The corrected sampling outcomes
+pass three times, including tagged upgrade and fast shared-lane service, but
+16 default bond outcomes remain failed. Model progress does not accept this
+policy. No download, combined-direction or three-run acceptance is claimed.
+
+Both exact deployed baseline binaries, empty overrides, no owned
+timers/firewall rules, `noqueue` WAN qdiscs and the initial `raspi5l` policy
+are independently verified restored. The three owned edge `/run` reference
+directories are archived, content-compared and removed; the verified inactive
+candidate binary is removed from both hosts. Evidence is
+`lane-demand-field-upgrade-20261005/` and immediate
+`field-direct-before-tunnel-lane-demand-*` folders. Mobile RX+TX is 26.179 MB
+for comparison and 28.218 MB through cleanup. The enclosing interval of all
+three new sets, their gaps and background is 108.600 MB; these intervals overlap.
+
+**Next observed reproductions:** congestion handling replaces a fresh
+100,000 B/s capacity estimate with sparse application-limited voice at
+14,450 B/s, or with expired delivery at 20,000 B/s. Each fails three times
+before replacement (`stage23-congestion-sample-quality-red.txt`). Preserving
+sample qualification and age fixes these outcomes and improves tagged
+bidirectional noise to 123 ms RTT p99, but regresses sole slow-lane voice
+from 500/500 at 75 ms to 497/500 at 97 ms. This uncommitted variant receives
+no field trial. Investigate that service regression before another metered
+comparison; the accepted `v0.0.3` reference remains unchanged.
