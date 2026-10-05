@@ -2545,3 +2545,69 @@ and `stage23-main-primed-standby-upload-final-red.txt`,
 `stage23-estimator-primed-standby-upload-red.txt` and
 `stage23-estimator-fresh-priority-primed-standby-upload-control.txt`.
 No performance source is promoted; b444920 remains the field baseline.
+
+### Receipt endpoint field result and feedback timing — 2026-10-05
+
+**Observed:** unaccepted source `1bc29ef`, executable SHA-256
+`837ccef088155942dd8f2063d3d62e747cb6f8c56c13a982c578c4611d26beae`,
+completes another 400 kbit/s → 2 Mbit/s B/C/B field upload set. Each phase
+sends 2750 echoes per direction. Receiver low-window bounds are
+0.137–0.157 / 0.186–0.213 / 0.130–0.166 Mbit/s; the candidate's lower bound
+exceeds both baseline upper bounds. Late-window bounds overlap:
+1.096–1.622 / 1.223–1.816 / 1.125–1.665 Mbit/s. Guarded TCP-active voice p99
+is 47.6/50.8, 154.2/156.7 and 64.9/62.8 ms edge/hub. Whole-run echo losses
+are 0/0, 8/8 and 0/1. Candidate hub loses four consecutively and has a 152 ms
+arrival gap. Low-rate upload improves in this bounded workload; voice
+regresses and the source is not promoted.
+
+New source-bound ICMP samples to the concentrator public IP precede each
+phase. Starlink RTT p99 is 40.9/42.3/49.9 ms and 5G 164/98.4/129 ms.
+These describe immediate idle conditions, not service during the tunnel
+measurement. Capped upload references to the OCI worker take a different
+route: Starlink 0.497/0.507/0.507 and 5G 2.967/3.005/2.861 Mbit/s under
+1/3 Mbit/s offers. Near-offer rates remain service lower bounds. **Inference:**
+the candidate's preceding idle 5G tail does not explain its loaded regression;
+physical fluctuations during load still prevent packet-level attribution.
+
+Candidate edge counters show 15 real-time stale-queue drops, 27 expired
+originals and real-time local residence p99 bounded by 50 ms; hub real-time
+drops are zero, residence p99 at most 1 ms. TBF backlog/rate p99 is 175 ms
+in the candidate low window, a service-time proxy, not measured packet delay.
+All phases retain both boot identities and complete cleanup. Independent
+checks verify deployed b444920 hashes, `auto` policy, removed overrides,
+absence of temporary timers/firewall rules and unshaped queues. Owned inactive
+binaries and archived reference directories are removed. Mobile RX+TX with
+background is 27.743 MB during comparison, 28.834 MB through cleanup,
+plus 0.877 MB separate staging; comparison and cleanup intervals overlap.
+Evidence is `estimator-cohort-endpoints-field-upload-20261005/`.
+
+This endpoint source passes its new clock-accounting guards three times and
+builds natively and for ARM, but fails 24 default bond tests. Correcting the
+clock also removes the preceding source's complete quiet 2a pass: payload
+is 458400 B/s and voice p99 65 ms with zero loss, but four originals expire
+together. Voice-primed upload remains 1200 B/s and one model direction now
+misses the 1% loss check. These failures are retained. Untouched `f75668e`
+transport, with the current TCP model and API-adapted fixture, fails the quiet
+case three times at 81600 B/s and the same four-expiration burst; it fails
+primed upload three times at 25200 B/s. Only test harness files differ.
+Evidence is `stage23-original-buffered-and-primed-{red.txt,fixture.patch}` and
+`stage23-estimator-cohort-endpoints-{full-nonprivileged-gate,buffered-and-primed}.txt`.
+
+A narrower public reproduction suspends bulk at 60 ms despite a known 100 ms
+path round trip, available pacing and window room, before feedback could
+return. It fails three times. Replacing suspicion based solely on ACK cadence
+with aged path-delay/jitter plus cadence fixes that case three times, while
+preserving stale physical-feedback expiry. This later liveness source has
+no field result yet. The quiet model reaches 504000 B/s but still fails the
+expired burst; primed starvation remains. **Intended work:** verify broader
+liveness guards, then measure any further proposal in the field. No new
+constant, estimator, synthetic probe, copy trigger or wire field is added.
+Evidence is `stage23-feedback-due-liveness-{red,green-attempt}.txt`.
+
+Two C8-only diagnostics are rejected: qualifying the quiet alternate's
+service leaves primed upload at 28800 B/s; additionally disabling optional
+copies reduces it to 13200 B/s. Neither is field activated; their patches and
+three-run logs are retained as `stage23-c8-qualified-quiet-lane-*` and
+`stage23-c8-no-optional-copy-diagnostic.*`. Copies alone do not explain that
+model deficit. Main policy and release remain unchanged; host-loaded lab
+latency/goodput is diagnostic and field comparisons determine gains.

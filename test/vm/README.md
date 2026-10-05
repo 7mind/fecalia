@@ -3098,3 +3098,17 @@ Mobile RX+TX including background through cleanup is 28.703 and 27.892 MB;
 separate staging uses 0.887 and 0.843 MB. Comparison intervals are subsets,
 not extra usage. Evidence, executable identity, bounds and next investigation
 are in the [field record](../../docs/drafts/20261002-1730-adaptive-policy-plan.md#capped-field-upload-and-qualified-receipt-sampling--2026-10-05).
+
+The receipt-endpoint field set (`1bc29ef`) improves low-upload bounds to
+0.186–0.213 Mbit/s against 0.137–0.157 and 0.130–0.166, but worsens loaded
+voice p99 to 154/157 ms and whole-run losses to 8/8 of 2750 per direction.
+Native/ARM builds pass; 24 default bond checks fail. Untouched f75668e
+transport also fails the two newer upload progression cases three times;
+its API-adapted current-model fixture is archived. All field boot, identity,
+restoration and owned-cleanup checks pass; mobile RX+TX through cleanup is
+28.834 MB plus 0.877 MB separate staging. Direct idle ICMP delay now targets
+the concentrator public IP; capped TCP references still use the OCI route.
+Neither predicts service throughout a later tunnel phase. A further public
+reproduction shows bulk suspended before a known 100 ms round trip; the
+liveness correction passes that check three times but has no field result.
+See the [measurement and timing record](../../docs/drafts/20261002-1730-adaptive-policy-plan.md#receipt-endpoint-field-result-and-feedback-timing--2026-10-05).

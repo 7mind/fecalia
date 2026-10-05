@@ -2619,3 +2619,12 @@ These are recorded design boundaries, not defects:
 - [install.md](install.md) — deployment and operation.
 - [manual-checklist.md](manual-checklist.md) — manual per-phase + real-link
   verification.
+
+A corrected receipt-endpoint experiment (`1bc29ef`) repeats a bounded field
+low-upload gain, but raises TCP-active voice p99 to 154/157 ms and loses 8/8
+echoes against 0/0 and 0/1 in adjacent baselines. The field source still fails
+24 default model checks and is independently restored to the deployed build.
+A later public timing reproduction also finds bulk suspended before its known
+path round trip can return feedback. Including aged path delay/jitter in the
+suspicion interval fixes that case; its broader checks and field behavior
+remain unproved. See the [endpoint field and timing record](drafts/20261002-1730-adaptive-policy-plan.md#receipt-endpoint-field-result-and-feedback-timing--2026-10-05).
