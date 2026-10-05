@@ -186,7 +186,7 @@ runcmd:
             for required in ("passwordauthentication no", "kbdinteractiveauthentication no", "permitrootlogin prohibit-password"):
                 if required not in policy:
                     raise RuntimeError(f"{guest}: SSH policy missing {required}")
-            probe = subprocess.run(self.ssh_args(guest)[:-1] + ["-vv", "-o", "PubkeyAuthentication=no", "-o", "PreferredAuthentications=password,keyboard-interactive", "root@127.0.0.1", "true"], capture_output=True, text=True)
+            probe = subprocess.run(self.ssh_args(guest)[:-1] + ["-S", "none", "-vv", "-o", "PubkeyAuthentication=no", "-o", "PreferredAuthentications=password,keyboard-interactive", "root@127.0.0.1", "true"], capture_output=True, text=True)
             (self.state / guest / "ssh-disallowed-methods.log").write_text(probe.stderr)
             if probe.returncode != 255 or "Authentications that can continue: publickey" not in probe.stderr:
                 raise RuntimeError(f"{guest}: SSH rejection probe inconclusive; inspect its log")
