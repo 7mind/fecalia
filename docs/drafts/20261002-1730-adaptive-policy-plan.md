@@ -1187,3 +1187,77 @@ and change are retired, with `stage23-forced-drain-rejected*` retained. Further
 probe-gain and flight-limit trials retain their failures separately. Continue
 against public delivery, latency and efficiency outcomes, rather than adding
 constraints to make private state tests pass.
+
+### Estimator replacement field tradeoff — 2026-10-05
+
+**Observed:** the unmerged `adaptive-estimator-candidate` branch applies the
+delay replacement before the capacity replacement, in separate code/docs
+commits. Field source `b5948c5` uses aged delay evidence, sender/ACK-clock
+delivery samples and bounded pushes of queued real traffic from `Poll`.
+It removes the superseded controller; `control.go` contains 12 constants,
+against C8's 31. ACK v1 and the wire format are unchanged. Its cross-built
+arm64 executable SHA-256 is
+`d022ab214c5c4bf140be7e31e0be0a6aa93d93d92ab2c301e04c50bfdb3b8b61`.
+Its Nix build passes. This is an experiment, not an accepted replacement.
+
+One cold baseline → candidate → baseline field set repeats the preceding
+400 kbit/s → 2 Mbit/s mobile-UDP shaping, thirty-second TCP upload offered
+at 3 Mbit/s, 1,200-byte writes and simultaneous voice. Voice-only preflights
+and immediate direct uplink references precede each phase. Starlink upload
+references are 0.518 / 0.527 / 0.530 Mbit/s; mobile references are
+2.985 / 2.981 / 2.965 Mbit/s at the 3 Mbit/s offer, hence lower bounds.
+Verified 120-second network cleanup and 15-minute candidate restoration
+timers protect the trial. The classifier excludes management traffic.
+
+| Observed measurement | Baseline before | Candidate | Baseline after |
+|---|---:|---:|---:|
+| Approximate TCP payload in receiver seconds [5,15), Mbit/s | 0.287 | 0.150 | 0.273 |
+| Approximate TCP payload in receiver seconds [25,30), Mbit/s | 0.284 | 1.415 | 0.286 |
+| Whole-report bounds for [25,30), Mbit/s | 0.217–0.334 | 1.135–1.692 | 0.234–0.332 |
+| Voice p99 during guarded local TCP activity, edge/hub RTT ms | 50.3 / 48.5 | 167.9 / 139.2 | 49.2 / 48.3 |
+| Edge voice lost/sent | 0/1429 | 2/1411 | 0/1421 |
+| Hub voice lost/sent | 0/1417 | 0/1403 | 0/1395 |
+
+The receiver-report bounds establish a late-window service increase within
+this paired set. The low-rate window and voice distributions regress.
+Neither repeatability, an exact adaptation deadline nor improvement on all
+metrics follows. The earlier baseline field set recovered at 1.36–1.55
+Mbit/s; the current baseline does not. Direct capped references alone cannot
+explain that variation. Preserve both sets rather than choosing the more
+favorable baseline. Sender-first voice cleanup now prevents the earlier
+trailing-miss artifact; analysis still uses each host's guarded local clock.
+
+**Observed model limits:** the two-lane upgrade case passes identically
+three times on this source: deadline/sustained payload 192,000/175,680 B/s
+against the 217,408 B/s independent reference, zero voice loss and 36 ms p99
+in both directions. Baseline voice p99 is 24 ms. A full tagged run of
+scenarios 2a–2d, 3a–3c and 0 still fails every top-level case. All unloaded
+3a–3c variants pass; every bulk-loaded variant fails. Only gigaradio passes
+2d. Other variants fail on the retained delivery, voice, ranking or expiry
+checks. The preceding bulk-demand-only version also fails 18 default bond
+tests; this source's selected slow-survivor voice, ACK-backlog and small-flow
+discovery outcomes remain failed. A successful build is not a passing policy
+gate. These deterministic model results are distinct from host CPU effects.
+
+**Inference for the next experiment:** field samples show post-push excess
+delay alongside increasing path-delay estimates and larger flight allowance.
+A reproduction confirms that a draining lane with 50 ms measured excess
+delay can qualify as unqueued using pre-push rate averages. That qualification
+defect is reproduced before its correction; whether correcting it improves
+field voice remains unmeasured. Continue by bounding queued probe service
+and testing voice and throughput together, rather than promoting this source.
+
+**Observed restoration/accounting:** both hosts are independently verified
+on `b444920`, with empty runtime overrides, inactive trial timers, no test
+firewall rules, original `noqueue` WANs and exit policy `auto`. This comparison
+uses 21.805 mobile RX+TX MB including management/background; the enclosing
+interval through cleanup uses 26.516 MB. They overlap and must not be added.
+Three owned edge `/run` reference directories are archived, their contents
+compared with the originals, then removed; the trial executable is removed
+from both hosts. Active configuration remains. Archive
+`/var/tmp/wanbond-estimator-reference-archive-20261005.tar.gz` has SHA-256
+`4dbf8b18822850938a82b661666fe9d2ceb6cda92d1da497ce4977b169aade3f`.
+Raw records, source identity, bounded analysis, timers and cleanup checks are
+in `/srv/nvme/tmp/wanbond-adaptive-evidence/estimator-field-upgrade-20261005/`.
+Main retains the installed baseline policy. Failed experiments guide further
+work; the revised improvement objective in section 11 remains unfinished.

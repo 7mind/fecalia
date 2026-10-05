@@ -555,6 +555,22 @@ and ACK v1 remain unchanged; the
 [execution record](drafts/20261002-1730-adaptive-policy-plan.md#controlled-uplink-upgrade-and-two-lane-reproduction--2026-10-05)
 retains inputs, uncertainty, source and failed experiments.
 
+**Estimator field tradeoff, 2026-10-05.** An unmerged delay/capacity replacement
+(`b5948c5`) schedules bounded pushes of queued real traffic from `Poll` and
+removes the superseded controller (12 `control.go` constants versus C8's 31).
+In one temporary baseline → candidate → baseline rate-upgrade comparison,
+late-window uplink payload is approximately 0.28 / 1.41 / 0.29 Mbit/s;
+whole-report bounds preserve that increase. Voice regresses: edge p99 is
+50 / 168 / 49 ms, with two candidate losses, and hub p99 is 48 / 139 / 48 ms.
+The candidate's earlier low-rate payload also falls. The deterministic upgrade
+model passes three times, but other voice and adaptation outcomes remain
+failed. This is a measured tradeoff, not improvement across the metric set
+or a completed stage. Both hosts are restored to `b444920`, and main's policy
+is unchanged. The
+[execution record](drafts/20261002-1730-adaptive-policy-plan.md#estimator-replacement-field-tradeoff--2026-10-05)
+retains source, differing baseline runs, failed checks, accounting and the
+post-push delay-qualification hypothesis for the next experiment.
+
 **Paths and epochs.** An unpadded challenge-protected PROBE carries a 22-byte
 capability record: `bond`, version 1, physical path ID, process Boot ID and Bind
 Open generation. Padded PMTU probes retain their original size. A logical lane

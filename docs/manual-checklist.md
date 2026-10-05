@@ -104,6 +104,12 @@ Prerequisites (all phases):
       to guarded intervals when both remain active. The
       [controlled upgrade record](drafts/20261002-1730-adaptive-policy-plan.md#controlled-uplink-upgrade-and-two-lane-reproduction--2026-10-05)
       retains these collection defects and the rejected candidate's result.
+- [ ] Compare both the low-rate and recovery windows, with simultaneous voice.
+      A recovery goodput increase can coincide with worse low-rate service,
+      latency and loss. The
+      [estimator field comparison](drafts/20261002-1730-adaptive-policy-plan.md#estimator-replacement-field-tradeoff--2026-10-05)
+      observes that tradeoff; retain all baseline sets and report uncertainty
+      rather than selecting the baseline that makes the candidate look best.
 - [ ] Record the removal timer's accuracy and actual firing time. For a
       latency-rise measurement, remove netem after receipt collection:
       deleting it while voice packets are queued can contaminate the loss

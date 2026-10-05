@@ -2630,3 +2630,29 @@ links source, full measurement provenance, rejected hypotheses and accounting.
 nix develop --command go test -tags adaptivepolicy ./internal/bond \
   -run '^TestAdaptiveVoiceLaneUplinkUpgrade$' -count=3 -timeout=15m -v
 ```
+
+### Estimator replacement field tradeoff — 2026-10-05
+
+Unmerged source `b5948c5` replaces delay then capacity estimation and moves
+bounded real-traffic pushes into `Poll`. The deterministic two-lane upgrade
+case passes identically three times at 192,000/175,680 B/s deadline/sustained
+payload, versus a 217,408 B/s independent reference. Voice loses none at
+36 ms p99, compared with baseline 24 ms. A full scenario 2a–2d, 3a–3c, 0
+run still fails every top-level case: unloaded delay-change variants pass,
+all bulk-loaded delay-change variants fail, and only gigaradio passes 2d.
+Selected default slow-survivor voice, ACK backlog and small-flow discovery
+also fail. No three-run lab series or accepted policy is established.
+
+A bounded field baseline → candidate → baseline controlled rate upgrade
+delivers approximately 0.28 / 1.41 / 0.29 Mbit/s in the late receiver window;
+report bounds preserve the increase. Edge voice p99 is 50 / 168 / 49 ms with
+two candidate losses; hub p99 is 48 / 139 / 48 ms. The low-rate window also
+regresses. This paired set establishes a tradeoff and does not explain why
+the earlier field baselines recovered faster. Mobile RX+TX is 21.805 MB for
+the comparison, 26.516 MB through cleanup; those intervals overlap.
+Both baseline binaries, empty overrides, cleared test timers/firewall rules,
+original qdiscs and exit policy are independently verified after restoration.
+Owned `/run` reference artifacts and temporary binaries are removed after
+archive verification. The
+[execution record](../../docs/drafts/20261002-1730-adaptive-policy-plan.md#estimator-replacement-field-tradeoff--2026-10-05)
+retains source, uncertainty, reproduction and the next experiment.
