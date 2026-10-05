@@ -2639,3 +2639,12 @@ for sparse unloaded-delay learning while retaining congestion qualification.
 Model and field observations remain separate; CPU-distorted lab elapsed times
 cannot establish a field performance gain. See the
 [current-delay field record](drafts/20261002-1730-adaptive-policy-plan.md#current-delay-field-comparison--2026-10-05).
+
+The unloaded-delay revision `97f5509` passes quiet rate fall completely three
+times in the model but still fails 24 default bond checks. Its subsequent
+field comparison raises low-upload bounds to 0.268–0.302 Mbit/s against
+0.144–0.183 and 0.149–0.184. Loaded voice p99 is 112/95 ms, versus 95/100
+before and 58/62 after; no improvement across all metrics is established.
+The candidate delivers all 2750 echoes each way, and both hosts are restored
+and independently verified. No policy or release is promoted. See the
+[unloaded-delay field record](drafts/20261002-1730-adaptive-policy-plan.md#unloaded-delay-field-result--2026-10-05).

@@ -2669,3 +2669,55 @@ times; broader checks and field performance remain pending. No new estimate,
 constant, synthetic probe, optional-copy trigger or wire field is added.
 The installed baseline remains `b444920` / `v0.0.3`. Host CPU spikes can distort
 lab timings; performance acceptance rests on field comparisons.
+
+### Unloaded-delay field result — 2026-10-05
+
+**Observed source:** unaccepted `97f5509df1ce2c567ce201dfe949855a191aca14`,
+SHA-256 `057e9f0f58f006cbc8f7c2c111faa4c3576a745ff5bc930483a1f5844d8db0fd`.
+It retains unloaded qualification while removing the settled delivery-rate
+prerequisite. The sparse-ACK reproduction and window/congestion guards pass
+three times. Quiet rate fall passes completely three times at 512400 B/s per
+direction, zero voice loss, 66 ms RTT p99 and no expired-burst failure. Primed
+upload is 34800 B/s against 36563 required, still failing. The full
+non-privileged gate has 24 bond failures; frontend's 44 tests, build/vet,
+patched engine, formatting and all other packages pass. Nix/ARM builds pass.
+Evidence is `stage23-unloaded-current-delay-*.txt`.
+
+Its timer-backed 400 kbit/s → 2 Mbit/s field comparison completes:
+
+| Observed metric | Baseline before | Candidate | Baseline after |
+|---|---:|---:|---:|
+| Low-window upload bounds, Mbit/s | 0.144–0.183 | 0.268–0.302 | 0.149–0.184 |
+| Late-window upload bounds, Mbit/s | 1.104–1.622 | 1.044–1.572 | 1.100–1.596 |
+| TCP-active voice RTT p99, edge/hub ms | 95.3/99.8 | 112.1/95.4 | 57.8/62.4 |
+| Whole-phase voice RTT p99, edge/hub ms | 175.4/169.9 | 110.2/85.5 | 58.2/59.4 |
+| Missing echoes of 2750, edge/hub | 5/5 | 0/0 | 0/0 |
+| Whole-phase maximum receive gap, edge/hub ms | 161.9/153.6 | 89.8/82.8 | 66.0/66.3 |
+
+Low-upload bounds improve against both baselines; late bounds overlap.
+Candidate whole-phase loss/tail improve against the first baseline, but the
+return baseline has a lower tail, and loaded edge p99 worsens against both.
+An improvement across all metrics is not established; no promotion occurs.
+Each host's loaded guard uses local TCP timestamps; bounds use whole receiver
+reports and do not prove an exact adaptation deadline.
+
+Immediate physical upload references to the different OCI route are Starlink
+0.510/0.514/0.504 Mbit/s and 5G 3.010/3.023/3.084 under 1/3 Mbit/s offers;
+near-offer values are lower bounds, not capacity. Idle ICMP to the concentrator
+has Starlink RTT p99 69.6/59.2/53.8 ms and 5G 180/92.7/198 ms. These adjacent
+samples do not establish UDP service throughout the loaded measurement.
+Candidate local real-time residence p99 is bounded by 5/1 ms and no stale
+real-time drops occur. Guarded expired-original deltas are 8/0 edge/hub,
+against 8/2 before and 12/0 after; expiry alone does not prove non-delivery.
+
+Both boot identities remain stable. Deployed b444920 hashes, original `auto`
+policy, removed overrides, unshaped queues, absence of temporary firewall
+rules/timers and owned inactive runtime-file cleanup are independently
+verified. Mobile RX+TX including background is 27.715 MB during comparison,
+28.572 MB through cleanup (overlapping), plus 0.773 MB separate staging.
+Evidence is `estimator-unloaded-delay-field-upload-20261005/`.
+
+**Intended next work:** check class allocation and optional-copy cost while
+preserving voice delivery/deadline outcomes, then measure any resulting
+proposal in the field. Existing model failures remain visible; host-loaded
+lab elapsed-time metrics cannot establish performance improvement.

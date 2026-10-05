@@ -3129,3 +3129,14 @@ and owned inactive files are removed. Mobile RX+TX through cleanup is
 is nested and must not be added. Evidence is
 `estimator-current-delay-field-upload-20261005/`. Field comparisons determine
 performance acceptance; host-loaded lab throughput and tails remain diagnostic.
+
+The later unloaded-delay source `97f5509` passes the complete quiet rate-fall
+model three times, with no expired-burst failure, but fails 24 default bond
+checks; all other non-privileged components and Nix/ARM builds pass. Its
+B/C/B field low-upload bounds are 0.144–0.183 / 0.268–0.302 / 0.149–0.184
+Mbit/s. Loaded voice p99 is 95/100 / 112/95 / 58/62 ms; whole-phase losses
+are 5/5 / 0/0 / 0/0 of 2750 echoes per direction. Late throughput bounds
+overlap. Both boot identities, restoration and owned cleanup are verified.
+Mobile RX+TX including background is 28.572 MB through cleanup, plus 0.773 MB
+separate staging; its 27.715 MB comparison interval is nested. Source
+promotion is withheld. Evidence is `estimator-unloaded-delay-field-upload-20261005/`.
