@@ -2235,3 +2235,76 @@ sample records 5.468 MB of interface RX+TX since collection began, excluding
 later transfer/archive/background traffic. Preserve the incomplete comparison
 and its failure log. Evidence is `c8-original-priority-field-blackout-20261005/`.
 Accepted baseline remains `b444920` / `v0.0.3`.
+
+### Fresh-first single-WAN field measurement — 2026-10-05
+
+**Observed:** the next `d7f9a01` B/C/B set captures all three measurement
+phases: two simultaneous 50 Hz, 160-byte echo streams, 2750 echoes per
+direction per phase, with ten-second mobile and satellite egress blocks
+separately. Only edge UDP to `45.11.171.73:51820` is blocked; verified removal
+timers precede every network mutation. There is no bulk workload in this set.
+
+| Measurement | Baseline before | Fresh-first candidate | Baseline after |
+|---|---:|---:|---:|
+| Direct Starlink upload, Mbit/s | 0.516 | 0.517 | 0.528 |
+| Direct 5G upload, Mbit/s | 1.810 | 2.267 | 1.585 |
+| Edge-client lost / 2750 | 17 | 6 | 10 |
+| Hub-client lost / 2750 | 19 | 6 | 14 |
+| Edge-client maximum consecutive missing | 10 | 4 | 3 |
+| Hub-client maximum consecutive missing | 9 | 4 | 2 |
+| Edge-client maximum arrival gap, ms | 370.6 | 138.3 | 74.3 |
+| Hub-client maximum arrival gap, ms | 339.1 | 80.0 | 82.4 |
+| Edge-client RTT p50 / p95 / p99, ms | 37.4 / 53.6 / 68.9 | 34.8 / 52.1 / 73.4 | 37.0 / 56.3 / 96.3 |
+| Hub-client RTT p50 / p95 / p99, ms | 34.6 / 55.7 / 102.7 | 36.4 / 50.7 / 69.4 | 38.6 / 55.4 / 101.1 |
+
+Candidate loss and hub p99 are lower than both surrounding baselines, but
+other metrics are mixed and the maximum consecutive-loss gate still fails.
+The candidate's direct 5G service is higher than both baselines. **Inference:**
+this set is promising for recovery scheduling, but neither isolates a policy
+gain from varying physical service nor establishes repeatability. No new
+accepted candidate or tag is justified.
+
+Guarded local queue drops at the edge are 14/12/16 and at the hub 21/0/8.
+The candidate edge has one real-time deadline drop and eleven stale drops;
+all other cause/class counters are zero. Candidate first-submission residence
+has mean 0.318/0.078 ms at edge/hub, with p99 bounded by 10/5 ms. These
+aggregates do not identify individual missing echoes. Repair totals include
+voice and feedback and are not a TCP efficiency measurement.
+
+Each phase records successful cleanup. The original runner exits with a
+final SSH restoration-verification error during another observed edge reboot;
+do not label it a completed run. Phase manifests recover the returning
+baseline into `recovered-comparison-state.json`, retaining the original
+error. Subsequent independent checks verify both deployed source/hash pairs,
+empty runtime overrides, unshaped WAN queues, restored `auto` policy and
+absence of the inactive candidate and owned reference directories.
+**Operator report:** these were maintenance events during the router update;
+power is stable now. Their cause is not independently established. Interface
+counter reset prevents total mobile-use accounting; 17.884 MB is observed
+only through the last pre-reboot sample, excluding later cleanup/background.
+Evidence is `c8-original-priority-field-blackout-locked-20261005/`.
+
+An intervening retry is discarded: a second runner was incorrectly launched
+before the first exited. Its existing-timer guard rejects it before mutations;
+the first is stopped and owned cleanup verified. Subsequent runners take an
+exclusive local lock before SSH; rejection of a second acquisition is tested.
+
+**Observed:** three gigaradio candidate collections have 5/0/3 failed checks
+and 20/16/16 inconclusive checks. The middle collection remains inconclusive,
+not a pass. Independent idle/payload references were not supplied. Together
+with the three failed radio collections, these do not establish either
+profile family's three-out-of-three gate. Evidence is
+`stage23-c8-original-priority-lab-gigaradio-gate-summary.json`.
+
+**Observed:** source `54053eb` combines fresh-small-first scheduling and the
+age-based recovery predicate. The missing-original reproduction passes three
+times, but the existing buffered rate-reduction guard fails three times at
+170161 B/s after five seconds at 62500 B/s; unchanged fresh-first passes
+three times. Reject this combination before field activation. Its Nix build
+passes. Traces show capacity 226541 B/s with no remeasurement at the deadline,
+against 58276 B/s with one remeasurement on the control. **Inference:** the
+changed recovery timing exposes dependence on the inherited reduction and
+capacity rules; an additional stage-1 heuristic would not implement the
+specified estimator replacement. Evidence is
+`stage23-c8-priority-recovery-{red,green-attempt,rate-fall-timeline}.txt` and
+`stage23-c8-original-priority-rate-fall-control-timeline.txt`.

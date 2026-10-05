@@ -1287,8 +1287,8 @@ policy still uses the lane-wide recovery predicate described above.
 An isolated C8 scheduler experiment separately reproduces fresh real-time
 wait behind pending recovery copies: 26 ms becomes zero when fresh small
 datagrams receive their turn before repairs, while all 19 older originals
-still recover. Its full non-privileged gate and Nix build pass; field
-verification remains pending. This scheduler-only result does not establish
+still recover. Its full non-privileged gate and Nix build pass. This
+scheduler-only result does not establish
 end-to-end delay.
 Its bounded field rate-change comparison has overlapping upload bounds,
 55/50 ms voice RTT p99 and one missing edge-client echo, with no local
@@ -1301,6 +1301,22 @@ Independent references are absent, and host/guest timing records show CPU
 interference as a possible contributor. A voice-only field baseline completes,
 but an edge reboot interrupts the candidate transfer before activation. Neither
 measurement establishes the scheduler experiment's field WAN-failure benefit.
+The subsequent field B/C/B set captures all three voice-only measurement
+phases. Candidate loss is 6/2750 in each direction, against baseline
+17/19 before and 10/14 after; hub RTT p99 is 69 ms against 103/101 ms.
+Edge RTT p99 and arrival gaps are mixed, and four consecutive missing echoes
+exceed the existing limit of three. The candidate's direct 5G reference is
+also higher than both baselines. This single set does not establish a
+repeatable gain. Phase cleanup completes, but a maintenance reboot interrupts
+final verification; independent checks subsequently verify both deployed
+hashes, the operator's `auto` policy and removal of owned runtime artifacts.
+The operator reports maintenance and stable power; reboot causation is not
+independently established. The counter reset leaves total mobile use unknown.
+Three gigaradio collections also fail to establish the required three-run
+pass: two have failed checks and one remains inconclusive. Combining fresh
+priority with age-based recovery still fails the deterministic slow-link
+rate-reduction guard, so that combination remains rejected. See the
+[measurement record](drafts/20261002-1730-adaptive-policy-plan.md#fresh-first-single-wan-field-measurement--2026-10-05).
 The deterministic transport and real UDP adapter share a delivery contract test;
 the [KVM lab](../test/vm/README.md) adds actual encryption, TUN interfaces, TCP
 and independently shaped WANs.

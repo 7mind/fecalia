@@ -2950,3 +2950,40 @@ the reboot cause is unknown. Counter reset prevents a total mobile-byte claim;
 5.468 MB is observed only through the last pre-reboot sample. Evidence is
 `c8-original-priority-field-blackout-20261005/`. This is a baseline diagnostic,
 not a candidate field result.
+
+The next fresh-first field set captures all three B/C/B voice phases, each
+with 2750 echoes per direction and two ten-second single-WAN egress blocks.
+Candidate edge/hub losses are 6/6, against 17/19 before and 10/14 after.
+Hub RTT p99 is 69 ms against 103/101 ms; edge tails and arrival gaps are mixed.
+Four consecutive missing candidate echoes exceed the unchanged limit of
+three. The immediate candidate direct 5G reference is higher than both
+baselines, so the observed lower loss is not yet a repeatable policy gain.
+All phase network cleanup completes. A reboot interrupts final SSH
+verification; `comparison.json` retains that failure and
+`recovered-comparison-state.json` records the separately recovered third
+phase and independent restoration checks. Both deployed hashes, empty
+overrides, unshaped WAN queues, `auto` operator policy and removal of owned
+runtime artifacts are verified afterwards. The operator reports maintenance
+events and stable power. Total mobile RX+TX is unknown after counter reset;
+17.884 MB covers only the last pre-reboot sample. Evidence is
+`c8-original-priority-field-blackout-locked-20261005/`.
+
+A discarded retry attempted to launch a second runner while the first still
+owned a removal timer. The timer guard rejects the second before mutations;
+the first is stopped and owned cleanup verified. Subsequent runs acquire a
+local exclusive lock before SSH; a second acquisition is tested to fail.
+The discarded retry supplies no comparison result.
+
+Three gigaradio candidate collections report respectively 5 failed / 20
+inconclusive, 0 failed / 16 inconclusive, and 3 failed / 16 inconclusive
+checks. The second is not a pass. Arrival gaps reach 1413/1309 ms in the first
+and 640/612 ms in the third. Independent references are absent. Evidence is
+`stage23-c8-original-priority-lab-gigaradio-gate-summary.json`; no
+three-out-of-three gate is established on either profile family.
+
+Combining the fresh-first scheduler with age-based recovery (`54053eb`)
+fixes the missing-original model but fails the buffered rate-reduction guard
+three times: target 170161 B/s after five seconds at 62500 B/s. Unchanged
+fresh-first passes that guard three times. This combination is rejected
+before field activation; its Nix build passes. Model traces are retained as
+`stage23-c8-{priority-recovery,original-priority}-rate-fall-*.txt`.
