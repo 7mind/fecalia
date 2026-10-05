@@ -537,3 +537,12 @@ date, `wanbond version`, the access-network description, and each tool's verdict
       connect).
 - [ ] Where a UDP-allowing network is available again, confirm the tunnel reconnects
       once UDP egress is restored (no manual intervention beyond the network change).
+
+## Adaptive-policy field checkpoint — 2026-10-05, 23:05 UTC
+
+Observed C8/fresh-small-priority/C8 single-WAN trials retain lower candidate
+voice p99 but fail the consecutive-loss gate; matching deterministic scenarios
+also expose bulk-progress regressions. The candidate is unaccepted and both
+hosts are independently verified restored to `b444920`. Preserve the workload,
+contemporaneous direct references and metering with each repeat; see
+[the measurement record](drafts/20261002-1730-adaptive-policy-plan.md#c8-fresh-small-priority-repeat-and-tcp-tradeoff--2026-10-05-2305-utc).

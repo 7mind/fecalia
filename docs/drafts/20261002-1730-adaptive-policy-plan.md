@@ -2861,3 +2861,56 @@ RX+TX is 26.226 MB for comparison, 26.814 MB through cleanup (nested), plus
 **Intended next field isolation:** put only fresh-small-before-repair
 scheduling onto C8, including main's passive queue telemetry. This avoids
 combining the scheduling correction with the unaccepted estimator rewrite.
+
+### C8 fresh-small priority repeat and TCP tradeoff — 2026-10-05, 23:05 UTC
+
+**Observed:** source `a712bbc` (code `2e88765`, executable SHA-256
+`fcf037e91d352c8ed58c33463190fe784ba92e9bf0627a3cceb6310590d80f76`)
+repeats the scheduling change from `388a6d6`; those production diffs are
+identical. This is another field observation of that policy, not a new
+algorithm. The full non-privileged gate and native/ARM Nix builds pass.
+
+The voice-only C8/candidate/C8 sequence completes on stable boots. Each host
+sends 2750 echoes per phase, with separate ten-second edge-egress blocks
+of only wanbond UDP on 5G and Starlink. Whole-stream measurements are:
+
+| Measurement, edge/hub | C8 before | Candidate | C8 after |
+|---|---:|---:|---:|
+| Missing echoes | 48/45 | 5/7 | 6/6 |
+| RTT p99, ms | 139.14/143.60 | 114.50/130.19 | 145.48/137.31 |
+| Maximum arrival gap, ms | 189.08/132.65 | 137.95/128.25 | 133.30/234.53 |
+| Maximum consecutive missing | 4/4 | 3/5 | 5/2 |
+
+Candidate p99 is lower than both baselines, but loss is similar to the
+return baseline and five consecutive missing echoes still fail continuity.
+Immediate direct upload references are Starlink 0.489/0.519/0.506 Mbit/s
+at a 1 Mbit/s offer and 5G 2.871/2.946/2.956 Mbit/s at a 3 Mbit/s offer.
+Exact-route idle ICMP p99 is 57.8/48.6/57.8 ms on Starlink and
+97.6/184.0/174.0 ms on 5G. Every sample has 100 observed replies; raw
+transmit/receive summaries retain loss. These references do not prove equal
+loaded service or isolate the policy's contribution. There is no bulk
+workload in this set. Candidate local voice residence p99 is bounded by
+50 ms on both hosts; guarded edge drops are three deadline and nine stale,
+and hub drops are zero. Aggregate drops do not identify missing echoes.
+
+**Observed:** matched virtual-time scenarios 1a–1c repeat three times with
+identical verdicts. Fresh-small priority improves radio lane-0, direction-0
+one-way blackout from failure to pass, but changes two baseline passes to
+failures: bidirectional blackout and direction-1 one-way blackout, both with
+bulk. The former has zero TCP delivery in seconds 22 and 28, the latter in
+second 21. Voice improves, while some bulk progress worsens. A diagnostic
+that moves only real-time originals first also fails the selected bulk
+gates. TCP-state traces show holes persisting until retransmission timeouts;
+**inferred:** whole-class priority alone does not resolve the recovery tradeoff.
+No scenario threshold is changed and this policy is not promoted.
+
+Both deployed C8 hashes, original `raspi5l` policy, empty runtime overrides
+and timers, and clean queues/firewall are independently verified before
+and after owned artifact removal. Mobile RX+TX is 16.292 MB for comparison,
+16.965 MB through cleanup (nested), plus 0.772 MB staging, including
+background traffic rather than SIM billing. Evidence under
+`/srv/nvme/tmp/wanbond-adaptive-evidence` is
+`c8-fresh-voice-field-blackout-20261005/`,
+`c8-fresh-voice-outage-{baseline.txt,candidate.txt,comparison.json}`,
+`c8-realtime-only-selected-outages-diagnostic.txt`, and
+`c8-priority-tcp-trace/`. Installed `b444920` remains the accepted baseline.
