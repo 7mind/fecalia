@@ -1322,3 +1322,14 @@ service or deadlines; their sources and outputs are retained as rejected
 experiments. Main still has no production policy change. Next work must
 resolve application-limited sampling and excessive queued probe service,
 then compare delivery, latency and repair/expiry cost together in the field.
+
+**Remaining target assertion restated, 2026-10-05:**
+`TestUnderusedLossyLaneKeepsItsTarget` becomes
+`TestUnderusedLossyLaneDeliversBurstyBulk` in a separate code commit before
+bringing in the estimator replacement. Its physical link and offered bursts
+are unchanged. Unique payload created from 10 to 30 s is measured after
+500 ms of drain; admission must include the full 239,200,000 offered bytes,
+delivery must reach 99%, and the existing zero-AQM-drop condition remains.
+C8 delivers 99.98% with zero AQM drops identically three times. Evidence is
+`underused-lossy-outcome-c8-three.txt`; this is an observed baseline outcome,
+not a candidate improvement or a completed inventory of mechanism tests.

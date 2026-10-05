@@ -731,7 +731,11 @@ cutting on each of them held a 300 Mbit/s lane at 3 MB/s
 is taken over a second and not over one delivery round: a round of a hundred
 datagrams on a path losing 0.4% holds three losses once in fifty rounds, and
 each then ended discovery at the sender's own rate
-(`TestUnderusedLossyLaneKeepsItsTarget`). A lane too slow to send a hundred
+(`TestUnderusedLossyLaneDeliversBurstyBulk`). This outcome test retains the
+same bursty, lossy link, checks delivery of at least 99% of admitted steady
+payload after a 500 ms drain, and retains zero AQM drops; it no longer asserts
+a controller target. C8 delivers 99.98% identically three times. A lane too
+slow to send a hundred
 and fifty datagrams in a second is judged over as long as that takes, up to
 four seconds: three losses a second were 6.7% of a 45-datagram lane, and it
 lost 5% for good. Material loss is its own confirmation and cuts at once; a

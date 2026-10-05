@@ -2672,3 +2672,15 @@ have no field result and no accepted lab series. The
 [follow-up record](../../docs/drafts/20261002-1730-adaptive-policy-plan.md#post-push-correction-and-sampling-follow-up--2026-10-05)
 retains the fail-first reproductions, source versions, all paired baselines
 and rejected probe trials.
+
+The bursty underused-lane regression now checks delivered payload rather than
+the controller's target. The unchanged 300 Mbit/s link, 0.4% random loss and
+10 ms correlated jitter carry 92 datagrams every 10 ms. Measurement counts
+unique payload created from 10 to 30 s, allows 500 ms to drain, requires at
+least 99% delivery, and retains zero AQM drops. C8 passes identically three
+times at 99.98%; this establishes the pre-replacement service baseline.
+
+```sh
+nix develop --command go test ./internal/bond \
+  -run '^TestUnderusedLossyLaneDeliversBurstyBulk$' -count=3 -v
+```
