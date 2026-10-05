@@ -1329,6 +1329,26 @@ both fail the expired-datagram burst check. Its scheduler reproduction passes
 after failing first; its full default gate retains 22 bond failures, and Nix
 passes. These are model improvements within an unaccepted prototype, not
 a field gain or a completed stage.
+The estimator plus fresh-first prototype (`72fcc9d`) subsequently loses zero
+of 8250 field voice echoes per direction across three B/C/B single-WAN
+blackout comparisons, while every surrounding baseline phase loses echoes.
+This is a repeated loss result in that bounded workload. RTT tails are mixed
+in the second set, and arrival gaps exceed 150 ms in every set. Reconstructing
+arrival times from monotonic send stamps and RTT confirms those gaps; clock
+differences are below 0.1 ms in all candidate records. Guarded candidate
+small-queue drops are zero, with local real-time residence p99 at most 5 ms;
+these aggregates do not locate the individual stalls. No TCP transfer runs
+in these comparisons, so goodput and bandwidth efficiency remain unproved.
+Both deployed baselines and temporary-state removal are independently
+verified after every set. The prototype remains unaccepted with 22 default
+bond failures; the installed policy and release tag remain unchanged. See
+the [three-set field record](drafts/20261002-1730-adaptive-policy-plan.md#estimator-plus-fresh-priority-three-field-sets--2026-10-05).
+Separate model instrumentation finds 206 never-delivered bulk originals
+expiring in the buffered rate-fall window, each with only one attempt and
+an RTO at least as long as the 250 ms repair lifetime. A public progression
+reproduction retains a proven alternate before expiry but receives none of
+the lost original. Deadline-based repair experiments improve that case while
+failing existing utilization or delay guards; none changes accepted recovery.
 The deterministic transport and real UDP adapter share a delivery contract test;
 the [KVM lab](../test/vm/README.md) adds actual encryption, TUN interfaces, TCP
 and independently shaped WANs.

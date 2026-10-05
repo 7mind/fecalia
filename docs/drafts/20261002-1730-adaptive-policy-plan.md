@@ -2359,3 +2359,105 @@ main's full non-privileged gate pass. Evidence is
 The operator's bounded-field-trial amendment permits measurement of this
 unaccepted prototype while these failures remain recorded. Accepted baseline
 and tag remain `b444920` / `v0.0.3`; main's policy is unchanged.
+
+### Estimator plus fresh-priority: three field sets — 2026-10-05
+
+**Observed:** unaccepted source `72fcc9d` (executable SHA-256
+`b8e4e971dc51ca9c0689a751ba2b7ba824fa2e03ddfdfa4a0b55610faf9baa73`)
+completes three B/C/B field sets. Each phase sends 2750 160-byte echoes per
+direction at 50 Hz. Separate ten-second edge-egress blocks affect only
+wanbond UDP traffic on 5G and Starlink; independent access remains available.
+Voice-only preflight precedes immediate capped direct references and the
+tunnel measurement. No bulk transfer runs in these sets.
+
+| Set | Before losses edge/hub | Candidate losses edge/hub | After losses edge/hub | Candidate RTT p99 edge/hub, ms | Candidate maximum arrival gap edge/hub, ms |
+|---|---|---|---|---|---|
+| 1 | 19/18 | 0/0 | 30/56 | 106.4/98.5 | 118.1/151.1 |
+| 2 | 10/5 | 0/0 | 7/7 | 154.2/154.9 | 236.1/232.2 |
+| 3 | 52/71 | 0/0 | 8/8 | 138.1/138.2 | 160.1/158.4 |
+
+Zero loss repeats over 8250 candidate echoes per direction. In set 1 all
+candidate RTT percentiles improve against both surrounding baselines; in
+set 2 candidate RTT p99 worsens against both (edge 131.4/153.0 ms, hub
+136.5/144.5 ms). Set 3 candidate p99 improves against both. Every candidate
+set fails at least one unchanged 150 ms arrival-gap check. This is a repeated
+bounded-workload loss observation, not improvement on all metrics or a
+completed scenario. Goodput, cold transfer and efficiency remain unmeasured.
+
+Immediate direct 5G references in B/C/B order are 2.229/2.836/2.319,
+3.035/2.471/2.715 and 2.374/2.897/2.047 Mbit/s. These are first-to-last
+receiver payload rates under a 3 Mbit/s offer; reaching the offer establishes
+a lower bound, not path capacity. Starlink references remain 0.492–0.513
+Mbit/s. **Inference:** changing physical service is a confound. Candidate
+loss stays zero with both higher and lower immediate 5G references, but the
+measurements still do not hold RF conditions constant or localize each stall.
+
+Guarded candidate small-queue cause/class drops and total interactive drops
+are zero on both hosts in every set. Local real-time residence p99 is bounded
+by 5 ms. Reconstruction of receiver arrivals from local monotonic send
+stamps plus measured RTT confirms the maximum-gap failures; candidate
+wall/monotonic gap differences are below 0.1 ms. These are aggregate checks,
+not packet-level attribution to the WAN or transport. **Next measurement:**
+record exact-route direct delay alongside voice, and matched sender/echo
+handling for the largest gaps; retain independent clocks and scheduler
+uncertainty. Assess capped TCP separately before claiming a service gain.
+
+All three runs retain unchanged edge/hub boot identities and no cleanup
+errors. Independent postconditions verify both deployed source/hash pairs,
+empty candidate overrides, absent restore/removal timers, unshaped queues,
+the operator's `auto` policy and removal of owned inactive candidate binaries
+and archived reference directories. Mobile RX+TX including background is
+53.631 MB during comparisons, 58.193 MB from their respective comparison
+starts through runtime cleanup; those intervals overlap. Staging separately
+uses 2.643 MB. Evidence:
+`estimator-fresh-priority-field-blackout{,-repeat2,-repeat3}-20261005/` and
+`stage23-estimator-fresh-priority-monotonic-gap-audit.json`.
+
+The prototype's 22 default bond failures remain unresolved. Its native Nix
+and ARM candidate builds pass; main's policy, accepted baseline and tag are
+unchanged. These field observations justify continuing investigation, not
+promoting a partially validated source.
+
+### Expiration provenance and recovery research — 2026-10-05
+
+**Observed:** detached instrumentation of the buffered rate-fall model finds
+206 expired originals during [12,18), all never observed at the receiver,
+each with one physical attempt and RTO at least the 250 ms repair lifetime.
+The first captured example has a 510 ms RTO. These expirations are distinct
+from local queue drops. The exact traces are retained as
+`stage23-c8-expiration-{delivery,timeout}-provenance.{txt,json}`.
+
+A public outcome reproduction loses one original on a 150 ms RTT lane,
+then establishes a 20 ms RTT alternate with physical ACK progress before
+expiry. Main delivers 0/1 and expires one, three identical runs. An
+API-adapted fixture on `f75668e` fails identically three times; compile-error
+attempts are retained separately and are not evidence of the defect.
+`TestAdaptivePolicyBulkRecoveryUsesAlternateBeforeRepairExpires` remains
+under the progression tag. The default gate is not weakened.
+
+An isolated deadline-repair change (`4c86ff5`) recovers the original in
+215 ms without expiration, three times, by budgeting alternate RTT and
+ACK cadence. Its full default gate instead fails the existing radio wire
+utilization requirement at 0.844 against 0.925. Adding raw receipt-gap
+evidence reaches only 0.893; filtering with existing reordering allowances
+restores utilization but fails the original recovery or rate-reduction
+guard. These alternatives are rejected, not field activated. The cadence
+variant also still fails the buffered expired-burst check. No deadline rule
+is added to accepted policy. Evidence is
+`stage23-deadline-recovery-{original-red,green-measured,cadence-green,full-nonprivileged-gate,wire-utilization-red,receipt-gap-green-attempt,reordering-green-attempt,observed-reorder-green-attempt,cadence-buffered-rate-fall}.txt`;
+the main reproduction is `stage23-main-repair-deadline-red.txt`.
+
+**Documented research:** [RFC 9002 section 6](https://www.rfc-editor.org/rfc/rfc9002.html#section-6)
+separates ACK-based loss detection from a probe timeout. Its time threshold
+uses the larger of latest and smoothed RTT after a later packet is
+acknowledged; timeout expiry alone does not declare loss. The
+[BBR draft, application-limited sampling](https://datatracker.ietf.org/doc/html/draft-ietf-ccwg-bbr-06#section-4.1.1.3)
+tracks application limitation through the send pipeline rather than
+equating every low delivery sample with low capacity.
+**Inference and intended work:** replace the stale delay/loss and capacity
+rules with coherent aged evidence, and evaluate loss detection separately
+from liveness timeout. These references suggest a model boundary, not proof
+that QUIC constants or a congestion controller can be copied into wanbond.
+Keep public recovery, jitter, utilization and rate-change counterexamples
+together; remove each superseded rule in its estimator change. Preserve the
+wire format, demand-driven real-traffic probing and all existing gates.

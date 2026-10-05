@@ -3021,3 +3021,41 @@ patched engine, formatting and other packages pass. Its Nix build passes.
 Main's complete non-privileged gate passes. Evidence is
 `stage23-estimator-fresh-priority-{red,green,full-nonprivileged-gate,nix-build}.txt`
 and `stage23-buffered-rate-fall-model-main-full-nonprivileged-gate.txt`.
+
+### Estimator plus fresh-priority field repeats — 2026-10-05
+
+Unaccepted source `72fcc9d`, executable SHA-256
+`b8e4e971dc51ca9c0689a751ba2b7ba824fa2e03ddfdfa4a0b55610faf9baa73`,
+completes three voice-only B/C/B sets. Each phase sends 2750 echoes per
+direction at 50 Hz, with separate ten-second edge-egress UDP blocks for
+5G and Starlink. Immediate capped direct references precede each tunnel
+phase; both deployed hashes, boots, restore timers, `auto` exit policy and
+owned artifact removal are independently verified afterwards.
+
+| Set | Baseline-before losses edge/hub | Candidate losses edge/hub | Baseline-after losses edge/hub | Candidate RTT p99 edge/hub, ms | Candidate arrival gaps edge/hub, ms |
+|---|---|---|---|---|---|
+| 1 | 19/18 | 0/0 | 30/56 | 106.4/98.5 | 118.1/151.1 |
+| 2 | 10/5 | 0/0 | 7/7 | 154.2/154.9 | 236.1/232.2 |
+| 3 | 52/71 | 0/0 | 8/8 | 138.1/138.2 | 160.1/158.4 |
+
+Zero candidate loss repeats; whole-run gaps fail the unchanged 150 ms limit
+in all sets, and the second set worsens RTT p99. Direct 5G service varies
+across phases, so these observations do not establish a controlled all-metric
+policy improvement. No tunnel TCP goodput is measured. Monotonic arrival
+reconstruction confirms the gap failures; candidate clock differences are
+below 0.1 ms. Guarded small-queue drops are zero, with local real-time
+residence p99 bounded by 5 ms. These aggregates do not attribute individual
+stalls. Evidence folders are
+`estimator-fresh-priority-field-blackout{,-repeat2,-repeat3}-20261005/` and
+`stage23-estimator-fresh-priority-monotonic-gap-audit.json`.
+Mobile RX+TX including background is 53.631 MB during the three comparisons,
+58.193 MB from their respective comparison starts through runtime cleanup;
+those intervals overlap. Separate staging adds 2.643 MB.
+
+`TestAdaptivePolicyBulkRecoveryUsesAlternateBeforeRepairExpires` is another
+public progression reproduction. One original is lost on the first lane;
+the alternate proves physical ACK progress before the original's 250 ms
+repair lifetime. Main receives 0/1 and expires one, three identical runs.
+The API-adapted fixture on original `f75668e` fails for the same reason three
+times. It remains under `adaptivepolicy`; the default gate is preserved.
+Evidence is `stage23-{main-repair-deadline,deadline-recovery-original}-red.txt`.
