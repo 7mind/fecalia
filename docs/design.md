@@ -2648,3 +2648,65 @@ before and 58/62 after; no improvement across all metrics is established.
 The candidate delivers all 2750 echoes each way, and both hosts are restored
 and independently verified. No policy or release is promoted. See the
 [unloaded-delay field record](drafts/20261002-1730-adaptive-policy-plan.md#unloaded-delay-field-result--2026-10-05).
+
+### Feedback-round push field result — 2026-10-05
+
+**Observed source:** unaccepted `78127ff3e6d1ffa7c8ed28137aa4cfdb5ac929fc`,
+SHA-256 `c6258a390e8d9b58a2857b9dfc7345393d24a3286bcaf97c8beb2f5e10e8a7de`.
+One timer-backed 400 kbit/s to 2 Mbit/s B/C/B upload comparison completes:
+
+| Observed metric | Baseline before | Candidate | Baseline after |
+|---|---:|---:|---:|
+| Low-window upload bounds, Mbit/s | 0.133–0.161 | 0.200–0.252 | 0.149–0.179 |
+| Late-window upload bounds, Mbit/s | 1.092–1.603 | 1.133–1.751 | 0.290–0.434 |
+| TCP-active voice RTT p99, edge/hub ms | 74.3/81.1 | 127.5/134.6 | 58.2/68.4 |
+| Whole-phase voice RTT p99, edge/hub ms | 76.6/80.2 | 119.2/111.8 | 58.6/66.0 |
+| Missing echoes of 2750, edge/hub | 0/1 | 0/0 | 0/0 |
+| Whole-phase maximum receive gap, edge/hub ms | 80.0/107.3 | 112.2/101.2 | 89.5/95.4 |
+
+Candidate low-upload bounds exceed both baseline bounds. Late bounds overlap
+the first baseline and exceed the collapsed return baseline. Loaded and
+whole-phase p99 worsen in both directions against both baselines; the source
+is not promoted. Bounds use whole receiver reports, not an exact adaptation
+deadline. The return baseline still submits 163 bulk originals on 5G in a
+guarded late 4.8-second window, compared with 615 before and 628 in the
+candidate; its cause is unknown, not a claim of complete lane abandonment.
+
+Immediate direct references on the different OCI route are Starlink
+0.493/0.503/0.505 Mbit/s and 5G 2.897/2.077/2.950 under 1/3 Mbit/s offers.
+Near-offer samples are service lower bounds; the candidate's 5G reference is
+below its offer, so physical conditions are not matched. Idle ICMP to the
+concentrator itself has Starlink p99 41.6/45.9/49.0 ms and 5G
+137.0/54.6/103.0 ms, with 100 replies per sample. These adjacent samples
+do not establish UDP service throughout the loaded phase or isolate the
+policy's contribution to its worse field tail.
+
+Candidate local real-time queue residence p99 is at most 1 ms on each host,
+with no stale drops; guarded expired-original deltas are 14/0, versus 4/0
+before and 1/0 after. Expiry alone does not prove non-delivery. Candidate
+low-window TBF backlog/rate p99 is 165 ms, a service-time proxy rather than
+measured packet wait, with five drops; the high window has four drops.
+Both boot identities stay unchanged and all phase cleanup errors are empty.
+Independent checks before and after owned runtime cleanup verify deployed
+b444920 source/hashes, original `auto` policy, empty overrides, unshaped
+queues and absence of temporary firewall rules/timers. Mobile RX+TX including
+background is 25.919 MB during comparison, 26.622 MB through cleanup
+(overlapping), plus 0.779 MB separate staging. Evidence is
+`estimator-round-push-field-upload-20261005/` under the adaptive evidence root.
+
+Two further local diagnostics are rejected and reverted, never field
+activated. Limiting the extended push to its preceding excess-volume budget
+regresses cold discovery to 1.85 Mbit/s and leaves primed upload at 2400 B/s.
+Removing optional copies with earlier real-time gap repair and class-preserving
+repair delivers 5500/5500 but 18 late beyond 150 ms; buffered rate-fall voice
+p99 is 369 ms and primed upload 25200 B/s. Each repeats three times.
+Evidence is `stage23-round-length-volume-budget-{diagnostic.txt,rejected.patch}`
+and `stage23-realtime-gap-no-optional-copy-{diagnostic.txt,rejected.patch}`.
+
+**Intended next check:** derive lower-class flight allowance from the same
+queue budget used for voice, replacing the special pre-push class-window
+rule, and preserve both delivery and capacity-discovery outcomes before any
+new field comparison. This is a hypothesis about the field tail, not its
+established cause. `b444920` / `v0.0.3` remains the baseline; all outstanding
+model/lab gates stay visible. Field measurements determine performance gains;
+local host CPU load cannot establish or refute one.
