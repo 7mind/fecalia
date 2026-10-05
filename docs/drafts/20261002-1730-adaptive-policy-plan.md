@@ -2461,3 +2461,87 @@ that QUIC constants or a congestion controller can be copied into wanbond.
 Keep public recovery, jitter, utilization and rate-change counterexamples
 together; remove each superseded rule in its estimator change. Preserve the
 wire format, demand-driven real-traffic probing and all existing gates.
+
+### Capped field upload and qualified receipt sampling — 2026-10-05
+
+**Observed:** two separate baseline/candidate/baseline upload sets complete
+with unchanged boot identities. Voice-only preflight and immediate capped
+physical references precede each phase. During two 55-second voice streams,
+30-second TCP upload is offered at 3 Mbit/s. Only wanbond UDP egress on 5G
+is shaped to 400 kbit/s, then 2 Mbit/s at TCP +15 seconds. Starlink remains
+unshaped. Every change has a removal timer; independent checks verify both
+original deployed source/hash pairs, `auto` policy, empty candidate overrides,
+absent temporary timers/firewall rules and unshaped queues afterwards.
+
+Receiver-relative goodput bounds use certainly contained and possibly
+overlapping one-second reports. They do not prove exact adaptation deadlines.
+Voice p99 below uses each host's guarded TCP-active interval and local clock.
+
+| Source / phase | Low upload [5,15), Mbit/s bounds | Late upload [25,30), Mbit/s bounds | Voice RTT p99 edge/hub, ms | Voice losses edge/hub in active interval |
+|---|---|---|---|---|
+| `72fcc9d` set / before | 0.144–0.162 | 1.066–1.580 | 78.2/79.4 | 0/0 |
+| `72fcc9d` set / candidate | 0.216–0.268 | 1.146–1.657 | 158.1/153.9 | 0/0 |
+| `72fcc9d` set / after | 0.137–0.167 | 1.081–1.540 | 60.7/57.1 | 0/0 |
+| `fcb25f1` set / before | 0.137–0.179 | 1.127–1.676 | 62.8/69.1 | 0/0 |
+| `fcb25f1` set / candidate | 0.207–0.243 | 1.096–1.551 | 134.7/147.5 | 2/1 |
+| `fcb25f1` set / after | 0.225–0.272 | 0.219–0.298 | 134.7/124.3 | 0/0 |
+
+The first source improves low-phase upload against both surrounding baselines,
+but worsens voice tails. The second overlaps the returning baseline's low
+upload and the preceding baseline's late upload; neither improves all metrics.
+Immediate 5G references are 2.965/3.057/2.951 and 2.969/2.835/3.006 Mbit/s,
+respectively, under a 3 Mbit/s offer; near-offer results are lower bounds,
+not capacity. Starlink references are 0.481–0.519 Mbit/s. Returning baseline
+in the second set sends zero 5G bulk originals in both guarded windows;
+its 5G target stays 57,787 B/s and its probe count stays one. **Inference:**
+scheduling or rediscovery contributes to its low upload; these aggregates
+cannot exclude changes in physical service during the tunnel phase.
+
+Candidate low-phase TBF backlog/rate p99 is 145 ms in the first set and
+174 ms in the second. These are service-time proxies, not packet wait times:
+[TBF's documented latency limit accounts for burst tokens](https://man7.org/linux/man-pages/man8/tc-tbf.8.html).
+A quiet 100 ms FIFO model is not an exact replica of that shaper. The second
+candidate has three real-time stale-queue drops at the edge, one small-TCP
+deadline drop, and local real-time residence p99 bounded by 50 ms; the first
+has zero real-time queue drops. Exact echo attribution remains unknown.
+
+**Observed model evidence:** the second source removes the probe-wait age
+from queued-demand sampling, retaining it for real-traffic probe initiation.
+It uses receipt elapsed time only when cumulative received bytes identify
+exactly the new timed highest packet. Ambiguous cohorts retain generation
+time so late receipts cannot inflate the estimate. A corrected physically
+possible ACK-holding fixture fails three times at 5717 B/s, then passes three
+times at 10290 B/s. The earlier factor-nine fixture omitted a packet already
+received when its first ACK was generated; that reproduction and claim are
+withdrawn, with original logs retained. Unconditionally using receipt time
+fails the existing late-receipt guard and is rejected.
+
+The qualified source passes the quiet buffered 2a model three times at
+507600 B/s, 119 ms voice p99, no missing echoes and no expiration burst above
+three per 100 ms. Its full default gate still fails 23 bond checks; frontend,
+build/vet, patched engine, formatting and other packages pass. Native Nix and
+ARM candidate builds pass. Source `fcb25f1` executable SHA-256 is
+`9d3afa3812514a22782fb91eb6cbd59a2ab0967ffdd4dee7d9d0abb700adfa90`.
+No wire format, synthetic probe or additional copy trigger is introduced.
+
+A separate voice-primed upload progression model drops edge 5G service to
+400 kbit/s when TCP starts beside standby Starlink. At five seconds main
+receives 28,800 B/s against a 36,563 B/s requirement, while the two prototypes
+receive 1200 B/s; each result repeats three times. All pass that model's voice
+gates. It reproduces modeled upload starvation, not the field's tail-latency
+failure. **Intended next work:** investigate lane exclusion, demand sampling
+and probe flight budgets using both counterexamples, then judge a revised
+policy by paired field measurements. Host-loaded lab timing remains diagnostic.
+
+Mobile RX+TX including background is 28.188 MB for the first comparison,
+28.703 MB through runtime cleanup, plus 0.887 MB separate staging; the second
+uses 26.321 MB for comparison, 27.892 MB through cleanup, plus 0.843 MB staging.
+Comparison and cleanup intervals overlap; these are interface counters, not
+SIM billing. Evidence is `estimator-fresh-priority-field-upload-20261005/`,
+`estimator-qualified-arrival-field-upload-20261005/`,
+`stage23-estimator-ack-holding-physical-{red,green}.txt`,
+`stage23-estimator-ack-holding-qualified-{full-nonprivileged-gate,buffered-rate-fall}.txt`
+and `stage23-main-primed-standby-upload-final-red.txt`,
+`stage23-estimator-primed-standby-upload-red.txt` and
+`stage23-estimator-fresh-priority-primed-standby-upload-control.txt`.
+No performance source is promoted; b444920 remains the field baseline.

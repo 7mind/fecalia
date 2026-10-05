@@ -3059,3 +3059,42 @@ repair lifetime. Main receives 0/1 and expires one, three identical runs.
 The API-adapted fixture on original `f75668e` fails for the same reason three
 times. It remains under `adaptivepolicy`; the default gate is preserved.
 Evidence is `stage23-{main-repair-deadline,deadline-recovery-original}-red.txt`.
+
+### Capped field upload and model limits — 2026-10-05
+
+Two completed B/C/B field sets shape only wanbond UDP egress on edge 5G to
+400 kbit/s, upgrading to 2 Mbit/s at TCP +15 seconds. Two 55-second voice
+streams run beside 30-second upload offered at 3 Mbit/s. Each phase has
+voice-only preflight and immediate capped physical references; all temporary
+changes have restoration timers. Independent final source/hash, boot,
+operator policy, timer, firewall, queue and owned-artifact checks pass.
+
+Source `72fcc9d` improves low-phase receiver upload bounds to 0.216–0.268
+Mbit/s against 0.144–0.162 before and 0.137–0.167 after, but raises loaded
+voice p99 to 158/154 ms against 78/79 and 61/57. No echoes are lost. Qualified
+sampler `fcb25f1` gives 0.207–0.243 against 0.137–0.179 and 0.225–0.272;
+loaded voice p99 is 135/148 ms, with 2/1 lost echoes against zero in both
+baselines. Late-window bounds overlap the preceding baseline. Returning
+baseline sends no 5G bulk originals in either guarded upload window.
+These are mixed field outcomes; neither source is promoted.
+
+The qualified sampler's physically possible ACK-holding reproduction fails
+at 5717 B/s then passes at 10290 B/s, three times. An earlier impossible
+fixture and its factor-nine claim are withdrawn; their logs remain retained.
+Unqualified receipt time fails the late-receipt accounting guard. Qualified
+sampling passes the quiet buffered 2a progression three times, but the full
+default gate still fails 23 bond checks. Native Nix and ARM builds pass.
+
+`TestAdaptivePolicyVoicePrimedStandbyStartsUpload` is a separate public
+progression model: after ten seconds of voice, upload starts as edge 5G falls
+to 400 kbit/s beside standby Starlink. Main receives 28,800 B/s at five seconds
+against a 36,563 B/s requirement; both prototypes receive 1200 B/s. Each
+repeats three times and passes modeled voice gates. It does not reproduce
+the field tail failure. A 100 ms FIFO differs from burst-token TBF; field
+backlog/rate estimates are service-time proxies, not packet delays. Lab host
+load can distort elapsed-time performance: paired field results decide gains.
+
+Mobile RX+TX including background through cleanup is 28.703 and 27.892 MB;
+separate staging uses 0.887 and 0.843 MB. Comparison intervals are subsets,
+not extra usage. Evidence, executable identity, bounds and next investigation
+are in the [field record](../../docs/drafts/20261002-1730-adaptive-policy-plan.md#capped-field-upload-and-qualified-receipt-sampling--2026-10-05).

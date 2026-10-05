@@ -1349,6 +1349,21 @@ an RTO at least as long as the 250 ms repair lifetime. A public progression
 reproduction retains a proven alternate before expiry but receives none of
 the lost original. Deadline-based repair experiments improve that case while
 failing existing utilization or delay guards; none changes accepted recovery.
+Capped field upload then exposes a throughput/voice tradeoff: `72fcc9d`
+improves low-rate upload against both adjacent baselines but raises loaded
+voice p99 to 158/154 ms. A qualified receipt-clock sampler (`fcb25f1`)
+passes the quiet buffered rate-fall model while retaining 23 default bond
+failures. Its field upload bounds overlap at least one baseline; loaded voice
+p99 is 135/148 ms with 2/1 lost echoes against zero in both baselines. The
+returning baseline sends no 5G bulk originals in either guarded upload window,
+despite its immediately preceding direct reference reaching the offered rate.
+Scheduling/rediscovery is a hypothesis; physical conditions during the tunnel
+measurement are not held constant. A voice-primed FIFO progression model
+reproduces an upload deficit but passes its voice gates, so it does not
+reproduce the field tail failure. TBF backlog/rate is a proxy, not measured
+packet latency or an exact FIFO-model equivalent. The qualified prototype
+remains unaccepted; deployed state is independently restored. See the
+[capped field and sampling record](drafts/20261002-1730-adaptive-policy-plan.md#capped-field-upload-and-qualified-receipt-sampling--2026-10-05).
 The deterministic transport and real UDP adapter share a delivery contract test;
 the [KVM lab](../test/vm/README.md) adds actual encryption, TUN interfaces, TCP
 and independently shaped WANs.

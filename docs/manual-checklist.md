@@ -32,6 +32,13 @@ Prerequisites (all phases):
 
 ## Adaptive transport and autonomous VM verification
 
+For adaptive-policy comparisons, measure each bound physical uplink immediately
+before its tunnel phase and bracket the candidate with the deployed baseline.
+Record offered rates, executable hashes, boot identities, local-clock voice
+windows, receiver goodput bounds and RX+TX usage. Host-loaded lab throughput
+and latency are diagnostic; field comparisons determine performance gains.
+TBF backlog divided by rate estimates service time, not per-packet delay.
+
 - [ ] Record the running daemon's commit/time from `wanbond monitor` or the
       dashboard, its executable hash and uptime before each measurement.
       `wanbond version` identifies the invoked local binary; it need not be
