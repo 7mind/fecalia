@@ -33,6 +33,7 @@ type adaptiveCollector struct {
 	drops, expired                      *prometheus.Desc
 	interactiveDrops, interactiveQueued *prometheus.Desc
 	smallQueueDrops                     *prometheus.Desc
+	smallQueueResidence                 *prometheus.Desc
 	coalescedACKs                       *prometheus.Desc
 	admissionDrops, aqmDrops            *prometheus.Desc
 	duplicates                          *prometheus.Desc
@@ -117,16 +118,17 @@ func newAdaptiveCollector(source AdaptiveSource) *adaptiveCollector {
 			return 0
 		}),
 	}, drops: prometheus.NewDesc("wanbond_adaptive_queue_drops_total", "Datagrams dropped by bounded queue admission or residence time.", []string{"peer"}, nil),
-		expired:           prometheus.NewDesc("wanbond_adaptive_expired_packets_total", "Packets whose bounded repair lifetime expired.", []string{"peer"}, nil),
-		coalescedACKs:     prometheus.NewDesc("wanbond_adaptive_coalesced_tcp_acks_total", "Unsent pure TCP acknowledgements superseded by newer cumulative acknowledgements.", []string{"peer"}, nil),
-		interactiveDrops:  prometheus.NewDesc("wanbond_adaptive_interactive_queue_drops_total", "Small datagrams dropped by bounded queue admission or residence time; included in queue_drops_total.", []string{"peer"}, nil),
-		smallQueueDrops:   prometheus.NewDesc("wanbond_adaptive_small_queue_drops_total", "Small datagrams dropped before first transmission, by size/protocol class and queue cause; sums to interactive_queue_drops_total.", []string{"peer", "class", "cause"}, nil),
-		admissionDrops:    prometheus.NewDesc("wanbond_adaptive_admission_drops_total", "Datagrams refused because the queued and outstanding datagram limit was full; included in queue_drops_total.", []string{"peer"}, nil),
-		aqmDrops:          prometheus.NewDesc("wanbond_adaptive_aqm_drops_total", "Bulk datagrams dropped by the CoDel schedule; included in queue_drops_total. The remainder of queue_drops_total exceeded a residence bound.", []string{"peer"}, nil),
-		interactiveQueued: prometheus.NewDesc("wanbond_adaptive_interactive_queued_packets", "Small datagrams waiting for their first transmission.", []string{"peer"}, nil),
-		rejected:          prometheus.NewDesc("wanbond_adaptive_rejected_frames_total", "Authenticated frames rejected by the transport, by validation cause.", []string{"peer", "cause"}, nil),
-		realtimeMoves:     prometheus.NewDesc("wanbond_adaptive_realtime_original_path_moves_total", "Changes of lane between first submissions of real-time datagrams; excludes copies, repairs and small TCP datagrams.", []string{"peer"}, nil),
-		duplicates:        prometheus.NewDesc("wanbond_adaptive_duplicate_packets_total", "Received datagrams that had arrived before: the peer's repairs and copies of datagrams it could not confirm in time.", []string{"peer"}, nil)}
+		expired:             prometheus.NewDesc("wanbond_adaptive_expired_packets_total", "Packets whose bounded repair lifetime expired.", []string{"peer"}, nil),
+		coalescedACKs:       prometheus.NewDesc("wanbond_adaptive_coalesced_tcp_acks_total", "Unsent pure TCP acknowledgements superseded by newer cumulative acknowledgements.", []string{"peer"}, nil),
+		interactiveDrops:    prometheus.NewDesc("wanbond_adaptive_interactive_queue_drops_total", "Small datagrams dropped by bounded queue admission or residence time; included in queue_drops_total.", []string{"peer"}, nil),
+		smallQueueDrops:     prometheus.NewDesc("wanbond_adaptive_small_queue_drops_total", "Small datagrams dropped before first transmission, by size/protocol class and queue cause; sums to interactive_queue_drops_total.", []string{"peer", "class", "cause"}, nil),
+		smallQueueResidence: prometheus.NewDesc("wanbond_adaptive_small_queue_residence_seconds", "Local queue residence before the first transmission, by size/protocol class; excludes copies, repairs, coalesced acknowledgements and queued drops.", []string{"peer", "class"}, nil),
+		admissionDrops:      prometheus.NewDesc("wanbond_adaptive_admission_drops_total", "Datagrams refused because the queued and outstanding datagram limit was full; included in queue_drops_total.", []string{"peer"}, nil),
+		aqmDrops:            prometheus.NewDesc("wanbond_adaptive_aqm_drops_total", "Bulk datagrams dropped by the CoDel schedule; included in queue_drops_total. The remainder of queue_drops_total exceeded a residence bound.", []string{"peer"}, nil),
+		interactiveQueued:   prometheus.NewDesc("wanbond_adaptive_interactive_queued_packets", "Small datagrams waiting for their first transmission.", []string{"peer"}, nil),
+		rejected:            prometheus.NewDesc("wanbond_adaptive_rejected_frames_total", "Authenticated frames rejected by the transport, by validation cause.", []string{"peer", "cause"}, nil),
+		realtimeMoves:       prometheus.NewDesc("wanbond_adaptive_realtime_original_path_moves_total", "Changes of lane between first submissions of real-time datagrams; excludes copies, repairs and small TCP datagrams.", []string{"peer"}, nil),
+		duplicates:          prometheus.NewDesc("wanbond_adaptive_duplicate_packets_total", "Received datagrams that had arrived before: the peer's repairs and copies of datagrams it could not confirm in time.", []string{"peer"}, nil)}
 }
 
 func (c *adaptiveCollector) Describe(ch chan<- *prometheus.Desc) {
@@ -137,6 +139,7 @@ func (c *adaptiveCollector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.expired
 	ch <- c.interactiveDrops
 	ch <- c.smallQueueDrops
+	ch <- c.smallQueueResidence
 	ch <- c.interactiveQueued
 	ch <- c.coalescedACKs
 	ch <- c.admissionDrops
@@ -169,6 +172,16 @@ func (c *adaptiveCollector) Collect(ch chan<- prometheus.Metric) {
 			}{{"admission", queue.drops.Admission}, {"deadline", queue.drops.Deadline}, {"stale", queue.drops.Stale}} {
 				ch <- prometheus.MustNewConstMetric(c.smallQueueDrops, prometheus.CounterValue, float64(drop.count), peer.Peer, queue.class, drop.cause)
 			}
+		}
+		for _, queue := range []struct {
+			class     string
+			residence bond.SmallQueueResidenceStats
+		}{{"realtime", peer.State.RealtimeQueueResidence}, {"small_tcp", peer.State.SmallTCPQueueResidence}} {
+			buckets := make(map[float64]uint64)
+			for i, bound := range bond.SmallQueueResidenceBounds() {
+				buckets[bound.Seconds()] = queue.residence.Buckets[i]
+			}
+			ch <- prometheus.MustNewConstHistogram(c.smallQueueResidence, queue.residence.Count, queue.residence.TotalSeconds, buckets, peer.Peer, queue.class)
 		}
 		ch <- prometheus.MustNewConstMetric(c.interactiveQueued, prometheus.GaugeValue, float64(peer.State.InteractiveQueued), peer.Peer)
 		ch <- prometheus.MustNewConstMetric(c.coalescedACKs, prometheus.CounterValue, float64(peer.State.CoalescedACKs), peer.Peer)

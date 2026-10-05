@@ -179,20 +179,32 @@ type SmallQueueDropStats struct {
 	Stale     uint64
 }
 
+type SmallQueueResidenceStats struct {
+	Count        uint64
+	TotalSeconds float64
+	Buckets      [6]uint64
+}
+
+func SmallQueueResidenceBounds() [6]time.Duration {
+	return [6]time.Duration{time.Millisecond, 5 * time.Millisecond, 10 * time.Millisecond, 20 * time.Millisecond, 50 * time.Millisecond, 100 * time.Millisecond}
+}
+
 type Snapshot struct {
-	Paths                 []PathStats
-	QueueDrops            uint64
-	AdmissionDrops        uint64
-	AQMDrops              uint64
-	InteractiveQueueDrops uint64
-	RealtimeQueueDrops    SmallQueueDropStats
-	SmallTCPQueueDrops    SmallQueueDropStats
-	InteractiveQueued     int
-	CoalescedACKs         uint64
-	Expired               uint64
-	Duplicates            uint64
-	RealtimeMoves         uint64
-	Rejected              [RejectionCauses]uint64
+	Paths                  []PathStats
+	QueueDrops             uint64
+	AdmissionDrops         uint64
+	AQMDrops               uint64
+	InteractiveQueueDrops  uint64
+	RealtimeQueueDrops     SmallQueueDropStats
+	SmallTCPQueueDrops     SmallQueueDropStats
+	RealtimeQueueResidence SmallQueueResidenceStats
+	SmallTCPQueueResidence SmallQueueResidenceStats
+	InteractiveQueued      int
+	CoalescedACKs          uint64
+	Expired                uint64
+	Duplicates             uint64
+	RealtimeMoves          uint64
+	Rejected               [RejectionCauses]uint64
 }
 
 type packet struct {
@@ -353,35 +365,36 @@ type Transport struct {
 	receivers map[PathID]*receiver
 	// receiverOrder holds the receivers in order of creation: acknowledgements
 	// leave in that order, so a run does not depend on map iteration.
-	receiverOrder     []*receiver
-	queue             packetFIFO
-	bulkAQM           codel
-	small             [classBulk]fairPacketQueue
-	demand            [classBulk]rateMeter
-	pending           map[uint64]*packet
-	pendingOrder      []*packet
-	seq               uint64
-	bulkSeq           uint64
-	interactiveSeq    uint64
-	redundancyTokens  float64
-	realtimeLate      time.Time
-	realtimeSkipping  bool
-	realtimePath      PathID
-	realtimePathKnown bool
-	realtimeMoves     uint64
-	lastPoll          time.Time
-	lastTime          time.Time
-	rejected          [RejectionCauses]uint64
-	drops             uint64
-	admissionDrops    uint64
-	aqmDrops          uint64
-	interactiveDrops  uint64
-	smallQueueDrops   [classBulk]SmallQueueDropStats
-	coalescedACKs     uint64
-	expired           uint64
-	duplicates        uint64
-	received          receiptWindow
-	unreported        receiptWindow
+	receiverOrder       []*receiver
+	queue               packetFIFO
+	bulkAQM             codel
+	small               [classBulk]fairPacketQueue
+	demand              [classBulk]rateMeter
+	pending             map[uint64]*packet
+	pendingOrder        []*packet
+	seq                 uint64
+	bulkSeq             uint64
+	interactiveSeq      uint64
+	redundancyTokens    float64
+	realtimeLate        time.Time
+	realtimeSkipping    bool
+	realtimePath        PathID
+	realtimePathKnown   bool
+	realtimeMoves       uint64
+	lastPoll            time.Time
+	lastTime            time.Time
+	rejected            [RejectionCauses]uint64
+	drops               uint64
+	admissionDrops      uint64
+	aqmDrops            uint64
+	interactiveDrops    uint64
+	smallQueueDrops     [classBulk]SmallQueueDropStats
+	smallQueueResidence [classBulk]SmallQueueResidenceStats
+	coalescedACKs       uint64
+	expired             uint64
+	duplicates          uint64
+	received            receiptWindow
+	unreported          receiptWindow
 }
 
 type receiptWindow struct {
@@ -769,6 +782,17 @@ func (t *Transport) copyBudget(now time.Time) float64 {
 func (t *Transport) transmit(p *packet, path *lane, now time.Time) Transmission {
 	size := len(p.payload) + wireOverhead
 	if p.seq == 0 {
+		if p.class != classBulk {
+			wait := now.Sub(p.created)
+			residence := &t.smallQueueResidence[p.class]
+			residence.Count++
+			residence.TotalSeconds += wait.Seconds()
+			for i, bound := range SmallQueueResidenceBounds() {
+				if wait <= bound {
+					residence.Buckets[i]++
+				}
+			}
+		}
 		if p.class == classRealtime {
 			path.realtimeOriginals++
 			if t.realtimePathKnown && t.realtimePath != path.id {
@@ -1420,6 +1444,7 @@ func maxTime(a, b time.Time) time.Time {
 func (t *Transport) Snapshot(now time.Time) Snapshot {
 	s := Snapshot{QueueDrops: t.drops, AdmissionDrops: t.admissionDrops, AQMDrops: t.aqmDrops, InteractiveQueueDrops: t.interactiveDrops, InteractiveQueued: t.small[classRealtime].count + t.small[classSmall].count, CoalescedACKs: t.coalescedACKs, Expired: t.expired, Duplicates: t.duplicates, RealtimeMoves: t.realtimeMoves, Rejected: t.rejected}
 	s.RealtimeQueueDrops, s.SmallTCPQueueDrops = t.smallQueueDrops[classRealtime], t.smallQueueDrops[classSmall]
+	s.RealtimeQueueResidence, s.SmallTCPQueueResidence = t.smallQueueResidence[classRealtime], t.smallQueueResidence[classSmall]
 	for _, p := range t.paths {
 		baseline := p.transitBases[p.transitBucket]
 		age := time.Duration(0)

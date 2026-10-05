@@ -287,7 +287,7 @@ func TestAdaptiveCollectorExportsControlDecisions(t *testing.T) {
 	}
 	got := map[string]*dto.Metric{}
 	for _, family := range families {
-		if family.GetName() == "wanbond_adaptive_small_queue_drops_total" {
+		if family.GetName() == "wanbond_adaptive_small_queue_drops_total" || family.GetName() == "wanbond_adaptive_small_queue_residence_seconds" {
 			continue
 		}
 		if family.GetName() == "wanbond_adaptive_rejected_frames_total" {
