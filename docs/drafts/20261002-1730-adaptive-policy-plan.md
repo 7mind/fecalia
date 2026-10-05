@@ -897,6 +897,8 @@ ages. Compare distributions and the observed RF/scheduler spread; do not
 invent fixed tolerances for the previously qualitative gates. Field remains
 the behavioral reference. Lab/model disagreement triggers investigation and
 further measurements rather than terminating implementation automatically.
+The operator reiterates this objective on 2026-10-05: a failed experiment
+is rejected and investigated, rather than ending the improvement goal.
 
 First restate the remaining tests of removed mechanisms as outcome tests in
 a separate code commit; then replace the stage 2 delay model and remove its
@@ -1092,3 +1094,96 @@ not evidence of a defect. The stronger private test imposed an unsupported
 interpretation of “known” and is retired, with source and failed experiment
 retained as `stage23-physical-confidence*`. The sampler review continues
 against public service outcomes; no production estimator change is accepted.
+
+### Controlled uplink upgrade and two-lane reproduction — 2026-10-05
+
+**Observed:** the same isolated flight-allowance binary receives a second
+baseline → experiment → baseline field comparison, with cold restarts and
+voice-only preflights. Direct Starlink/5G uploads to the same destination
+immediately precede each shaped trial. Their payload rates are respectively
+0.528/3.017, 0.503/2.938 and 0.511/2.920 Mbit/s; the 5G offers are capped at
+3 Mbit/s and establish lower bounds.
+
+Only edge IPv4 UDP to `45.11.171.73:51820` on `end0.232` is shaped:
+400 kbit/s rises to 2 Mbit/s fifteen seconds into a thirty-second uplink TCP
+flow. The TBF burst is 4,000 bytes and its latency bound 100 ms; other traffic
+uses an unshaped prio band. Observed management replies use `end0`, table 100,
+via `192.168.222.1`; this route does not identify a WAN provider. The classifier
+excludes SSH/ZeroTier regardless of provider. Verified 120-second cleanup
+timers precede every network mutation; the paired candidate has its existing
+15-minute binary restoration timers. The temporary concentrator firewall
+rule permits only the test TCP port and source on `wanbond0`. No blackout or
+deployment configuration change runs.
+
+| Measurement | Baseline before | Experiment | Baseline after |
+|---|---:|---:|---:|
+| Approximate TCP payload in receiver seconds [5,15), Mbit/s | 0.146 | 0.263 | 0.166 |
+| Approximate TCP payload in receiver seconds [25,30), Mbit/s | 1.358 | 0.244 | 1.546 |
+| Whole-report bounds for [25,30), Mbit/s | 1.098–1.644 | 0.192–0.305 | 1.269–1.849 |
+| Voice p99 during locally confirmed TCP activity, edge/hub RTT ms | 62.4 / 57.2 | 61.0 / 55.3 | 72.6 / 71.2 |
+
+Approximate window rates interpolate partial receiver reports; they cannot
+prove exact adaptation deadlines. The lower bound counts reports wholly
+inside the window; the upper counts every overlapping report. Candidate
+service is lower even under those bounds. This single paired set establishes
+no universal RF result or repeated gain. All guarded TCP-active voice windows
+have zero loss; the largest receive gap is 82.6 ms. Each host uses its own
+clock, guarded TCP timestamps and archived result-file metadata; no exact
+cross-host phase alignment is claimed. Full-stream trailing hub misses were
+collector cleanup artifacts: the edge echo server stopped before the hub
+sender. The uncorrected analysis remains beside the corrected evidence.
+
+At approximately ten seconds after the upgrade, edge 5G capacity estimates
+are 266,772 / 54,862 / 262,235 B/s, with live ACK progress in all phases.
+**Inference:** voice-lane bulk isolation and backlog-dependent probing are
+plausible contributors to the experiment's failure to learn the upgrade.
+These snapshots do not establish a field root cause.
+
+**Collection corrections:** default 128 KiB iperf writes produced coarse
+zero/burst receiver reports in an earlier baseline attempt; the corrected
+set uses `-l 1200`. That earlier attempt activated no candidate and is retained
+separately. Gzip log archives replace the uncompressed collection that timed
+out after restoration. The corrected comparison uses 23.262 mobile RX+TX MB;
+the earlier collector interval uses 9.381 MB. The enclosing interval through
+cleanup is 42.996 MB, including management/background. These overlap and must
+not be added. Both hosts are independently verified on `b444920`, with empty
+overrides, inactive test timers, no test firewall rules and `noqueue` WANs.
+Four owned `/run` reference directories are archived and removed; active
+configuration remains. Raw records, executable identities, commands,
+`analyze.py`, bounded analysis and restoration checks are in
+`/srv/nvme/tmp/wanbond-adaptive-evidence/flight-rate-upgrade-20261005/`.
+
+**Observed model reproduction:** test-only `1bfd266` adds a lower-latency
+50 kB/s uplink raised to 250 kB/s, beside a 62.5 kB/s policed alternate,
+with voice and one uplink TCP flow. Fixed delays and FIFO buffering are
+representative inputs, not an RF replay or an exact TBF model. At the
+ten-second deadline original `f75668e`, C8 and the isolated flight-cap removal
+all deliver 27,600 B/s against the independent 217,408 B/s payload reference,
+identically across three runs. Voice has zero loss and 24 ms p99. Original
+and C8 sustained service is 21,240 and 25,920 B/s respectively. This supports
+the structural model failure; because the field baselines recover, it does
+not explain the field baseline/candidate contrast. No threshold is weakened.
+The tagged progression case remains outside the default correctness gate.
+
+**Observed isolated replacement experiment:** moving demand-triggered bounded
+pushes from ACK processing to `Poll` makes them respond to waiting real TCP
+traffic even when that lane's feedback arrives between bursts. Deadline and
+sustained uplink delivery become 180,000 and 165,120 B/s, passing 75%.
+Bidirectional delay noise delivers 837,960 B/s at 124 ms voice p99, compared
+with C8's 65,520 B/s and 63 ms. Directional noise, sparse queued senders,
+batched receipts and steady queue/utilization outcomes pass this run. Slow
+survivor voice, ACK backlog and takeover still fail, so neither an accepted
+policy nor improvement on all metrics follows. This source is retained in
+`stage23-poll-probing-source.tar.gz`, with its digest/provenance and
+`stage23-poll-probing-outcomes.txt`; it has not run in the field. Go AST
+inventory counts 12 constants in its `control.go`, versus C8's 31; this includes
+the function-local `judged` constant. Main retains C8 production behavior.
+
+**Rejected experimental requirement:** a private test required a congestion
+cut to persist after fresh feedback showed the queue below threshold, despite
+no new bandwidth peak. That is not sufficient evidence that the pace remains
+unsafe; forced drain retention worsened public service outcomes. The test
+and change are retired, with `stage23-forced-drain-rejected*` retained. Further
+probe-gain and flight-limit trials retain their failures separately. Continue
+against public delivery, latency and efficiency outcomes, rather than adding
+constraints to make private state tests pass.

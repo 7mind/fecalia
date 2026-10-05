@@ -534,6 +534,27 @@ Delay/capacity replacement continues against physical service outcomes;
 neither a pacing target nor a delivery lower bound establishes a physical
 capacity ceiling.
 
+**Controlled uplink upgrade, 2026-10-05.** A second field comparison of the
+same isolated flight-allowance experiment shapes only the mobile wanbond UDP
+flow, from 400 kbit/s to 2 Mbit/s. Baseline → experiment → baseline payload
+service in the later receiver window is approximately 1.36 / 0.24 / 1.55
+Mbit/s. Whole-report uncertainty bounds preserve the experiment's deficit;
+guarded TCP-active voice windows lose no datagrams. Both hosts are restored
+and verified on `b444920`; the experiment remains unmerged.
+
+A separate deterministic two-lane uplink reproduction fails identically
+three times on original and C8 policy at the ten-second upgrade deadline:
+27,600 B/s against a 217,408 B/s available-payload reference. A voice-bearing
+low-latency lane does not learn its extra service. The fixed-input model also
+fails the field baseline, so it does not reproduce the field candidate
+contrast. In the isolated estimator replacement, scheduling bounded pushes
+from waiting tunnel demand in `Poll` raises deadline delivery to 180,000 B/s.
+Existing slow-lane voice and takeover gates still fail. These are model
+observations, not a field gain or completed stage. Main production behavior
+and ACK v1 remain unchanged; the
+[execution record](drafts/20261002-1730-adaptive-policy-plan.md#controlled-uplink-upgrade-and-two-lane-reproduction--2026-10-05)
+retains inputs, uncertainty, source and failed experiments.
+
 **Paths and epochs.** An unpadded challenge-protected PROBE carries a 22-byte
 capability record: `bond`, version 1, physical path ID, process Boot ID and Bind
 Open generation. Padded PMTU probes retain their original size. A logical lane

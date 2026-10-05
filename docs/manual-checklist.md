@@ -95,6 +95,15 @@ Prerequisites (all phases):
       commit/time after a scratch candidate build that lacks Go VCS metadata.
       The [flight-allowance comparison](drafts/20261002-1730-adaptive-policy-plan.md#isolated-flight-allowance-field-comparison--2026-10-05)
       corrects both collection errors and records no established field gain.
+- [ ] For capped TCP timing, use a write quantum small enough to expose the
+      measurement window (`iperf3 -l 1200` in the controlled uplink trial).
+      Default 128 KiB writes can produce zero/burst receiver reports. Retain
+      whole-report bounds; interpolating partial reports cannot prove a
+      deadline. Collect remote logs as gzip archives to bound transfer time.
+      Stop voice senders before their remote echo servers, or restrict analysis
+      to guarded intervals when both remain active. The
+      [controlled upgrade record](drafts/20261002-1730-adaptive-policy-plan.md#controlled-uplink-upgrade-and-two-lane-reproduction--2026-10-05)
+      retains these collection defects and the rejected candidate's result.
 - [ ] Record the removal timer's accuracy and actual firing time. For a
       latency-rise measurement, remove netem after receipt collection:
       deleting it while voice packets are queued can contaminate the loss

@@ -2593,3 +2593,40 @@ including setup attempts, management and background is 157.720 MB. Do not
 add nested intervals. The [execution record](../../docs/drafts/20261002-1730-adaptive-policy-plan.md#isolated-flight-allowance-field-comparison--2026-10-05)
 records exact identity, measurements, failed setup provenance, clock/window
 limits and artifacts. No production controller changes accompany this record.
+
+### Controlled field rate upgrade and model reproduction — 2026-10-05
+
+A second temporary comparison of the same flight-cap removal shapes only
+mobile wanbond UDP, 400 kbit/s → 2 Mbit/s, with voice and a thirty-second
+capped uplink TCP flow. Fresh direct uplinks precede every phase, and network
+cleanup timers precede each change. Baseline → experiment → baseline later
+payload rates are approximately 1.36 / 0.24 / 1.55 Mbit/s. Whole-report bounds
+are 1.10–1.64 / 0.19–0.31 / 1.27–1.85; interpolated partial reports do not
+establish exact deadline verdicts. Guarded TCP-active voice windows have zero
+loss; p99 edge/hub RTT is 62.4/57.2, 61.0/55.3 and 72.6/71.2 ms. No repeatable
+gain is established. Both baseline binaries, empty overrides, cleared test
+timers/firewall rules and unchanged WAN qdiscs are verified after restoration.
+The enclosing mobile VLAN interval through cleanup advances by 42.996 MB.
+
+Collector corrections use 1,200-byte iperf writes and gzip log archives. An
+earlier baseline attempt with default 128 KiB writes yields coarse reports
+and no candidate result. Full-stream trailing hub voice misses result from
+stopping its echo server before its sender; local guarded TCP-active windows
+exclude that cleanup interval. Raw and corrected analyses both remain.
+
+The new tagged `TestAdaptiveVoiceLaneUplinkUpgrade` uses fixed two-lane inputs:
+a voice-bearing 50 kB/s uplink increases fivefold beside a 62.5 kB/s policer.
+Original `f75668e`, C8 and the isolated flight-cap removal each deliver
+27,600 B/s at the ten-second deadline against a 217,408 B/s reference,
+identically three times. Voice loses none at 24 ms p99. This is a model
+failure, not an exact replay: the field baselines recover. In the unaccepted
+replacement, `Poll`-triggered pushes of queued real traffic improve model
+deadline/sustained payload to 180,000/165,120 B/s. Other voice outcomes still
+fail. No three-run lab series or production estimator replacement is claimed.
+The [execution record](../../docs/drafts/20261002-1730-adaptive-policy-plan.md#controlled-uplink-upgrade-and-two-lane-reproduction--2026-10-05)
+links source, full measurement provenance, rejected hypotheses and accounting.
+
+```sh
+nix develop --command go test -tags adaptivepolicy ./internal/bond \
+  -run '^TestAdaptiveVoiceLaneUplinkUpgrade$' -count=3 -timeout=15m -v
+```
