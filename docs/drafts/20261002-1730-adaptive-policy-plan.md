@@ -1436,3 +1436,39 @@ Evidence is `estimator-feedback-field-upgrade-20261005/`, including source,
 raw phase logs, bounded/counter analyses, archive hashes and postconditions.
 Continue with cold-service discovery, current-loss decisions and voice gaps;
 this comparison does not accept the prototype or finish the objective.
+
+
+**Subsequent isolated diagnoses:** current-loss holding reduces policer loss
+from 6.3% to 2.5% but collapses upgrade payload to 24,000/23,760 B/s; reject it.
+Full-ACK-round pushes restore healthy cold/increase discovery to 87.27/87.08
+Mbit/s but produce 285/287 ms directional-noise voice p99, standing queues
+of 54/96 ms and only 104/200 ACK-backlog voice receipts; reject them. Keeping
+discovery open until first congestion reaches 99.99 Mbit/s cold but retains
+only 5.39 Mbit/s after a rate increase and fails upgrade service. That is a
+coupled diagnostic of push duration and AQM, not an accepted latched state.
+An AQM-only disabled diagnostic leaves healthy discovery unchanged at
+2.75/5.68 Mbit/s, rejecting AQM as the principal cause of those failures.
+
+Removing the additional fixed probe cooldown in favor of physical receipt
+coverage and measured queue eligibility raises discovery only to 3.31/6.86
+Mbit/s; ACK-backlog voice regresses from 80 to 97 ms and fails its 90 ms gate.
+A one-round delivery-maximum experiment passes upgrade at 225,600/176,040
+B/s but directional-noise voice rises to 171/175 ms and policer loss is 6.5%.
+Both are discarded. These are observed fixed-model outcomes, not field
+results or reasons to end the improvement objective. Sources and records are
+`stage23-{loss-aware-holding,holding-full-round-push,holding-first-congestion,
+holding-no-aqm,feedback-eligible-push,round-maximum-delivery}-*`, with rejected
+sources under `stage23-rejected-*`. The field-tested holding source remains
+the experimental checkpoint; every diagnostic edit is restored.
+
+**Research:** the July 2026 [BBR draft, section 5.5.10.3](https://www.ietf.org/archive/id/draft-ietf-ccwg-bbr-06.html#section-5.5.10.3)
+uses a delivery maximum over a round and distinguishes loss response by probing
+phase. This supports investigating feedback-cohort alignment; the isolated
+maximum trial above does not validate an imported BBR policy. Next reproduce
+which acknowledgement cohorts cause underestimation or congestion cuts, then
+replace the corresponding sampling/phase rules together. Cold discovery,
+policer efficiency, slow-link voice and loaded delay transitions remain the
+measured outstanding requirements. Revisit native download and combined traffic
+once a source preserves the passing voice/service outcomes; use immediate
+direct references and bounded offers, and record mobile bytes. Retain model
+failures while field comparisons guide suitability.
