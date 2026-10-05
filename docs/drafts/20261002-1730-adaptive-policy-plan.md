@@ -1026,3 +1026,69 @@ phases; low application-limited samples must not lower a path-capacity model.
 This is a reference for the next sampler review, not evidence that copying
 BBR or the current prototype meets wanbond's gates. The field baseline remains
 `b444920`; no candidate is started by these tests.
+
+### Isolated flight-allowance field comparison — 2026-10-05
+
+**Observed:** an isolated C8 experiment removes the one-bulk-datagram flight
+restriction, without the estimator replacement. Source `7860b97`, executable
+SHA-256 `585ef93ba6f292ad69dcf766396f8916d0eed6c404117d944f25ef639a9e3d6c`,
+is tested temporarily on both hosts with verified 15-minute restoration
+timers. The full non-privileged gate fails three existing voice outcomes:
+single slow lane, sustained ACK backlog and takeover catch-up. These failures
+are retained; this field trial does not approve the experiment for merging.
+
+All three field phases start after a daemon restart and voice-only preflight.
+Direct Starlink/5G uploads precede loaded tunnel download/upload; a direct 5G
+upload follows. All transfers use the same destination and bounded payloads.
+Loaded voice runs during tunnel transfers, independently of raw references.
+The following are measured payload rates, with 10 Mbit/s down and 3 Mbit/s up
+offers; reaching an offer establishes a service lower bound.
+
+| Measurement | Baseline before | Experiment | Baseline after |
+|---|---:|---:|---:|
+| Direct Starlink upload, Mbit/s | 0.523 | 0.516 | 0.517 |
+| Direct 5G upload before, Mbit/s | 2.994 | 2.989 | 2.993 |
+| Tunnel download, Mbit/s | 8.233 | 8.153 | 10.006 |
+| Tunnel upload, Mbit/s | 2.994 | 2.994 | 2.862 |
+| Direct 5G upload after, Mbit/s | 2.993 | 2.998 | 2.993 |
+| Voice p99 during download, edge/hub RTT ms | 42.4 / 46.9 | 42.2 / 44.0 | 39.3 / 40.3 |
+| Voice p99 during upload, edge/hub RTT ms | 40.8 / 43.0 | 37.3 / 38.3 | 36.7 / 38.0 |
+
+Voice loses no datagrams in the one-second-trimmed transfer windows; the
+largest observed gap is 50.3 ms. RTT uses each client's monotonic clock.
+Start-of-phase clock exchanges bound the relative host clocks to less than
+0.51 s, inside the trimming margin; drift during a phase is not measured.
+Raw downlink capacity is not calibrated. **Inference:** these observations
+do not establish an improvement: candidate throughput/latency is within the
+baseline spread, and most upload measurements reach the offered ceiling.
+
+The first completed setup ran voice only before bulk and cannot establish
+loaded voice performance. The next setup incorrectly overlapped tunnel voice
+with the raw standby reference and timed out before candidate activation.
+Both attempts are retained separately. The corrected three-phase comparison
+uses 99.479 mobile RX+TX MB. Including the two earlier collector intervals
+gives 136.080 MB; the enclosing interval, including gaps, management and
+background, is 157.720 MB. These are VLAN counters, not provider billing;
+the nested totals must not be added.
+
+**Observed restoration:** both hosts run `b444920` again, with empty runtime
+overrides and inactive restoration timers. No WAN impairment ran. Edge WAN
+qdiscs remain `noqueue`. The five experiment-owned `/run/wb-reference-*`
+directories are archived and removed after checking the archive listing and
+digest; active configuration is retained. `/run` is 4% used. Evidence,
+commands, identities, failed gates and cleanup logs are under
+`/srv/nvme/tmp/wanbond-adaptive-evidence/flight-cap-field-20261005/`;
+the failed non-privileged run is `c8-no-bulk-cap-go-tests.txt` in its parent.
+
+The scratch `candidate.sh` build action now explicitly stamps the source
+commit/time: its initial build had no Go VCS metadata. This changes build
+identity, not candidate activation/restoration. Record and verify the daemon
+identity after activation as well as the executable hash.
+
+**Rejected hypothesis:** accepting only capacity samples associated with
+physical congestion worsens the replacement model. A pacing-limited sample
+measures a lower bound, not a proven capacity ceiling; its presence alone is
+not evidence of a defect. The stronger private test imposed an unsupported
+interpretation of “known” and is retired, with source and failed experiment
+retained as `stage23-physical-confidence*`. The sampler review continues
+against public service outcomes; no production estimator change is accepted.

@@ -87,6 +87,14 @@ Prerequisites (all phases):
       single-WAN blackout when either lane is already DOWN or management
       access is intermittent. Preserve incomplete rounds as collection
       evidence, without a policy verdict.
+- [ ] Verify loaded voice is actually sending during every measured tunnel
+      transfer. A voice-only preflight is not a loaded-latency measurement.
+      Keep tunnel traffic out of raw standby references; it consumes the
+      service being calibrated. Retain transfer/voice timestamps and clock
+      uncertainty when selecting common windows. Verify explicitly stamped
+      commit/time after a scratch candidate build that lacks Go VCS metadata.
+      The [flight-allowance comparison](drafts/20261002-1730-adaptive-policy-plan.md#isolated-flight-allowance-field-comparison--2026-10-05)
+      corrects both collection errors and records no established field gain.
 - [ ] Record the removal timer's accuracy and actual firing time. For a
       latency-rise measurement, remove netem after receipt collection:
       deleting it while voice packets are queued can contaminate the loss

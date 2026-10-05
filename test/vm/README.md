@@ -2570,3 +2570,26 @@ binary change or WAN impairment accompanies this model checkpoint. The
 [execution record](../../docs/drafts/20261002-1730-adaptive-policy-plan.md#11-revised-execution-goal--operator-2026-10-04)
 records the metric targets and prototype provenance. These measurements are
 not a field improvement claim.
+
+### Isolated flight allowance in the field — 2026-10-05
+
+Observed C8 experiment `7860b97` removes the one-bulk-datagram flight cap
+without replacing estimators. Its non-privileged gate fails existing voice
+outcomes for a slow survivor, ACK backlog and takeover. Temporary paired-host
+testing uses 15-minute restore timers, matched restarts, voice preflights,
+direct uplink references, then voice during capped tunnel transfers.
+
+Baseline → experiment → baseline downlink is 8.23 / 8.15 / 10.01 Mbit/s;
+uplink is 2.99 / 2.99 / 2.86 Mbit/s. Measured loaded voice has zero loss,
+with latency within the baseline spread. Raw downlink capacity is unmeasured;
+an upload reaching its 3 Mbit/s offer proves only that lower bound. There is
+no established field improvement and no new lab acceptance claim.
+
+Both hosts are restored to `b444920`, runtime overrides/timers are cleared,
+and edge WAN qdiscs remain `noqueue`. Experiment-owned edge `/run` reference
+directories are archived and removed; active configuration is retained.
+The corrected comparison uses 99.479 mobile RX+TX MB; the enclosing interval
+including setup attempts, management and background is 157.720 MB. Do not
+add nested intervals. The [execution record](../../docs/drafts/20261002-1730-adaptive-policy-plan.md#isolated-flight-allowance-field-comparison--2026-10-05)
+records exact identity, measurements, failed setup provenance, clock/window
+limits and artifacts. No production controller changes accompany this record.

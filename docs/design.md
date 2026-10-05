@@ -520,6 +520,20 @@ changes accompany these tests. See the
 [baseline checkpoint](drafts/20261002-1730-adaptive-policy-plan.md#10-installed-baseline-and-upload-investigation--2026-10-04)
 for measurements, collection defects, accounting and reproducible commands.
 
+**Flight-allowance experiment, 2026-10-05.** Removing C8's one-bulk-datagram
+flight restriction in isolation improves a slow-lane model upgrade, but fails
+three existing voice outcomes. A temporary baseline → experiment → baseline
+field comparison observes tunnel downlink 8.23 / 8.15 / 10.01 Mbit/s and
+uplink 2.99 / 2.99 / 2.86 Mbit/s, with zero measured loaded-voice loss.
+Latency remains within the baseline spread. Upload is capped at 3 Mbit/s;
+raw downlink capacity is unmeasured. No field gain is established. Both hosts
+are restored to `b444920`; the experiment remains outside the main policy.
+The [execution record](drafts/20261002-1730-adaptive-policy-plan.md#isolated-flight-allowance-field-comparison--2026-10-05)
+retains exact identity, failed gates, collection corrections and byte costs.
+Delay/capacity replacement continues against physical service outcomes;
+neither a pacing target nor a delivery lower bound establishes a physical
+capacity ceiling.
+
 **Paths and epochs.** An unpadded challenge-protected PROBE carries a 22-byte
 capability record: `bond`, version 1, physical path ID, process Boot ID and Bind
 Open generation. Padded PMTU probes retain their original size. A logical lane
