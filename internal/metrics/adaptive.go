@@ -32,6 +32,7 @@ type adaptiveCollector struct {
 	paths                               []adaptiveMetric
 	drops, expired                      *prometheus.Desc
 	interactiveDrops, interactiveQueued *prometheus.Desc
+	smallQueueDrops                     *prometheus.Desc
 	coalescedACKs                       *prometheus.Desc
 	admissionDrops, aqmDrops            *prometheus.Desc
 	duplicates                          *prometheus.Desc
@@ -119,6 +120,7 @@ func newAdaptiveCollector(source AdaptiveSource) *adaptiveCollector {
 		expired:           prometheus.NewDesc("wanbond_adaptive_expired_packets_total", "Packets whose bounded repair lifetime expired.", []string{"peer"}, nil),
 		coalescedACKs:     prometheus.NewDesc("wanbond_adaptive_coalesced_tcp_acks_total", "Unsent pure TCP acknowledgements superseded by newer cumulative acknowledgements.", []string{"peer"}, nil),
 		interactiveDrops:  prometheus.NewDesc("wanbond_adaptive_interactive_queue_drops_total", "Small datagrams dropped by bounded queue admission or residence time; included in queue_drops_total.", []string{"peer"}, nil),
+		smallQueueDrops:   prometheus.NewDesc("wanbond_adaptive_small_queue_drops_total", "Small datagrams dropped before first transmission, by size/protocol class and queue cause; sums to interactive_queue_drops_total.", []string{"peer", "class", "cause"}, nil),
 		admissionDrops:    prometheus.NewDesc("wanbond_adaptive_admission_drops_total", "Datagrams refused because the queued and outstanding datagram limit was full; included in queue_drops_total.", []string{"peer"}, nil),
 		aqmDrops:          prometheus.NewDesc("wanbond_adaptive_aqm_drops_total", "Bulk datagrams dropped by the CoDel schedule; included in queue_drops_total. The remainder of queue_drops_total exceeded a residence bound.", []string{"peer"}, nil),
 		interactiveQueued: prometheus.NewDesc("wanbond_adaptive_interactive_queued_packets", "Small datagrams waiting for their first transmission.", []string{"peer"}, nil),
@@ -134,6 +136,7 @@ func (c *adaptiveCollector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.drops
 	ch <- c.expired
 	ch <- c.interactiveDrops
+	ch <- c.smallQueueDrops
 	ch <- c.interactiveQueued
 	ch <- c.coalescedACKs
 	ch <- c.admissionDrops
@@ -156,6 +159,17 @@ func (c *adaptiveCollector) Collect(ch chan<- prometheus.Metric) {
 		ch <- prometheus.MustNewConstMetric(c.drops, prometheus.CounterValue, float64(peer.State.QueueDrops), peer.Peer)
 		ch <- prometheus.MustNewConstMetric(c.expired, prometheus.CounterValue, float64(peer.State.Expired), peer.Peer)
 		ch <- prometheus.MustNewConstMetric(c.interactiveDrops, prometheus.CounterValue, float64(peer.State.InteractiveQueueDrops), peer.Peer)
+		for _, queue := range []struct {
+			class string
+			drops bond.SmallQueueDropStats
+		}{{"realtime", peer.State.RealtimeQueueDrops}, {"small_tcp", peer.State.SmallTCPQueueDrops}} {
+			for _, drop := range []struct {
+				cause string
+				count uint64
+			}{{"admission", queue.drops.Admission}, {"deadline", queue.drops.Deadline}, {"stale", queue.drops.Stale}} {
+				ch <- prometheus.MustNewConstMetric(c.smallQueueDrops, prometheus.CounterValue, float64(drop.count), peer.Peer, queue.class, drop.cause)
+			}
+		}
 		ch <- prometheus.MustNewConstMetric(c.interactiveQueued, prometheus.GaugeValue, float64(peer.State.InteractiveQueued), peer.Peer)
 		ch <- prometheus.MustNewConstMetric(c.coalescedACKs, prometheus.CounterValue, float64(peer.State.CoalescedACKs), peer.Peer)
 		ch <- prometheus.MustNewConstMetric(c.admissionDrops, prometheus.CounterValue, float64(peer.State.AdmissionDrops), peer.Peer)

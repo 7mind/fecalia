@@ -287,6 +287,9 @@ func TestAdaptiveCollectorExportsControlDecisions(t *testing.T) {
 	}
 	got := map[string]*dto.Metric{}
 	for _, family := range families {
+		if family.GetName() == "wanbond_adaptive_small_queue_drops_total" {
+			continue
+		}
 		if family.GetName() == "wanbond_adaptive_rejected_frames_total" {
 			if len(family.Metric) != int(bond.RejectionCauses) {
 				t.Fatalf("rejection causes: %d", len(family.Metric))

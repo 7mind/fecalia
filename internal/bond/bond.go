@@ -173,12 +173,20 @@ type Decisions struct {
 	StallSignals uint64
 }
 
+type SmallQueueDropStats struct {
+	Admission uint64
+	Deadline  uint64
+	Stale     uint64
+}
+
 type Snapshot struct {
 	Paths                 []PathStats
 	QueueDrops            uint64
 	AdmissionDrops        uint64
 	AQMDrops              uint64
 	InteractiveQueueDrops uint64
+	RealtimeQueueDrops    SmallQueueDropStats
+	SmallTCPQueueDrops    SmallQueueDropStats
 	InteractiveQueued     int
 	CoalescedACKs         uint64
 	Expired               uint64
@@ -368,6 +376,7 @@ type Transport struct {
 	admissionDrops    uint64
 	aqmDrops          uint64
 	interactiveDrops  uint64
+	smallQueueDrops   [classBulk]SmallQueueDropStats
 	coalescedACKs     uint64
 	expired           uint64
 	duplicates        uint64
@@ -511,6 +520,7 @@ func (t *Transport) Enqueue(payload []byte, metadata PacketMetadata, now time.Ti
 		t.admissionDrops++
 		if class != classBulk {
 			t.interactiveDrops++
+			t.smallQueueDrops[class].Admission++
 		}
 		return nil
 	}
@@ -1409,6 +1419,7 @@ func maxTime(a, b time.Time) time.Time {
 
 func (t *Transport) Snapshot(now time.Time) Snapshot {
 	s := Snapshot{QueueDrops: t.drops, AdmissionDrops: t.admissionDrops, AQMDrops: t.aqmDrops, InteractiveQueueDrops: t.interactiveDrops, InteractiveQueued: t.small[classRealtime].count + t.small[classSmall].count, CoalescedACKs: t.coalescedACKs, Expired: t.expired, Duplicates: t.duplicates, RealtimeMoves: t.realtimeMoves, Rejected: t.rejected}
+	s.RealtimeQueueDrops, s.SmallTCPQueueDrops = t.smallQueueDrops[classRealtime], t.smallQueueDrops[classSmall]
 	for _, p := range t.paths {
 		baseline := p.transitBases[p.transitBucket]
 		age := time.Duration(0)

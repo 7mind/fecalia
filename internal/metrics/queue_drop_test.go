@@ -25,7 +25,10 @@ func TestSmallQueueDropsIdentifyClassAndCause(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			expected := map[key]float64{}
+			expected := map[key]float64{
+				{"realtime", "admission"}: 0, {"realtime", "deadline"}: 0, {"realtime", "stale"}: 0,
+				{"small_tcp", "admission"}: 0, {"small_tcp", "deadline"}: 0, {"small_tcp", "stale"}: 0,
+			}
 			now := start
 			switch scenario {
 			case "deadline":
@@ -75,8 +78,9 @@ func TestSmallQueueDropsIdentifyClassAndCause(t *testing.T) {
 						}
 					}
 					got := metric.GetCounter().GetValue()
-					if got != expected[labels] {
-						t.Errorf("%s/%s drops %v, want %v", labels.class, labels.cause, got, expected[labels])
+					want, known := expected[labels]
+					if !known || got != want {
+						t.Errorf("%s/%s drops %v, want %v (known labels %v)", labels.class, labels.cause, got, want, known)
 					}
 					sum += got
 					delete(expected, labels)

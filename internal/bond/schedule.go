@@ -381,10 +381,16 @@ func (t *Transport) send(now time.Time, out []Transmission) []Transmission {
 			t.realtimeLate, t.realtimeSkipping = time.Time{}, false
 		}
 		for p := queue.peek(); p != nil; p = queue.peek() {
-			if now.After(p.queueDeadline) || c == classRealtime && t.stale(now, p) {
+			expired := now.After(p.queueDeadline)
+			if expired || c == classRealtime && t.stale(now, p) {
 				queue.pop()
 				t.drops++
 				t.interactiveDrops++
+				if expired {
+					t.smallQueueDrops[c].Deadline++
+				} else {
+					t.smallQueueDrops[c].Stale++
+				}
 				continue
 			}
 			size := len(p.payload) + wireOverhead
