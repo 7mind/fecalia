@@ -2684,3 +2684,29 @@ times at 99.98%; this establishes the pre-replacement service baseline.
 nix develop --command go test ./internal/bond \
   -run '^TestUnderusedLossyLaneDeliversBurstyBulk$' -count=3 -v
 ```
+
+
+### Holding-source model and field follow-up — 2026-10-05
+
+Unmerged source `1d272f9` preserves current/pre-push pace until matching
+physical delay feedback arrives and removes plateau-dependent long pushes.
+Selected outcomes pass three times: batched payload 4,982,720 B/s;
+ACK-backlog voice 200/200 at 80 ms one-way p99; steady utilization
+98.2%/97.4%; fivefold upgrade payload 189,600/172,560 B/s with zero voice
+loss at 36/40 ms RTT p99. Its full default bond run retains eighteen
+failures, including cold discovery, policer loss and slow voice. Build/vet
+and Nix build pass; no accepted three-run lab series is established.
+
+A temporary field baseline → candidate → baseline rate-upgrade set completes
+without cleanup errors. Late upload is about 1.41/1.51/0.30 Mbit/s, with
+candidate report bounds overlapping the initial baseline. Voice loses none;
+candidate p99 falls between the baselines and receive gaps worsen to
+131/134 ms. Raw peer AQM drops decline while repairs and expirations do not
+both decline. This does not establish improvement across all metrics or a
+download gain. Baseline binaries, network state and absence of owned
+timers/overrides are verified; owned `/run` references/binaries are archived,
+compared and removed. Evidence is `estimator-feedback-field-upgrade-20261005/`,
+with 22.601 mobile RX+TX MB for the comparison and 24.534 MB through cleanup
+(nested intervals). The
+[execution record](../../docs/drafts/20261002-1730-adaptive-policy-plan.md#holding-source-model-and-field-follow-up--2026-10-05)
+retains source, failure provenance and further work.

@@ -582,6 +582,21 @@ ACK rounds; selected model service outcomes pass three times, while slow voice
 and utilization still fail. Those corrections have no field result. See the
 [follow-up record](drafts/20261002-1730-adaptive-policy-plan.md#post-push-correction-and-sampling-follow-up--2026-10-05).
 
+**Holding-source follow-up, 2026-10-05.** Unmerged source `1d272f9` fixes
+application-limited sampling and stale holding, then preserves current/pre-push
+pacing until matching physical delay feedback arrives. It removes plateau
+push rules; `control.go` has 10 constants against C8's 31. Selected model
+service/voice outcomes pass three times, while the full bond gate retains
+eighteen failures. Its temporary paired field late upload is approximately
+1.41/1.51/0.30 Mbit/s. Candidate voice p99 (63/75 ms edge/hub) falls between
+the baselines, zero loss is preserved, and receive gaps grow to 131/134 ms.
+Throughput bounds overlap the initial baseline; improvement across the metric
+set is not established. Both hosts and network state are verified restored;
+owned `/run` artifacts are archived and removed. The
+[follow-up record](drafts/20261002-1730-adaptive-policy-plan.md#holding-source-model-and-field-follow-up--2026-10-05)
+retains exact source, rejected trials, model failures, field bounds and mobile
+accounting (22.601 MB comparison, 24.534 MB through cleanup, nested intervals).
+
 **Paths and epochs.** An unpadded challenge-protected PROBE carries a 22-byte
 capability record: `bond`, version 1, physical path ID, process Boot ID and Bind
 Open generation. Padded PMTU probes retain their original size. A logical lane

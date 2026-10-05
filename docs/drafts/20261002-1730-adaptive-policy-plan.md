@@ -1333,3 +1333,106 @@ delivery must reach 99%, and the existing zero-AQM-drop condition remains.
 C8 delivers 99.98% with zero AQM drops identically three times. Evidence is
 `underused-lossy-outcome-c8-three.txt`; this is an observed baseline outcome,
 not a candidate improvement or a completed inventory of mechanism tests.
+
+
+### Holding-source model and field follow-up — 2026-10-05
+
+The unmerged estimator branch also corrects two fail-first sampler findings:
+application-limited delivery remains tagged until its outstanding delivered
+boundary passes, and expired capacity cannot undo a fresh congestion cut.
+The reproductions pass three times; they do not independently establish better
+service. Subsequent pacing experiments remain isolated from the installed C8
+baseline. The following holding checkpoint and field comparison retain both
+gains and failures. Its source/code and documentation are separate commits;
+no replacement is accepted by these observations.
+
+**Holding lower-bound delivery, 2026-10-05:** removing plateau-dependent
+long pushes alone fails healthy steady utilization (1.2% on 100 Mbit/s) and
+batched-receipt throughput (113,040 B/s). A temporary controller trace observes
+pacing falling from 125,000 to about 53,000 B/s despite zero queue delay and
+no loss/delay cuts. Delivery measured under the controller's own lower pace
+then acts as a ceiling; the unmeasured 85% drain suppresses further discovery.
+That causal interpretation is inferred from the trace, not a field finding.
+Temporary instrumentation is removed. The standalone plateau removal is not
+retained as an accepted policy.
+
+The next isolated source holds the current or pre-push pace while awaiting
+physical delay feedback, raises it when fresh delivery proves greater service,
+and still cuts on measured congestion. It replaces the plateau-growth rule
+with capacity known/unknown state, removes the `growing` estimator, and removes
+the duplicate probe interval constant. `control.go` has 10 constant names
+against C8's 31. Pushes remain bounded queued real traffic; ACK v1 is unchanged.
+The preceding receipt-guard restatement is committed separately.
+
+**Observed models:** the selected sampler/aging/receipt guards, small backlog,
+batched receipts, directional noise, ACK backlog, steady utilization and
+bursty underused delivery pass three times. Batched payload is 4,982,720 B/s;
+ACK-backlog voice is 200/200 at 80 ms one-way p99. Steady utilization is
+98.2%/97.4%, with 12.4/19.1 ms queue p90. Directional-noise voice loses none
+at 136/149 ms RTT p99, with 854,520/839,040 B/s payload. The fivefold upgrade
+passes three times at 189,600/172,560 B/s deadline/sustained payload and zero
+voice loss at 36/40 ms RTT p99. Build/vet pass. The full default bond gate
+still has eighteen top-level failures, including cold discovery, policer loss
+(6.3%), slow voice (497/500 at 103 ms), takeover and mixed-load cases.
+Cold scenario 0 still fails both families. These remain failed acceptance
+outcomes, not overridden thresholds. A bounded field comparison is authorized
+despite them to test the actual throughput/voice tradeoff.
+
+A separate measured-capacity flight-ceiling trial is rejected: it improves
+steady queue utilization but collapses upgrade payload to 2400/1560 B/s.
+Measured delivery is a lower bound, so using it as a flight ceiling obstructs
+probes. Its sources/records remain in `stage23-rejected-confirmed-flight-budget-*`
+and `stage23-confirmed-flight-budget-*`. Holding-source records are
+`stage23-feedback-holding-*`, the rejected plateau-only records are
+`stage23-aged-startup-*`, and its trace is
+`stage23-aged-startup-sampler-trace.txt`. No field improvement or accepted
+replacement is established by these model observations.
+
+
+**Holding-source field comparison, 2026-10-05:** clean temporary source
+`1d272f95bd81d4222bfa96d264830b7e5a2e028b`, binary SHA-256
+`56d327f89e7003918c33a29b54721758a39fb0afaa5f34ded15a600bbef2f90f`,
+passes Nix build and build/vet, while its full default bond run retains the
+eighteen failures above. A bounded baseline → candidate → baseline native
+TCP upload comparison completes all phases with no cleanup errors. The
+400 kbit/s → 2 Mbit/s change classifies only the concentrator-bound tunnel
+UDP on 5G; management and the standby Starlink remain outside that class.
+Two 50 Hz voice streams and their echoes run through it. Each phase first
+passes voice-only checks and measures direct uploads to the same endpoint.
+
+| Observed field metric | Baseline before | Holding candidate | Baseline after |
+|---|---:|---:|---:|
+| Low-rate payload, [5,15) s, approximate Mbit/s | 0.145 | 0.202 | 0.282 |
+| Late payload, [25,30) s, approximate Mbit/s | 1.409 | 1.511 | 0.300 |
+| Late whole-report payload bounds, Mbit/s | 1.129–1.690 | 1.212–1.812 | 0.238–0.357 |
+| Edge voice RTT p99, ms | 82.6 | 62.9 | 55.0 |
+| Hub voice RTT p99, ms | 98.9 | 74.7 | 53.7 |
+| Edge/hub voice loss, % | 0/0 | 0/0 | 0/0 |
+| Edge/hub maximum receive gap, ms | 83.7/104.7 | 130.7/133.6 | 53.8/57.9 |
+| Edge peer AQM drops in guarded active window | 51 | 20 | 79 |
+| Edge peer repair packets in that window | 2502 | 2649 | 1960 |
+| Edge peer expired datagrams in that window | 4 | 5 | 2 |
+
+**Inference and limits:** candidate late service is above the final baseline
+with separated bounds, but overlaps the initial baseline. Voice p99 sits
+between the two baselines and receive gaps worsen. This is not repeatable
+improvement across metrics. Direct Starlink payload is 0.527/0.526/0.531
+Mbit/s; direct 5G reaches 2.960/2.927/3.006 Mbit/s under its 3 Mbit/s offer,
+which is a service lower bound. Whole-report throughput bounds do not certify
+an exact adaptation deadline; local-clock guarded voice/counter windows do
+not assume cross-host synchronization. Peer counters include voice and
+feedback; the raw repair/drop counts are not unique-payload efficiency ratios.
+No download, blackout or three-run lab series is claimed from this set.
+
+**Observed restoration:** both active binaries match baseline SHA-256
+`dce5c7e4dae9a13565e04c69aa2ac36a6ab388a51418282a027e14e18f4e5dd9`;
+overrides and owned timers/firewall rules are absent, WANs have their original
+noqueue qdiscs, and exit policy is `auto`. Owned reference directories and
+temporary binaries are archived, content-compared and removed from `/run`;
+the edge retains only its active config and an empty candidate directory.
+Mobile RX+TX is 22.601287 MB for the comparison and 24.533616 MB through
+cleanup, including background/management; these intervals are nested.
+Evidence is `estimator-feedback-field-upgrade-20261005/`, including source,
+raw phase logs, bounded/counter analyses, archive hashes and postconditions.
+Continue with cold-service discovery, current-loss decisions and voice gaps;
+this comparison does not accept the prototype or finish the objective.
