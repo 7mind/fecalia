@@ -3237,3 +3237,46 @@ Evidence under `/srv/nvme/tmp/wanbond-adaptive-evidence` is
 `stage23-propagation-and-queue-flight-budget-{diagnostic.txt,rejected.patch}`,
 `stage23-propagation-flight-without-holding-clamp-{diagnostic.txt,rejected.patch}`,
 and `stage23-voice-queue-budget-push-{diagnostic.txt,rejected.patch}`.
+
+### Delivery-qualified delay field rejection — 2026-10-05
+
+**Observed:** source `2d48b75` (code `07368d4`, binary SHA-256
+`e06c1d5a9e1a452b847f400472577f27578e643c98d49d3ca12964de03c663dd`)
+completed C8/candidate/C8 on stable boots. Low-upload bounds overlap:
+0.139–0.171 / 0.140–0.207 / 0.156–0.190 Mbit/s. Late bounds overlap:
+1.081–1.597 / 0.914–1.402 / 0.910–1.221 Mbit/s. No clear throughput
+improvement is established. Loaded voice p99 is 55.76/55.30 →
+119.43/144.91 → 65.66/63.44 ms (edge/hub); all phases receive 2750/2750
+echoes per host. Promotion is rejected.
+
+Immediate direct offered-rate tests give Starlink 0.505/0.500/0.512 Mbit/s
+and 5G 2.976/2.950/2.973 Mbit/s. Exact-route idle ICMP p99 is
+61.0/59.5/42.2 ms on Starlink and 182/67/77 ms on 5G, over 100/101
+observed replies; raw packet summaries retain missing replies. These do not
+establish equal loaded physical service. Candidate late first-submission
+counters place 478 voice originals on 5G versus zero before and three after;
+that association does not prove the tail's cause. Local real-time residence
+p99 is bounded by 10/1 ms, with no stale drops.
+
+The supplied-rate qualification reproduction passes after the replacement,
+and primed upload improves in the model, but the default gate has 20 bond
+failures versus 18 before. A separate traced model shows a new ranking
+regression: sender and receiver averages differ by 0.0012 B/s at 13 s,
+keeping the better lane's delay unchanged for over eight seconds.
+**Inferred:** comparing unmatched intervals can preserve a false delivery
+deficit after a real delay improvement. Replacing those interval observations
+with coherent, aged evidence remains necessary; this trial is not accepted.
+
+Evidence: `estimator-delivery-qualified-field-upload-20261005`,
+`stage23-delivery-qualified-delay-full-nonprivileged-gate.txt`, and
+`stage23-delivery-qualification-rank-trace.{txt,json}` under
+`/srv/nvme/tmp/wanbond-adaptive-evidence`. Native Nix and ARM builds pass;
+full scenario and VM profile gates are not proved. Both deployed C8 hashes,
+original `raspi5l` policy, empty runtime overrides/timers and clean qdiscs
+are independently verified before and after owned artifact removal. Mobile
+RX+TX is 26.226 MB for comparison, 26.814 MB through cleanup (nested), plus
+1.011 MB staging, including background traffic rather than SIM billing.
+
+**Intended next field isolation:** put only fresh-small-before-repair
+scheduling onto C8, including main's passive queue telemetry. This avoids
+combining the scheduling correction with the unaccepted estimator rewrite.
