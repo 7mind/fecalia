@@ -2987,3 +2987,37 @@ three times: target 170161 B/s after five seconds at 62500 B/s. Unchanged
 fresh-first passes that guard three times. This combination is rejected
 before field activation; its Nix build passes. Model traces are retained as
 `stage23-c8-{priority-recovery,original-priority}-rate-fall-*.txt`.
+
+The next fresh-first C8 field B/C/B repeat completes without reboot or cleanup
+errors. Candidate losses are 22/21 of 2750 echoes, against baseline 12/4
+before and 31/42 after; candidate RTT p99 is 181/167 ms against 149/139 and
+198/197 ms. Candidate consecutive losses are 7/8. The immediate 5G references
+are 3.007/2.207/1.933 Mbit/s; the first reaches the 3 Mbit/s offer and is only
+a lower bound. This drifting comparison does not reproduce the earlier gain.
+Both deployed hashes, `auto` policy, timers, network and owned-artifact removal
+are independently verified. Mobile RX+TX is 0.946 MB during staging, 16.517 MB
+during comparison and 17.640 MB from comparison start through runtime cleanup;
+the latter two intervals overlap. Evidence is
+`c8-original-priority-field-blackout-repeat2-20261005/`.
+
+`TestAdaptivePolicy2aBufferedLowLatencyLaneFalls` adds a quieter buffered
+rate-fall reproduction under the existing `adaptivepolicy` progression tag.
+It checks the unchanged 150 ms voice limit, 75% available-payload requirement
+in the last second before the five-second deadline, and the existing
+three-per-100-ms expired-burst limit. Main fails three identical runs at
+226800 B/s against a 546092 B/s reference, with a four-datagram expiration
+burst; voice p99 is 65 ms with no missing echoes. The unmerged estimator plus
+fresh-first scheduling (`c2d9976`) reaches 511200 B/s with 90 ms voice p99 and
+no missing echoes, but still expires four together. It is not a complete 2a
+pass. Earlier diagnostics measured the following second and are retained as
+diagnostics, not deadline gates. Evidence is
+`stage23-c8-buffered-low-latency-rate-fall-red.txt` and
+`stage23-estimator-fresh-priority-buffered-rate-fall.txt`.
+
+The prototype's fresh-priority reproduction separately fails three times at
+26 ms, then passes three times at zero while all 19 older originals recover.
+Its full default gate retains 22 bond failures; frontend's 44 tests, build/vet,
+patched engine, formatting and other packages pass. Its Nix build passes.
+Main's complete non-privileged gate passes. Evidence is
+`stage23-estimator-fresh-priority-{red,green,full-nonprivileged-gate,nix-build}.txt`
+and `stage23-buffered-rate-fall-model-main-full-nonprivileged-gate.txt`.

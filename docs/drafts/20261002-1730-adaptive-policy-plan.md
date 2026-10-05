@@ -2308,3 +2308,54 @@ capacity rules; an additional stage-1 heuristic would not implement the
 specified estimator replacement. Evidence is
 `stage23-c8-priority-recovery-{red,green-attempt,rate-fall-timeline}.txt` and
 `stage23-c8-original-priority-rate-fall-control-timeline.txt`.
+
+### Repeat and physical rate-fall reproduction — 2026-10-05
+
+**Observed:** the next fresh-first C8 B/C/B set completes without reboot or
+cleanup errors. Candidate edge/hub losses are 22/21 of 2750, against 12/4
+before and 31/42 after. Candidate RTT p99 is 181/167 ms against 149/139 and
+198/197 ms, and consecutive missing echoes are 7/8. Immediate direct 5G
+references are 3.007/2.207/1.933 Mbit/s at a 3 Mbit/s offer; the first is a
+service lower bound. Starlink is 0.499/0.507/0.478 Mbit/s. **Inference:** the
+drifting comparison does not isolate or repeat the earlier lower loss and hub
+tail. Fresh-first C8 remains unaccepted. Both exact deployed hashes, `auto`
+policy, unshaped WAN queues, empty overrides and owned-artifact cleanup are
+independently verified. Mobile RX+TX is 0.946 MB during staging, 16.517 MB
+during comparison / 17.640 MB through cleanup; the last two intervals overlap.
+Evidence is `c8-original-priority-field-blackout-repeat2-20261005/`.
+
+**Observed:** diagnostic instrumentation in the old rate-target test shows
+similar delivered bulk and voice one-way delay with and without age-based
+recovery. That test is not a TCP-and-echo performance measurement. A separate
+physical reproduction retains real modeled TCP and two echo streams: the
+low-latency 250000 B/s lane falls to 62500 B/s at 12 s, with a 100 ms buffer,
+beside an unchanged 750000 B/s lane. The independent available-payload
+reference is 546092 B/s in each direction. The checked deadline window is
+[16,17), not the following second used by the initial diagnostics.
+
+Main fails three identical runs at 226800 B/s against the required 409569 B/s,
+with voice p99 65 ms and no missing echoes. The existing expired-burst gate
+also fails on four datagrams at 12.3 s. This reproduction is committed under
+the `adaptivepolicy` progression tag; the old target guard and all existing
+gates are preserved.
+
+The unmerged estimator prototype passes the delivery and voice parts in this
+case. It independently reproduces repair-first scheduling delay at 26 ms
+three times. Source `0c5cf65` preserves its class-pacing update and applies
+fresh small → repairs → bulk; wait becomes zero with all 19 originals
+recovered, three times. With the new outcome test (`c2d9976`), deadline TCP
+delivery is 511200 B/s, voice p99 90 ms, and no echoes are missing. Four
+expirations at 12.2 s still fail the burst check. **Inference:** this is a
+useful model improvement within a prototype, not a completed scenario or a
+field improvement. No estimator rule, wire field or probe traffic is added
+by the scheduler correction.
+
+The complete candidate non-privileged gate retains 22 bond failures, including
+standby voice startup and slow-lane service. Frontend's 44 tests, build/vet,
+patched engine, formatting and all other packages pass. Candidate Nix and
+main's full non-privileged gate pass. Evidence is
+`stage23-c8-buffered-low-latency-rate-fall-red.txt` and
+`stage23-estimator-fresh-priority-{red,green,buffered-rate-fall,full-nonprivileged-gate,nix-build}.txt`.
+The operator's bounded-field-trial amendment permits measurement of this
+unaccepted prototype while these failures remain recorded. Accepted baseline
+and tag remain `b444920` / `v0.0.3`; main's policy is unchanged.

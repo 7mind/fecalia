@@ -1317,6 +1317,18 @@ pass: two have failed checks and one remains inconclusive. Combining fresh
 priority with age-based recovery still fails the deterministic slow-link
 rate-reduction guard, so that combination remains rejected. See the
 [measurement record](drafts/20261002-1730-adaptive-policy-plan.md#fresh-first-single-wan-field-measurement--2026-10-05).
+A subsequent complete field repeat does not reproduce the lower loss:
+candidate losses are 22/21 against baseline 12/4 before and 31/42 after;
+candidate voice p99 is 181/167 ms and consecutive losses are 7/8. All cleanup
+and deployed-state verification pass. The fresh-first C8 choice remains
+unaccepted. A stricter buffered rate-fall reproduction separately checks
+actual TCP and echo traffic: C8 delivers 226800 B/s against a 409569 B/s
+requirement at five seconds, with 65 ms voice p99. The unmerged estimator
+with fresh-first scheduling delivers 511200 B/s with 90 ms voice p99, but
+both fail the expired-datagram burst check. Its scheduler reproduction passes
+after failing first; its full default gate retains 22 bond failures, and Nix
+passes. These are model improvements within an unaccepted prototype, not
+a field gain or a completed stage.
 The deterministic transport and real UDP adapter share a delivery contract test;
 the [KVM lab](../test/vm/README.md) adds actual encryption, TUN interfaces, TCP
 and independently shaped WANs.
