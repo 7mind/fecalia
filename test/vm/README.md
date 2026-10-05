@@ -2901,5 +2901,16 @@ patched engine. End-to-end field verification remains pending; no VM/profile
 gate is inferred from the model. Evidence is
 `stage23-{c8,b444920}-original-priority-red.txt` and
 `stage23-c8-original-priority-{green,green-measured,bond-gate,full-nonprivileged-gate,nix-build}.txt`.
+
+After restarting the exited lab guests, the authentication rejection probe
+initially reuses an authenticated SSH control socket and returns zero without
+performing authentication. The harness now disables connection sharing for
+that negative probe. Fresh connections reject password/keyboard-interactive
+authentication on both guests with exit 255 after advertising publickey only;
+the server policy is unchanged. Captured authentication traces are
+`stage23-lab-{hub,edge}-auth-{mux-red,fresh-green}.txt`. This setup correction
+does not establish any transport gate. Stale metadata is archived only after
+verifying both recorded guest processes have exited and acquiring the lab lock;
+persistent disks and previous measurements are retained.
 The rejected receipt-time delay choice separately has 22 default bond failures
 and a passing Nix build. No new complete VM/profile gate is claimed.
