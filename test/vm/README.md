@@ -2929,3 +2929,24 @@ independently verified. Mobile-interface RX+TX is 24.512 MB during comparison
 gate is claimed from this field trial.
 The rejected receipt-time delay choice separately has 22 default bond failures
 and a passing Nix build. No new complete VM/profile gate is claimed.
+
+Three fresh-first radio blackout collections subsequently complete, but their
+section 4 checks fail all three runs: whole-run arrival gaps exceed the limit
+each time, and one run also misses the returning satellite lane's two-second
+physical bulk-receipt deadline at the edge. Each has two failed checks and
+19–20 inconclusive checks because independent references are absent. The
+first paired baseline has 85.1% median host CPU busy and guest observer delays
+up to 1.3 s; the candidate and return baseline still have 83.0/84.3% median
+host CPU busy. CPU interference is an inference, not a per-packet attribution.
+Evidence is `stage23-c8-original-priority-lab-radio-{comparison,outage-counters}.json`
+and the retained candidate gate reports. No three-out-of-three pass is claimed.
+
+The voice-only field WAN-failure comparison is incomplete: its baseline
+phase delivers 2748/2750 echoes in each direction across two ten-second
+single-WAN egress blocks, with maximum arrival gaps 62/95 ms. The edge reboots
+during the subsequent compressed binary transfer, before candidate activation.
+The returned edge has the deployed baseline hash and unshaped WAN queues;
+the reboot cause is unknown. Counter reset prevents a total mobile-byte claim;
+5.468 MB is observed only through the last pre-reboot sample. Evidence is
+`c8-original-priority-field-blackout-20261005/`. This is a baseline diagnostic,
+not a candidate field result.

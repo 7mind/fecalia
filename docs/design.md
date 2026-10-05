@@ -1295,6 +1295,12 @@ Its bounded field rate-change comparison has overlapping upload bounds,
 small-queue drops. Real-time local wait p99 is bounded by 1 ms on both hosts.
 That workload does not establish the modeled WAN-failure benefit or a
 repeatable field improvement; the experiment remains unaccepted.
+Three subsequent radio WAN-failure collections fail their whole-run arrival-gap
+checks; one also misses a returning lane's physical bulk-receipt deadline.
+Independent references are absent, and host/guest timing records show CPU
+interference as a possible contributor. A voice-only field baseline completes,
+but an edge reboot interrupts the candidate transfer before activation. Neither
+measurement establishes the scheduler experiment's field WAN-failure benefit.
 The deterministic transport and real UDP adapter share a delivery contract test;
 the [KVM lab](../test/vm/README.md) adds actual encryption, TUN interfaces, TCP
 and independently shaped WANs.

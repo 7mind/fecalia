@@ -2195,3 +2195,43 @@ through cleanup. The enclosing ten-set interval is 532.634 MB including
 gaps/background; these intervals overlap and must not be added. Evidence is
 `c8-original-priority-field-upgrade-20261005/`. No new best candidate or tag
 is claimed.
+
+### Fresh-first WAN-failure measurements remain incomplete — 2026-10-05
+
+**Observed:** three candidate radio blackout collections complete. Their
+section 4 checker reports failure on every run: the whole-run arrival-gap
+check fails each time, and the second run also records no physical bulk
+receipt on the returning satellite lane within the bounded two-second
+deadline at the edge. Each run has two failed checks and 19–20 inconclusive
+checks; independent idle-latency and payload references were not supplied.
+The raw phase latency summaries do not replace those missing references.
+Satellite-dark voice has zero missing echoes in all three candidate runs,
+but the paired baseline results vary substantially; this does not establish
+a repeatable overall improvement or a three-out-of-three scenario pass.
+
+The first paired baseline's host CPU busy median is 85.1%, with a maximum
+99.6%; the edge/hub observer wake delays reach 1256/1285 ms, and guest CPU
+steal p99 is 51.1/54.7%. The candidate and returning baseline have host busy
+medians 83.0/84.3% and guest wake maxima 84/99 and 79/72 ms respectively.
+Scheduler statistics are disabled. **Inference:** CPU scheduling interferes
+with the comparison; these aggregates do not attribute individual gaps.
+Evidence is `stage23-c8-original-priority-lab-radio-{comparison,outage-counters}.json`
+and `stage23-c8-original-priority-lab-radio-candidate*-gates.txt`.
+
+A voice-only field baseline then completes ten-second, single-WAN egress
+blocks of only UDP to `45.11.171.73:51820`, with verified removal timers and
+successful phase cleanup. Both clients deliver 2748/2750 echoes: maximum
+arrival gaps are 62/95 ms and whole-stream RTT p99 is 111/96 ms. Immediate
+direct upload references are Starlink 0.523 Mbit/s and 5G 1.458 Mbit/s.
+These observations establish neither loaded service nor a candidate result.
+
+The subsequent compressed candidate transfer times out before activation,
+and the edge is briefly unreachable. On return, its recorded uptime confirms
+a reboot during the transfer, and its exact deployed `b444920` hash, empty
+runtime overrides, both unshaped WAN queues and both UP paths are observed.
+The reboot cause is unknown. No candidate phase ran. Interface counters reset,
+so total mobile use for this interrupted set is unknown; the last pre-reboot
+sample records 5.468 MB of interface RX+TX since collection began, excluding
+later transfer/archive/background traffic. Preserve the incomplete comparison
+and its failure log. Evidence is `c8-original-priority-field-blackout-20261005/`.
+Accepted baseline remains `b444920` / `v0.0.3`.
