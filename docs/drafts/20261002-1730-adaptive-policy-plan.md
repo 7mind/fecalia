@@ -2162,3 +2162,36 @@ documentation-only Nix build also passes. Field verification remains pending;
 accepted policy remains `b444920` / `v0.0.3`.
 Evidence is `stage23-{c8,b444920}-original-priority-red.txt`,
 `stage23-c8-original-priority-{green,green-measured,bond-gate,full-nonprivileged-gate,nix-build}.txt`.
+
+### C8 fresh-first field comparison inconclusive — 2026-10-05
+
+**Observed:** source `d7f9a01` completes the bounded B/C/B uplink comparison
+with no phase cleanup errors. Both voice-only preflights deliver 500/500
+packets in every phase; direct uplink references precede the tunnel workloads.
+
+| Measurement | Baseline before | Fresh-first candidate | Baseline after |
+|---|---:|---:|---:|
+| Direct 5G reference | 1.877 Mbit/s | 1.483 Mbit/s | 1.703 Mbit/s |
+| Low upload payload bounds | 0.131–0.162 Mbit/s | 0.138–0.167 Mbit/s | 0.132–0.160 Mbit/s |
+| Late upload payload bounds | 0.829–1.296 Mbit/s | 0.795–1.202 Mbit/s | 0.948–1.419 Mbit/s |
+| Edge-client voice loss | 0/1430 | 1/1424 (0.070%) | 0/1419 |
+| Hub-client voice loss | 0/1395 | 0/1381 | 0/1378 |
+| Edge-client RTT p99 | 53.3 ms | 54.7 ms | 57.0 ms |
+| Hub-client RTT p99 | 55.6 ms | 50.5 ms | 57.5 ms |
+
+Throughput bounds overlap; the one lower hub-client tail is not a repeatable
+field improvement. The missing edge-client echo is not attributed to a local
+queue drop: all six small-queue cause/class counters remain zero on both
+hosts. Candidate real-time local wait p99 is bounded by 1 ms on both hosts,
+with mean 0.011/0.012 ms. The healthy, rate-change workload does not establish
+the WAN-failure scheduling benefit reproduced in the model. The candidate
+remains unaccepted pending that measurement and remaining gates.
+
+Both exact deployed baseline hashes, operator exit, runtime overrides, timers
+and network restoration are independently verified. Owned direct-reference
+logs are archived/content-verified/removed and inactive candidate binaries
+removed. Mobile-interface RX+TX is 24.512 MB during comparison / 25.356 MB
+through cleanup. The enclosing ten-set interval is 532.634 MB including
+gaps/background; these intervals overlap and must not be added. Evidence is
+`c8-original-priority-field-upgrade-20261005/`. No new best candidate or tag
+is claimed.

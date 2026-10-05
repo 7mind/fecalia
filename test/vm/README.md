@@ -2912,5 +2912,20 @@ the server policy is unchanged. Captured authentication traces are
 does not establish any transport gate. Stale metadata is archived only after
 verifying both recorded guest processes have exited and acquiring the lab lock;
 persistent disks and previous measurements are retained.
+The full normal shutdown/start cycle then completes with the corrected
+negative probe and both WAN reachability checks; evidence is
+`stage23-lab-auth-fix-{shutdown,full-up}.txt`.
+
+The fresh-first field source `d7f9a01` completes B/C/B collection and cleanup.
+Late upload bounds overlap across phases. Guarded voice p99 is 55/50 ms;
+one edge-client echo is missing, versus zero loss in both surrounding
+baselines. Candidate local real-time wait p99 is bounded by 1 ms on both
+hosts and all small-queue drop counters are zero. This does not establish
+the modeled WAN-failure benefit or a repeatable field gain. Exact deployed
+baseline hashes, exit and temporary network/runtime restoration are
+independently verified. Mobile-interface RX+TX is 24.512 MB during comparison
+/ 25.356 through cleanup, overlapping intervals. Evidence is
+`c8-original-priority-field-upgrade-20261005/`; no new completed VM/profile
+gate is claimed from this field trial.
 The rejected receipt-time delay choice separately has 22 default bond failures
 and a passing Nix build. No new complete VM/profile gate is claimed.

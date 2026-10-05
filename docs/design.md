@@ -1290,6 +1290,11 @@ datagrams receive their turn before repairs, while all 19 older originals
 still recover. Its full non-privileged gate and Nix build pass; field
 verification remains pending. This scheduler-only result does not establish
 end-to-end delay.
+Its bounded field rate-change comparison has overlapping upload bounds,
+55/50 ms voice RTT p99 and one missing edge-client echo, with no local
+small-queue drops. Real-time local wait p99 is bounded by 1 ms on both hosts.
+That workload does not establish the modeled WAN-failure benefit or a
+repeatable field improvement; the experiment remains unaccepted.
 The deterministic transport and real UDP adapter share a delivery contract test;
 the [KVM lab](../test/vm/README.md) adds actual encryption, TUN interfaces, TCP
 and independently shaped WANs.
