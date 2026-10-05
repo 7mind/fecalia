@@ -1278,7 +1278,12 @@ hosts. Its fresh direct 5G reference differs, so the two diagnostics do not
 establish a raw-throughput comparison. A public reproduction additionally
 shows that lane-wide progress does not certify an older missing real-time
 datagram. Per-datagram overdue recovery is an isolated experiment; one model
-voice direction improves while the opposite tail worsens. It is unaccepted.
+voice direction improves while the opposite tail worsens. Its subsequent
+bounded B/C/B field comparison records about 1.20/1.08% voice loss and
+206/205 ms RTT p99, against zero loss and 50–57 ms p99 in the surrounding
+baseline phases. It also records 32 edge real-time/stale queue drops. This
+rejects the experiment; individual echo attribution remains unknown. Accepted
+policy still uses the lane-wide recovery predicate described above.
 The deterministic transport and real UDP adapter share a delivery contract test;
 the [KVM lab](../test/vm/README.md) adds actual encryption, TUN interfaces, TCP
 and independently shaped WANs.

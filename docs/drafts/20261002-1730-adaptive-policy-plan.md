@@ -2075,3 +2075,48 @@ non-privileged gate with 22 bond failures; frontend's 44 tests, build/vet,
 patched engine, formatting and every other Go package pass. Its Nix build
 passes. Main's `38a58f7` Nix build passes; its code is unchanged from the earlier
 fully passing main gate. No failed estimator choice is merged into main.
+
+### Overdue-original field comparison rejected — 2026-10-05
+
+**Observed:** temporary source `24e0318` replaces C20's first real-time
+recovery predicate with the age of the original. The B/C/B runner completes
+all three phases with no cleanup errors, using voice-only preflight and
+immediate direct references before each capped uplink run. During the guarded
+TCP-active windows:
+
+| Measurement | Baseline before | Overdue-original candidate | Baseline after |
+|---|---:|---:|---:|
+| Edge-client voice loss | 0/1424 | 17/1413 (1.20%) | 0/1420 |
+| Hub-client voice loss | 0/1414 | 15/1395 (1.08%) | 0/1421 |
+| Edge-client voice RTT p99 | 56.8 ms | 205.9 ms | 50.1 ms |
+| Hub-client voice RTT p99 | 56.6 ms | 204.7 ms | 55.3 ms |
+| Late upload payload bounds | 0.140–0.227 Mbit/s | 0.595–0.991 Mbit/s | 0.674–1.056 Mbit/s |
+| Immediate direct 5G reference | 2.014 Mbit/s | 1.154 Mbit/s | 1.612 Mbit/s |
+
+The late candidate/returning-baseline throughput bounds overlap, and direct
+5G service varies. This does not establish a throughput improvement. The
+candidate is rejected for the observed voice result. Its edge records 32
+real-time/stale local queue drops and first-submission queue-wait p99 bounded
+by 50 ms (mean 1.552 ms); the hub records none and has p99 bounded by 1 ms.
+Edge aggregate repair counts are 1875/2113/2346 across B/C/B; these include
+voice and other traffic and are not a TCP efficiency measurement. Per-echo
+attribution and the cause of local starvation remain unknown.
+
+The complete candidate non-privileged gate has 20 bond failures; frontend's
+44 tests, build/vet, patched engine, formatting and other Go packages pass.
+Its Nix build passes. Selected outage-model failures are also retained without
+claiming regression against C20, which has not received that matched check.
+The overdue-original functional reproduction and selected positive models do
+not supersede these failed gates or the field observation.
+
+Both exact deployed `b444920` hashes, the `raspi5l` exit, empty runtime service
+overrides and removal of owned timers/network changes are independently
+verified after cleanup. Owned reference logs are archived/content-verified
+before removal, and inactive candidate binaries are removed. Mobile RX+TX is
+21.783 MB during the comparison / 37.282 MB through runtime cleanup; the
+enclosing nine-set interval is 483.837 MB including gaps/background. These
+intervals overlap and must not be added. Evidence is
+`late-original-field-upgrade-20261005/`,
+`stage23-late-realtime-full-nonprivileged-gate.txt` and
+`stage23-late-realtime-candidate-nix-build.txt`. Accepted policy remains
+`b444920` / `v0.0.3`; main adds passive telemetry only.

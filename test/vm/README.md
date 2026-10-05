@@ -2875,7 +2875,17 @@ An overdue-original recovery reproduction fails three times on C20 and
 `b444920` while the original's lane remains live. Replacing that first-copy
 trigger passes the reproduction and three selected model runs, preserving
 noisy bulk while changing constant-delay voice p99 from 83/175 to 120/133 ms.
-The opposite-direction and later-tail tradeoffs are retained. Field and full
-candidate gates remain pending; installed `v0.0.3` is still the reference.
+The opposite-direction and later-tail tradeoffs are retained. The completed
+B/C/B field comparison rejects source `24e0318`: guarded voice loss is
+17/1413 and 15/1395, with p99 206/205 ms, versus zero loss and 50–57 ms p99
+in the surrounding baseline phases. The edge records 32 real-time/stale
+queue drops and local wait p99 bounded by 50 ms. Candidate/returning-baseline
+late upload bounds overlap, and direct 5G references vary from 1.154 to
+2.014 Mbit/s. No throughput gain is established. The full non-privileged gate
+has 20 bond failures; other components and Nix build pass. Both deployed
+baseline hashes, exit, timers and network restoration are independently
+verified. Mobile RX+TX is 21.783 MB during comparison / 37.282 through cleanup,
+overlapping intervals. Evidence is `late-original-field-upgrade-20261005/`.
+Installed `v0.0.3` remains the reference; no completed VM/profile gate is claimed.
 The rejected receipt-time delay choice separately has 22 default bond failures
 and a passing Nix build. No new complete VM/profile gate is claimed.

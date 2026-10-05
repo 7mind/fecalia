@@ -150,6 +150,11 @@ Prerequisites (all phases):
       Later lane ACK progress cannot establish receipt of every older real-time
       original; test missing-original recovery under continuing physical
       progress and measure additional copies/MB before accepting a change.
+      The overdue-original trial passes that functional reproduction but
+      regresses field voice to about 1.1–1.2% loss and 205 ms p99, with 32
+      edge real-time/stale queue drops. It is rejected. Preserve returning
+      baseline results and fresh direct rates; model recovery alone is not
+      evidence of a field improvement.
 - [ ] Record the removal timer's accuracy and actual firing time. For a
       latency-rise measurement, remove netem after receipt collection:
       deleting it while voice packets are queued can contaminate the loss
