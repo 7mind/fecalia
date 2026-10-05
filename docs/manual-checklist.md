@@ -137,6 +137,13 @@ Prerequisites (all phases):
       kernel shaper backlog. Reject reset/missing histogram windows. Queue
       residence ends at first transport submission and excludes subsequent
       socket or path waits; class histograms are not per-echo traces.
+      The [residence diagnostic](drafts/20261002-1730-adaptive-policy-plan.md#queue-residence-field-diagnostic--2026-10-05)
+      bounds local wait p99 by 5/1 ms despite 141/163 ms voice RTT p99.
+      Echo handling excludes waiting before `recvfrom`; retain raw shaper
+      backlog and actual sample durations alongside lane thresholds. Validate
+      archive member names and explicit size limits before local extraction;
+      expanded metric logs can exceed earlier harness limits. Preserve failed
+      manifests and record local recovery without repeating field traffic.
 - [ ] Record the removal timer's accuracy and actual firing time. For a
       latency-rise measurement, remove netem after receipt collection:
       deleting it while voice packets are queued can contaminate the loss

@@ -1265,6 +1265,13 @@ this local wait from the lane's measured transit; repairs, copies, unsent drops
 and superseded ACKs are excluded. Snapshot counters remain passive and alter
 no pacing or scheduling decision. Transport submission does not establish a
 successful socket write; later socket/kernel/upstream waits are outside it.
+The 2026-10-05 diagnostic on experimental C20 observes real-time local wait
+p99 bounded by 5/1 ms while voice RTT p99 is 141/163 ms. Echo handling maxima
+are below 0.32 ms; the edge's kernel shaper has up to 17.9 KB queued and the
+lane's congestion allowance exceeds 200 ms. This narrows the observed delay
+components without attributing individual echoes or proving a policy cause.
+The [plan's measurement record](drafts/20261002-1730-adaptive-policy-plan.md#queue-residence-field-diagnostic--2026-10-05)
+retains counter windows, extraction recovery, restoration and metering.
 The deterministic transport and real UDP adapter share a delivery contract test;
 the [KVM lab](../test/vm/README.md) adds actual encryption, TUN interfaces, TCP
 and independently shaped WANs.

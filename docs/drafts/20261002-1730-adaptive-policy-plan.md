@@ -1926,4 +1926,89 @@ unchanged; six finite buckets retain the correct cumulative counts.
 Metrics, monitor and bind tests pass. This is an observation feature, not a
 policy estimator or throughput correction. No controller constant or wire
 field changes. The full gate and Nix build must pass before handover;
-field decomposition remains to be measured.
+main's full non-privileged gate and Nix build subsequently pass on `d939587`.
+
+### Queue-residence field diagnostic — 2026-10-05
+
+**Observed:** source `dacf50a` is C20 policy with passive residence histograms,
+not a promoted policy. After voice-only preflight and immediate direct
+references (Starlink 0.528 Mbit/s, 5G 2.091 Mbit/s, receiver first-to-last
+timing), one bounded 400 kbit/s-to-2 Mbit/s uplink diagnostic gives:
+
+| Measurement | Edge client | Hub client |
+|---|---:|---:|
+| Voice RTT p50 / p95 / p99 | 36.7 / 59.1 / 140.8 ms | 35.5 / 81.0 / 163.2 ms |
+| Voice loss | 2/1415 (0.141%) | 1/1377 (0.073%) |
+| Maximum arrival gap | 92.9 ms | 81.7 ms |
+| Local real-time queue-wait p99 upper bound | 5 ms | 1 ms |
+| Local real-time queue-wait mean | 0.212 ms | 0.011 ms |
+| Opposite echo server handling maximum | 0.313 ms | 0.268 ms |
+
+Histograms are class-level increments in guarded local windows, not
+per-echo attribution. The echo measurement is `recvfrom` return to `sendto`
+return, joined using the client's unchanged sequence and monotonic stamp;
+it excludes pre-receive socket waiting. Neither establishes one-way transit.
+The edge has three guarded `realtime/stale` drops, none from other small
+classes/causes; the hub has none. Queued drops do not enter residence histograms.
+
+The local kernel shaper observer sees 1,412 samples, 729 nonempty, with up to
+8,972 bytes queued during the low-rate period and 17,895 after the upgrade;
+the guarded shaper drop delta is 12. Its sample duration p99/max is
+4.36/5.26 ms. The lane's congestion threshold reaches 208.3 ms before the
+upgrade and 209.4 ms after it. This observes backlog and an inflated allowance;
+it does not prove the cause or location of each lost/late echo. CPU observer
+wake maxima are 0.639/0.443 ms and aggregate busy maxima 20.9%/18.6%; these
+do not measure wanbond's own scheduling delay or exclude a busy individual core.
+
+Low upload is estimated at 0.319 Mbit/s, bounds 0.289–0.330; late upload at
+1.272 Mbit/s, bounds 1.116–1.574. This candidate-only diagnostic cannot establish
+a gain over a matched baseline. The changing direct 5G reference remains
+part of the evidence; the previous field set's reference must not be reused.
+
+The workload completes, but local archive extraction rejects the 22.36 MB
+metrics log against the harness's 20 MB member limit. The raw failure and
+incomplete comparison flag are preserved. The already captured archive is
+recovered locally after validating its exact known basename set and a 25 MB
+bound for that sampler file; no workload is rerun. Independent checks verify
+both deployed baseline hashes, empty runtime overrides, removed network
+changes/timers and operator exit policy `raspi5l`. Owned runtime references
+are archived/content-verified/removed and inactive candidate binaries removed.
+Mobile RX+TX is 9.506 MB during the run and 10.802 through cleanup, including
+background; the enclosing seven-set interval is 344.858 MB. These intervals
+overlap and must not be added. Evidence is `queue-residence-field-diagnostic-20261005/`.
+
+### Receipt-period delay qualification reproduction — 2026-10-05
+
+**Inferred from code, then reproduced:** an attempt's `unqueued` flag is
+recorded before a capacity push/congestion response but still certifies path
+delay and variation when its ACK arrives during a later control period.
+Actual submission/physical-ACK fixtures fail three times on `dacf50a`: in
+each of active push, draining and a completed newer response, a late receipt
+changes unloaded RTT from 40 to 50 ms and threshold from 10 to 85 ms.
+Physical queue evidence remains 120 ms. The fresh quiet-cohort control passes.
+This proves an experimental estimator defect, not causation of the field tail.
+
+Four existing qualification tests are first restated as submission/ACK
+outcomes and pass three times before their mechanism is removed. The first
+replacement removes the latched flag, its rate/excess heuristic and one
+constant, reusing application-limited delivery cohorts and current control
+state. Narrow reproductions pass, and voice-first constant-delay p99 changes
+from 83/175 to 89/136 ms, but noisy-link bulk falls from 881,520 to 380,040 B/s
+against an 867,845 B/s reference. That sampling choice is rejected. Reclassifying quality at receipt time
+also regresses noisy bulk (330–383 kB/s across directions/runs) and introduces
+map-iteration dependence while the ACK batch is being released. A separate
+100-batch reproduction fails three times because qualification runs before
+all physical releases; moving observation after the release loop passes it
+three times and produces identical model outcomes. That variant still loses
+10/500 constant-delay voice echoes in one direction, keeps a 25.2 ms steady
+queue and delivers only 381,960 B/s under noise. It is also rejected. No field
+improvement or complete gate is claimed. Evidence is `stage23-delay-receipt-cohort-{red,green}.txt`,
+`stage23-delay-qualification-restated.txt` and
+`stage23-current-delay-cohort-model-repeat.txt`.
+
+Additional evidence is `stage23-current-receipt-delay-model-repeat.txt`,
+`stage23-delay-receipt-release-order-red.txt` and
+`stage23-after-receipt-release-delay-model-repeat.txt`. These are defects and
+tradeoffs in unaccepted sampling choices, not an accepted policy correction.
+The next field control uses C8 behavior plus passive telemetry to measure the
+same components on the accepted policy before further estimator changes.

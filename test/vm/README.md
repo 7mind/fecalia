@@ -2839,5 +2839,26 @@ transport-submission waits from later socket/kernel/path time. The public
 transport/collector test first fails three times with 50/25 ms observed waits
 but no export, then passes with counting added. Repairs and queued expiry do
 not add residence samples. This changes no scheduler or wire field and has
-not yet localized the field tail. Evidence is
+now been measured in a candidate-only field diagnostic. Evidence is
 `stage23-small-queue-residence-{red,green}.txt`.
+
+Main's full non-privileged gate and Nix build pass with passive residence
+telemetry. Experimental `dacf50a` observes local real-time queue-wait p99
+bounded by 5/1 ms alongside voice RTT p99 141/163 ms. Echo handling stays
+below 0.32 ms, while the kernel shaper has up to 17.9 KB queued and the
+congestion allowance exceeds 200 ms. This separates measured components;
+it does not attribute individual echoes or establish a matched baseline gain.
+The larger sampler archive exceeds a harness extraction limit; captured logs
+are recovered locally with exact member-name/size validation and the failure
+flags preserved. Both baseline services and temporary network state are
+independently verified restored. Mobile RX+TX is 9.506 MB during the run /
+10.802 through cleanup, overlapping intervals. Evidence is
+`queue-residence-field-diagnostic-20261005/`; no completed VM/profile gate is
+claimed. Late pre-control-period receipts separately reproduce contamination
+of unloaded RTT and the congestion threshold three times. The first
+application-limited sampling replacement fixes those cases but regresses
+noisy-link bulk and is rejected. Current-receipt qualification additionally
+exposes release-order dependence; sampling after all physical releases fixes
+that reproduction, but noisy bulk, steady queueing and voice-loss outcomes
+still fail. Those sampling choices remain rejected. See the plan's
+receipt-period reproduction; no field gain is claimed for them.
