@@ -385,7 +385,13 @@ allowance, including its initial delivery-credit limit; compare it with
 `in_flight_bytes` when a target rate is high but sending remains low.
 Peer counters report queue drops and expired
 repairs. `interactive_queue_drops_total` counts the small-packet subset of
-queue drops, and `interactive_queued_packets` counts small datagrams awaiting
+queue drops. `small_queue_drops_total{class,cause}` splits that counter into
+`realtime` (small non-TCP datagrams) and `small_tcp`, with causes `admission`
+(queue/outstanding limit), `deadline` (admission-time residence bound), and
+`stale` (persistent real-time backlog shedding). The six series sum to the
+aggregate; they count drops before first transmission, excluding repair expiry
+and TCP ACK coalescing. They classify size/protocol, not applications.
+`interactive_queued_packets` counts small datagrams awaiting
 their first transmission. These distinguish local priority-queue contention
 from datagrams lost after transmission. `admission_drops_total` counts datagrams
 refused at the 8192-datagram queue limit and `aqm_drops_total` counts CoDel bulk

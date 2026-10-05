@@ -2773,3 +2773,29 @@ application-limited voice or expired delivery (`stage23-congestion-sample-qualit
 The initial correction passes them but regresses sole slow-lane voice to
 497/500 at 97 ms one-way p99; it is withheld from field testing. Numerical
 gates remain unchanged and installed `v0.0.3` remains the reference.
+
+### Fresh-evidence pacing and queue-attribution checkpoint — 2026-10-05
+
+Experimental `897004c` passes targeted accounting, physical-feedback aging,
+noise and upgrade outcomes, but the complete non-privileged gate has 20 bond
+failures. Frontend's 44 tests, build/vet, patched-engine tests, formatting and
+all other Go packages pass; Nix build passes. Its timer-backed field comparison
+raises low-rate upload bounds to 0.230–0.282 Mbit/s above both baseline upper
+bounds (0.181/0.188), but loses 1.77%/1.13% of voice datagrams and is rejected.
+The voice-before-bulk model passes three times on both sources; it is not a
+reproduction of the field loss. No new complete VM/profile gate is claimed.
+
+Both deployed baseline hashes, network state and operator exit policy are
+verified restored. Owned runtime references are archived/verified/removed;
+mobile use is 25.767 MB during comparison, 34.153 through cleanup including
+background. The intervals overlap. Evidence is
+`fresh-pacing-field-upgrade-20261005/` and
+`stage23-voice-before-bulk-{reproduction,b444920-common-driver}.txt`.
+
+Class/cause counters now distinguish small non-TCP and TCP queue drops at
+admission, residence deadline and persistent real-time backlog shedding.
+The public transport/collector test first fails three times on unchanged
+baseline behavior, then passes with counting added; policies and wire fields
+are unchanged. `small_queue_drops_total` emits six series whose sum matches
+the aggregate. These counters were not present during the field set and have
+no field attribution result yet. The detailed numerical gates remain fixed.

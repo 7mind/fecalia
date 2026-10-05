@@ -1254,6 +1254,11 @@ its own buffered successor observation, not the older gap's deadline.
 Both ends must run the transport. Per-peer metrics expose lane targets, actual send and
 delivery rates, physical and confirmation RTT/variation, idle variation, queue
 delay, in-flight bytes, repairs, eligibility, drops and expiration.
+Small queue drops also retain their size/protocol class and cause: full
+admission, expired residence deadline, or persistent real-time backlog shedding.
+The two class counters (`realtime`, `small_tcp`) each expose three causes;
+their sum equals the existing small-packet drop aggregate. Counting preserves
+the queue rules and adds no packet/application identification or wire field.
 The deterministic transport and real UDP adapter share a delivery contract test;
 the [KVM lab](../test/vm/README.md) adds actual encryption, TUN interfaces, TCP
 and independently shaped WANs.
@@ -1277,6 +1282,21 @@ only after removing the inherited one-bulk-datagram flight restriction, but
 other utilization and policing gates still fail. No field gain or completed
 stage is established. See the [execution record](drafts/20261002-1730-adaptive-policy-plan.md#11-revised-execution-goal--operator-2026-10-04)
 for inputs, observations and retained evidence.
+
+**Fresh-evidence pacing field checkpoint, 2026-10-05.** Experimental `897004c`
+raises controlled low-rate upload to 0.230–0.282 Mbit/s whole-report bounds,
+above both paired baseline upper bounds (0.181/0.188). Voice loss instead
+exceeds its gate at 1.77%/1.13%, so the source is rejected for promotion.
+The returning baseline also has 314 ms receive gaps; its variation is retained.
+The complete candidate gate has 20 bond failures, though its targeted
+accounting/feedback outcomes and Nix build pass. The voice-first model passes
+on both sources and does not reproduce field loss. Small-queue class/cause
+counters are added to narrow that diagnosis without changing scheduling.
+Both hosts are verified restored to `b444920` with the operator's exit policy
+and network state. Mobile use is 25.767 MB during comparison / 34.153 through
+cleanup, overlapping intervals. The
+[paired execution record](drafts/20261002-1730-adaptive-policy-plan.md#fresh-evidence-pacing-field-comparison--2026-10-05)
+retains measurements, CPU observation limits and the four-set enclosing meter.
 
 ### The multipath Bind — `internal/bind`
 

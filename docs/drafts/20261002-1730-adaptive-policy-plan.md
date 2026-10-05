@@ -1732,3 +1732,11 @@ and real-time backlog shedding. Each fixture observes two aggregate drops,
 but no detailed counter exists (`stage23-small-queue-classification-red.txt`).
 Add classification counters without changing the queue rules; the current
 field data cannot establish which small-packet class produced its 41 drops.
+
+The classification replacement passes all three fixtures three times, including
+zero-valued series and the aggregate sum. `wanbond_adaptive_small_queue_drops_total`
+has `class={realtime,small_tcp}` and `cause={admission,deadline,stale}`. Only
+counter storage/export changes; scheduling, deadlines and wire fields are
+unchanged. These counters have not been fielded. Next collect a short bounded
+startup window with them, correlate local queue increments with actual voice
+send stamps, and reproduce the responsible class/phase before a policy patch.

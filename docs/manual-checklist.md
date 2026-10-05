@@ -115,6 +115,15 @@ Prerequisites (all phases):
       Raw repair, expiry and AQM counters include other peer traffic and do
       not establish useful TCP efficiency. Preserve and verify the operator's
       selected exit policy across candidate and baseline restarts.
+      Check `small_queue_drops_total` by `class` and `cause`; its six series
+      must sum to `interactive_queue_drops_total`. Treat `realtime` as the
+      size/protocol heuristic, not proof of voice-specific loss. On the
+      single-peer concentrator select the observed `peer=""` series and fail
+      analysis on an empty counter window. The
+      [fresh-evidence pacing set](drafts/20261002-1730-adaptive-policy-plan.md#fresh-evidence-pacing-field-comparison--2026-10-05)
+      improves one bounded throughput window but fails voice loss. Retain
+      local CPU/observer timestamps; observer wake delay does not establish
+      wanbond's own scheduler delay or exclude a busy individual core.
 - [ ] Record the removal timer's accuracy and actual firing time. For a
       latency-rise measurement, remove netem after receipt collection:
       deleting it while voice packets are queued can contaminate the loss
