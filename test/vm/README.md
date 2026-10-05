@@ -3333,3 +3333,35 @@ background traffic rather than SIM billing. Evidence under
 `c8-fresh-voice-outage-{baseline.txt,candidate.txt,comparison.json}`,
 `c8-realtime-only-selected-outages-diagnostic.txt`, and
 `c8-priority-tcp-trace/`. Installed `b444920` remains the accepted baseline.
+
+### Matching-interval delay diagnostic rejected — 2026-10-05, 23:16 UTC
+
+**Observed:** the delivered-rate qualification in prototype `2d48b75` fails
+the existing persistent lane-improvement outcome three times: neither sender
+places any of its 100 checked originals on the better lane. A Go overlay
+replaces its unmatched sender/receiver rate averages with intervals ending
+at the same physical acknowledgement, using acknowledged sender bytes and
+send times, receiver bytes and receipt elapsed time. It evaluates the current
+interval before qualifying delay and adds no threshold, constant or wire field.
+
+That reproduction passes three times, as do the late-receipt, delivery-deficit
+and busy-radio checks. Primed upload delivers 50400 B/s against the 48751 B/s
+requirement. Buffered rate-fall delivery is 520800 B/s against 546092 B/s
+available service, with voice RTT p99 122 ms and no missing echoes, but five
+expirations still fail the burst gate. Slow-lane rate increase remains
+38760 B/s against 417458 B/s available service. These are deterministic
+model measurements, not field performance.
+
+The complete bond diagnostic has 22 failed tests against 20 on its unchanged
+predecessor. Three previous failures pass; five previously passing outcomes
+fail, including sparse delay, forward/reverse noise service, single-lane
+voice, fast-pair voice and voice's preferred lane under load. The choice is
+rejected and never field-activated. **Inference:** correcting interval
+provenance alone does not establish sound unloaded-delay qualification.
+Next, reproduce that qualification with physically paced traffic and
+packet-time evidence before choosing another estimator replacement.
+The preceding per-ACK and quiet-at-send diagnostics are also unaccepted.
+Evidence is `stage23-coherent-rate-window-{delay-diagnostic.txt,
+capacity-and-voice-diagnostic.txt,bond-diagnostic-gate.txt,
+bond-diagnostic-comparison.json,diagnostic.patch}` under
+`/srv/nvme/tmp/wanbond-adaptive-evidence`. No production policy changes.
