@@ -2710,3 +2710,26 @@ with 22.601 mobile RX+TX MB for the comparison and 24.534 MB through cleanup
 (nested intervals). The
 [execution record](../../docs/drafts/20261002-1730-adaptive-policy-plan.md#holding-source-model-and-field-follow-up--2026-10-05)
 retains source, failure provenance and further work.
+
+### Receiver-cohort field rejection — 2026-10-05
+
+One paired baseline → `a8fe4a9` → baseline set completes with clean restoration.
+Late upload is estimated at 1.432/1.561/1.395 Mbit/s, with overlapping
+whole-report bounds. Candidate voice RTT p99 is 186/192 ms against baseline
+47/47 and 50/51 ms; gaps reach 178/180 ms and candidate voice loses 4/1424
+and 9/1411 datagrams while both baselines lose none. Reject promotion: the
+accounting corrections do not preserve voice. Direct Starlink references are
+about 0.52 Mbit/s; 5G reaches the 3 Mbit/s offered cap in every phase. No
+three-run field pass, download gain or lab series is established.
+
+Both baseline executable hashes, empty overrides, timer/firewall removal,
+`noqueue` WAN qdiscs and the operator's `raspi5l` policy are independently
+verified. Owned edge `/run` references are archived, compared and removed;
+inactive candidate binaries are removed from both hosts. The evidence folder
+is `receiver-cohort-field-upgrade-20261005/`. Mobile RX+TX advances 24.679 MB
+for the comparison and 26.459 MB through cleanup (nested, including background).
+The full source has 20 default bond failures, although Nix and other
+non-privileged checks pass. The next failing reproduction isolates reuse of a
+pre-congestion capacity sample; its role in this field regression remains a
+hypothesis. See the plan's execution record for raw-counter limitations and
+exact source identity.

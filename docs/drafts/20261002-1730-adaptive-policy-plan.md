@@ -1472,3 +1472,66 @@ measured outstanding requirements. Revisit native download and combined traffic
 once a source preserves the passing voice/service outcomes; use immediate
 direct references and bounded offers, and record mobile bytes. Retain model
 failures while field comparisons guide suitability.
+
+### Receiver-cohort field rejection and congestion-history reproduction — 2026-10-05
+
+**Observed field source:** `a8fe4a974dd325f7c7622eb048c5ef0701033a98`
+(code `098edbe`), binary SHA-256
+`f1d011fd3c0ee130285e96fdd2a2b4a7001c0d1fb205d1be5224e82498ff0994`.
+Baseline remains installed/tagged `b444920` / `v0.0.3`. This is one completed
+baseline → candidate → baseline set, not three independent repetitions.
+
+| Guarded measurement | Baseline before | Candidate | Baseline after |
+|---|---:|---:|---:|
+| Low-rate upload, estimated Mbit/s | 0.150 | 0.172 | 0.153 |
+| Late upload, estimated Mbit/s | 1.432 | 1.561 | 1.395 |
+| Late upload whole-report bounds, Mbit/s | 1.140–1.676 | 1.244–1.814 | 1.110–1.667 |
+| Edge voice RTT p99, ms | 46.6 | 186.1 | 49.7 |
+| Hub voice RTT p99, ms | 47.1 | 191.7 | 51.2 |
+| Edge maximum receive gap, ms | 50.1 | 177.7 | 43.8 |
+| Hub maximum receive gap, ms | 75.8 | 180.3 | 61.1 |
+| Edge voice loss, % | 0 | 0.281 (4/1424) | 0 |
+| Hub voice loss, % | 0 | 0.638 (9/1411) | 0 |
+| Raw peer repair datagrams | 2353 | 1665 | 2461 |
+| Raw peer expirations | 4 | 20 | 3 |
+| Raw peer AQM drops | 54 | 10 | 60 |
+
+Voice uses guarded TCP-active windows on each host's local clock; throughput
+estimates assume uniform arrivals inside receiver reports, while the bounds
+use whole certainly-contained/possibly-overlapping reports. Raw peer counters
+include other peer traffic and do not establish efficiency per unique TCP byte.
+Immediate direct Starlink uploads measure 0.526/0.526/0.516 Mbit/s; 5G
+measures 3.005/2.969/2.990 Mbit/s at a 3 Mbit/s offer, which is a service
+lower bound. Both voice-only preflights receive 500/500 in every phase.
+
+**Decision from those observations:** reject this combined policy for
+promotion. Upload bounds overlap, while voice violates the 150 ms p99/gap
+requirements and loses the zero-loss baseline property. No download or
+combined-direction improvement is measured. Nix/build/vet, frontend (44 tests),
+patched engine and formatting pass; the full default Go run retains 20 bond
+failures (`stage23-receiver-cohort-root-gate.txt`). The tagged scenario outcomes
+are retained separately. Passing ACK accounting tests do not accept the policy.
+
+**Observed restoration:** both running executables again have baseline SHA
+`dce5c7e4dae9a13565e04c69aa2ac36a6ab388a51418282a027e14e18f4e5dd9`,
+empty runtime overrides, no owned restore/reference/rate timers or hub firewall
+rules, and both edge WAN qdiscs are `noqueue`. The initial `raspi5l` operator
+policy is retained. Owned edge `/run` reference directories are archived,
+content-compared and removed; the verified inactive candidate binary is
+removed from both hosts. The active edge config remains present at mode 0600.
+Evidence: `receiver-cohort-field-upgrade-20261005/` and immediate
+`field-direct-before-tunnel-receiver-cohort-*` folders. Mobile RX+TX is
+24.679 MB for the comparison, 26.459 MB through runtime cleanup; these are
+nested intervals, including background traffic, not additive charges.
+
+**Next reproduced defect:** congestion cuts pacing to 38,250 B/s using a
+45,000 B/s delivery observation, then holding restores 95,000 B/s from the
+earlier 100,000 B/s capacity sample without a new delivery measurement.
+`TestCongestionDoesNotRestoreEarlierCapacityWithoutNewDelivery` fails
+identically three times on this source (`stage23-congestion-capacity-red.txt`)
+and is committed before replacement. The field trace also shows overshoots
+and later cuts; attributing the field regression to this precise mechanism
+remains an inference. Replace reuse of contradicted capacity history with
+revision of the existing model, then rerun service/voice/queue outcomes before
+another capped field comparison. This rejects an experiment, not the authorized
+improvement objective; installed `v0.0.3` remains the reference.

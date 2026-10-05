@@ -597,6 +597,23 @@ owned `/run` artifacts are archived and removed. The
 retains exact source, rejected trials, model failures, field bounds and mobile
 accounting (22.601 MB comparison, 24.534 MB through cleanup, nested intervals).
 
+**Receiver-cohort field rejection, 2026-10-05.** One paired set for
+`a8fe4a9` has estimated late upload 1.432/1.561/1.395 Mbit/s with overlapping
+bounds. Voice RTT p99 rises to 186/192 ms from baselines around 47–51 ms;
+receive gaps reach 178/180 ms and voice loses datagrams against zero-loss
+baselines. The combined source is rejected for promotion. Its accounting
+reproductions pass, but the default bond gate has 20 failures; no completed
+policy or download gain is claimed. Both deployed baseline executables,
+network state and operator `raspi5l` policy are verified restored. Owned
+runtime reference directories and candidate binaries are removed after
+archival/identity checks. Mobile RX+TX advances 24.679 MB during comparison,
+26.459 MB through cleanup (nested intervals). The
+[execution record](drafts/20261002-1730-adaptive-policy-plan.md#receiver-cohort-field-rejection-and-congestion-history-reproduction--2026-10-05)
+retains exact provenance. A subsequent model reproduction shows that holding
+can undo a congestion cut using the preceding capacity sample without a new
+delivery measurement; that defect is observed in the model, while its
+contribution to the field regression remains inferred.
+
 **Paths and epochs.** An unpadded challenge-protected PROBE carries a 22-byte
 capability record: `bond`, version 1, physical path ID, process Boot ID and Bind
 Open generation. Padded PMTU probes retain their original size. A logical lane
