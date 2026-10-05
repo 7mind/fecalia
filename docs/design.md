@@ -1284,6 +1284,11 @@ bounded B/C/B field comparison records about 1.20/1.08% voice loss and
 baseline phases. It also records 32 edge real-time/stale queue drops. This
 rejects the experiment; individual echo attribution remains unknown. Accepted
 policy still uses the lane-wide recovery predicate described above.
+An isolated C8 scheduler experiment separately reproduces fresh real-time
+wait behind pending recovery copies: 26 ms becomes zero when fresh small
+datagrams receive their turn before repairs, while all 19 older originals
+still recover. Its bond suite passes; field and complete verification remain
+pending. This scheduler-only result does not establish end-to-end delay.
 The deterministic transport and real UDP adapter share a delivery contract test;
 the [KVM lab](../test/vm/README.md) adds actual encryption, TUN interfaces, TCP
 and independently shaped WANs.

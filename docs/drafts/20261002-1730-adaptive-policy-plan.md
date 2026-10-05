@@ -2120,3 +2120,43 @@ intervals overlap and must not be added. Evidence is
 `stage23-late-realtime-full-nonprivileged-gate.txt` and
 `stage23-late-realtime-candidate-nix-build.txt`. Accepted policy remains
 `b444920` / `v0.0.3`; main adds passive telemetry only.
+
+### C8 isolation and fresh-packet priority — 2026-10-05
+
+**Observed:** adding a 4,000-byte service-time queue allowance to the existing
+voice-before-bulk model passes three times on the rejected overdue-original
+C20 choice: early voice p99 is 49/140 ms with zero loss, and later p99 is
+41/41 ms with zero loss. This sensitivity check does not reproduce field
+loss. It extends queue allowance only; it does not implement a kernel token
+bucket or replay RF conditions. Evidence is
+`stage23-field-queue-allowance-finding.txt`.
+
+Isolating the age-based recovery choice on C8 fixes the missing-original
+reproduction but fails the existing buffered slow-link rate gate: after five
+seconds at 62,500 B/s, both targets remain 170,161 B/s. The unchanged C8 gate
+passes three times. Requiring an older physical receipt gap, with or without
+the lane-liveness predicate, still fails that rate gate; reject those choices.
+The bidirectional-noise model's 65,520 B/s failure occurs identically on
+unchanged C8 and is not attributed to these trials. Evidence is
+`stage23-c8-{late-realtime-bond-gate,receipt-gap-recovery-repeat,gap-only-recovery-repeat,unchanged-recovery-control}.txt`.
+
+**Inferred, then reproduced:** scheduling pending recovery copies before fresh
+small datagrams can consume the surviving lane's slots. A public two-transport
+model submits 19 small originals to a lane that loses them, disables that lane,
+establishes the alternate and admits a fresh real-time datagram. All 19 older
+originals recover, but the fresh datagram waits 26 ms against the documented
+20 ms local queue target. This fails identically three times on unchanged C8
+and `b444920`. Earlier fixture failures exceed the initial congestion window
+and are retained separately; they are not the defect reproduction.
+
+Isolated source `388a6d6` replaces the repair-first scheduling order with fresh
+small datagrams, pending repairs, then fresh bulk. It changes no estimator,
+constant, copy trigger, wire field or synthetic traffic. Fresh wait becomes
+zero in this scheduler-only model, with all 19 older originals recovered,
+three times. The complete bond suite passes, as do three repetitions of the
+buffered rate/outage, standby startup and voice-lane failure guards. This
+establishes a scheduler correction, not an end-to-end latency or throughput
+gain. Full non-privileged, Nix and field verification are pending. Accepted
+policy remains `b444920` / `v0.0.3`.
+Evidence is `stage23-{c8,b444920}-original-priority-red.txt`,
+`stage23-c8-original-priority-{green,green-measured,bond-gate}.txt`.

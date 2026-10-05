@@ -2887,5 +2887,18 @@ baseline hashes, exit, timers and network restoration are independently
 verified. Mobile RX+TX is 21.783 MB during comparison / 37.282 through cleanup,
 overlapping intervals. Evidence is `late-original-field-upgrade-20261005/`.
 Installed `v0.0.3` remains the reference; no completed VM/profile gate is claimed.
+
+A separate public model reproduces fresh real-time wait behind 19 recovery
+copies after a lane failure: 26 ms on unchanged C8 and `b444920`, three times
+each, against the documented 20 ms local queue target. The isolated C8
+scheduler choice `388a6d6` sends fresh small datagrams before pending repairs
+and fresh bulk. Fresh scheduler wait becomes zero three times, all 19 older
+originals still recover, and the full bond suite passes. The existing buffered
+rate/outage, standby startup and voice-lane failure guards pass three times.
+No estimator, copy trigger, constant or wire field changes. End-to-end field,
+full non-privileged and Nix verification remain pending; no VM/profile gate
+is inferred from the model. Evidence is
+`stage23-{c8,b444920}-original-priority-red.txt` and
+`stage23-c8-original-priority-{green,green-measured,bond-gate}.txt`.
 The rejected receipt-time delay choice separately has 22 default bond failures
 and a passing Nix build. No new complete VM/profile gate is claimed.

@@ -155,6 +155,10 @@ Prerequisites (all phases):
       edge real-time/stale queue drops. It is rejected. Preserve returning
       baseline results and fresh direct rates; model recovery alone is not
       evidence of a field improvement.
+      Verify fresh real-time queue wait while older recovery copies compete
+      for a surviving lane. The isolated scheduler model changes 26 ms wait
+      to zero while recovering all 19 originals; field verification is still
+      required before claiming an end-to-end improvement.
 - [ ] Record the removal timer's accuracy and actual firing time. For a
       latency-rise measurement, remove netem after receipt collection:
       deleting it while voice packets are queued can contaminate the loss
