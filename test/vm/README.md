@@ -2548,3 +2548,25 @@ incomplete failure excluded). The enclosing 21:21:40–21:59:46 UTC interval is
 must not be added. Cleanup accounts for another 0.058 MB including background.
 These are VLAN counters, not provider billing. Evidence is retained under
 `/srv/nvme/tmp/wanbond-adaptive-evidence/`; see the checkpoint for exact paths.
+
+### Outcome restatements and replacement experiment — 2026-10-05
+
+The main controller remains the installed C8 policy. Before replacing delay
+and capacity mechanisms, deterministic model tests now check lane selection,
+voice latency/loss, useful bulk delivery and physical traffic budgets. Target
+peaks and controller consequence counters do not establish those outcomes.
+Three identical unchanged-C8 runs pass the directional delay, queued sparse
+and resumed service, batched-receipt, restart-budget and lightly loaded voice
+outcomes. The stronger bidirectional-noise, policed-service, stale-floor and
+slow-lane-upgrade cases retain their baseline failures under `adaptivepolicy`.
+
+Observed in the isolated replacement: a 90 kB/s lane upgraded to 625 kB/s
+carries 335,640 B/s against a 417,458 B/s independent payload reference after
+removing the one-bulk-datagram flight restriction. The earlier trace drops no
+physical WAN frames while TCP times out and tunnel queues discard traffic;
+that fixture does not support a physical-loss explanation. Policed service
+and slow steady-path utilization still fail. No new lab or field trial, host
+binary change or WAN impairment accompanies this model checkpoint. The
+[execution record](../../docs/drafts/20261002-1730-adaptive-policy-plan.md#11-revised-execution-goal--operator-2026-10-04)
+records the metric targets and prototype provenance. These measurements are
+not a field improvement claim.

@@ -992,3 +992,37 @@ the old capacity estimate, while an earlier queue-quality predicate admits
 self-queued transit as propagation. Test the corresponding send/receive
 flight sampler next, retaining the current delay experiment in an isolated
 worktree. The installed `b444920` baseline remains the field reference.
+
+### Physical-service restatements and capacity recovery trace — 2026-10-05
+
+**Observed:** `5122feb` finishes two remaining command-target restatements
+before replacing their mechanisms. Restart now checks actual slow-lane payload
+service (at least 75% of the independent 56,858 B/s budget), retaining the 15%
+physical-drop ceiling. The unchanged controller delivers 54,080 B/s with 6%
+dropped in three identical runs. The lightly loaded voice case now checks
+actual offered bytes, physical drops and voice delivery/p99: 41,646 B/s on
+62,500 B/s, zero physical drops and 5,400/5,400 voice datagrams at 43 ms one-way
+p99, again three identical runs. Evidence:
+`physical-budget-restatement-baseline-three.txt`.
+
+**Observed isolated prototype:** `stage23-slow-recovery-tcp-trace.txt` shows
+zero physical WAN drops throughout the upgrade fixture, despite repeated TCP
+timeouts, tunnel queue drops and near-zero bulk progress. Therefore the
+previous physical-loss hypothesis is not supported for this case. Reading the
+scheduler exposes a one-bulk-datagram flight restriction while voice uses a
+slow lane, even when it is the only lane. Removing that restriction changes
+post-upgrade service to 335,640 B/s against a 417,458 B/s reference, passing
+75%; the source/measurements are retained in
+`stage23-remove-bulk-flight-cap.txt`. This is a model result, not a field cause.
+The same experiment still fails policed sparse/resumed service and 1.25 Mbit/s
+steady utilization (86.6% against the unchanged 93% gate). Two-direction noise
+bulk reaches 823,680 B/s with zero voice loss and 117 ms p99, compared with the
+baseline's 65,520 B/s and 63 ms p99: service improves while latency worsens.
+It does not establish improvement on all metrics.
+
+**Researched:** the [BBR draft's delivery-rate sampler](https://datatracker.ietf.org/doc/html/draft-ietf-ccwg-bbr-06#section-4.1.2)
+snapshots delivery state per packet and tracks application-limited flight
+phases; low application-limited samples must not lower a path-capacity model.
+This is a reference for the next sampler review, not evidence that copying
+BBR or the current prototype meets wanbond's gates. The field baseline remains
+`b444920`; no candidate is started by these tests.

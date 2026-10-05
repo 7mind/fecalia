@@ -637,7 +637,7 @@ threshold is at most 100 ms: what an idle lane sees is the path's own only
 while nothing else loads the path. A Speedtest on the production mobile link
 itself raised the tunnel lane's idle variation to 361 ms and its threshold to
 722 ms, and the Speedtest through the bond that followed ran without a delay
-signal at 764 ms of loaded latency (2026-10-01; `TestThresholdIsBounded`).
+signal at 764 ms of loaded latency (2026-10-01; `TestDelayNoisePreservesVoiceAndBulkService`).
 
 Loss is measured from byte counts. Every acknowledgement carries the bytes the
 receiver has received on the lane, and the sender knows the bytes it had sent
@@ -780,7 +780,7 @@ the rest, the estimate left the lane out of discovery with no bound but a
 congestion signal, and on the production satellite link, which drops rather
 than queues, the target rose from 80 kB/s to 7.4 MB/s in fifteen seconds at
 the first download after a redeployment while the lane delivered 65 kB/s
-(`TestPeerRestartKeepsTheCapacityEstimate`). Cuts that take the target below 75% of the estimate mean capacity fell;
+(`TestPeerRestartKeepsTrafficWithinThePathBudget`). Cuts that take the target below 75% of the estimate mean capacity fell;
 delivery is measured again and a pulse follows at once. A signal while no
 datagram has waited 5 ms for a lane measures the sender, not the path, and
 starts no hold. The drained sample that re-establishes the delay baseline also
@@ -789,7 +789,7 @@ longer compensate for a window sized from an outdated round trip. It moves the
 estimate halfway and leaves its variation alone. One sample is a draw from
 the lane's jitter: replacing the estimate with it ranked a lane of 80 ms mean
 round trip, at 23 ms, ahead of one of 46 ms, and real-time datagrams moved to
-the slower lane for tens of seconds (`TestOneUnloadedSampleDoesNotReorderLanes`). Unloaded estimates update only after two seconds without transmitting
+the slower lane for tens of seconds (`TestUnloadedDelayChangesChooseTheBetterVoiceLane`). Unloaded estimates update only after two seconds without transmitting
 application datagrams on that lane; a transient empty queue during a transfer
 does not qualify. The forward estimate uses only empty keepalive transit samples
 and excludes return-path delay. Its relative-clock mean is reset when the remote
@@ -874,11 +874,11 @@ Outcome tests retain bulk delivery through bursty stalls and slowdowns.
 Discovery that ends while the sender, not the lane, is the limit has measured
 the sender. A return to discovery that ends so keeps the estimate the lane
 had; a first discovery has none, so its target gives way to the delay by a
-tenth and discovery goes on (`TestSenderLimitedDiscoveryKeepsTheEstimate`).
+tenth and discovery goes on (`TestSparseAndResumedSendersKeepBulkProductive`).
 A probe's win waits for thirty more datagrams only on a path that showed
 material loss within the last minute; elsewhere the next probe began before
 they were sent, and a lane below about 170 kB/s rose by a twentieth per
-probe without ever returning to discovery (`TestProbeWinsCountOnASlowLane`). Taken for
+probe without ever returning to discovery (`TestAdaptiveSlowLaneRateIncreaseMakesBulkProgress`). Taken for
 capacity, the first datagrams of an upload left the production uplink lane,
 which had demonstrated 1.16 MB/s a minute earlier, at the 16 kB/s floor
 (2026-10-01).
@@ -889,7 +889,7 @@ above it is the path catching up after it slowed, and it carries that much.
 Judged by delay alone, probes on the production mobile link were lost to
 coincidence about every other time (its delay rises 13-15 times in a 7 s
 download at any rate), and a lane that began at 3.5 MB/s reached the 9 it
-carries in its fifth download (2026-10-02; `TestCatchUpRaisesTheEstimate`). A
+carries in its fifth download (2026-10-02; `TestRepeatedSlowdownsKeepBulkProductive`). A
 path that showed material loss within the last minute is left alone. The
 estimate overshoots when a stall's backlog arrives at the radio's peak rate;
 delay signals then hold the target.
@@ -1135,6 +1135,26 @@ delay, in-flight bytes, repairs, eligibility, drops and expiration.
 The deterministic transport and real UDP adapter share a delivery contract test;
 the [KVM lab](../test/vm/README.md) adds actual encryption, TUN interfaces, TCP
 and independently shaped WANs.
+
+**Outcome-test checkpoint, 2026-10-05.** The descriptions above remain the
+installed C8 policy; the replacement delay/capacity model is an isolated,
+unaccepted experiment. Tests now check service outcomes before the mechanisms
+are removed. On unchanged C8, three identical repetitions give 54,080 B/s
+through the policed slow lane after a peer restart against a 56,858 B/s payload
+budget, with 6% of offered bytes dropped. Bursty bulk beside a lightly loaded
+voice lane offers 41,646 B/s on that 62,500 B/s path, drops none of those bytes,
+and delivers all 5,400 measured voice datagrams with 43 ms one-way p99.
+These replace target-peak and loss-signal-counter assertions; a commanded
+rate is not a measurement of physical service.
+
+Stronger progression cases retain baseline failures: simultaneous forward and
+reverse delay noise, sparse/resumed traffic on a policed path, stale floor
+evidence and a formerly slow lane gaining capacity. They remain under the
+`adaptivepolicy` tag. The latest prototype passes the slow-lane bulk gate
+only after removing the inherited one-bulk-datagram flight restriction, but
+other utilization and policing gates still fail. No field gain or completed
+stage is established. See the [execution record](drafts/20261002-1730-adaptive-policy-plan.md#11-revised-execution-goal--operator-2026-10-04)
+for inputs, observations and retained evidence.
 
 ### The multipath Bind — `internal/bind`
 
