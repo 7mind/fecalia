@@ -1298,6 +1298,15 @@ cleanup, overlapping intervals. The
 [paired execution record](drafts/20261002-1730-adaptive-policy-plan.md#fresh-evidence-pacing-field-comparison--2026-10-05)
 retains measurements, CPU observation limits and the four-set enclosing meter.
 
+The subsequent counter-only field diagnostic observes three guarded edge
+real-time backlog-shedding drops, zero small TCP/admission/deadline drops,
+and no hub queue drops. Four additional startup drops lie outside the guarded
+window. Voice p99 is 75.4/161.3 ms; lower loss in this unpaired run does not
+establish a policy gain. Both hosts and network state are verified restored;
+mobile RX+TX is 9.665 MB during the diagnostic / 10.678 through cleanup.
+See the [attribution record](drafts/20261002-1730-adaptive-policy-plan.md#small-queue-attribution-in-the-field--2026-10-05)
+for timing, provenance and the still-unproven connection to pacing recovery.
+
 ### The multipath Bind — `internal/bind`
 
 The heart of wanbond: the `conn.Bind` implementation the engine drives. It:

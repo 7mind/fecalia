@@ -124,6 +124,10 @@ Prerequisites (all phases):
       improves one bounded throughput window but fails voice loss. Retain
       local CPU/observer timestamps; observer wake delay does not establish
       wanbond's own scheduler delay or exclude a busy individual core.
+      The [counter-only diagnostic](drafts/20261002-1730-adaptive-policy-plan.md#small-queue-attribution-in-the-field--2026-10-05)
+      observes real-time backlog shedding. Preserve startup samples outside
+      the guarded performance window; metric intervals and missing echo
+      sends give timing correlation, not identification of the lost leg.
 - [ ] Record the removal timer's accuracy and actual firing time. For a
       latency-rise measurement, remove netem after receipt collection:
       deleting it while voice packets are queued can contaminate the loss

@@ -1737,6 +1737,75 @@ The classification replacement passes all three fixtures three times, including
 zero-valued series and the aggregate sum. `wanbond_adaptive_small_queue_drops_total`
 has `class={realtime,small_tcp}` and `cause={admission,deadline,stale}`. Only
 counter storage/export changes; scheduling, deadlines and wire fields are
-unchanged. These counters have not been fielded. Next collect a short bounded
-startup window with them, correlate local queue increments with actual voice
-send stamps, and reproduce the responsible class/phase before a policy patch.
+unchanged. Their first bounded field attribution is recorded below; no
+policy improvement follows from adding counters.
+
+
+### Small-queue attribution in the field — 2026-10-05
+
+**Observed diagnostic source:** `260ae9fcc1bd85e6af28ced014cb487791547b95`,
+SHA-256 `45d4f3e3f52c570b69c7493afa277e0cb589758944d52b991e1d376dabd662b0`.
+This is the preceding candidate policy with class/cause counters, one
+candidate-only round, voice-only preflights and immediate capped direct
+references before the same 400 kbit/s → 2 Mbit/s upload. It is an attribution
+run, not a new paired performance comparison.
+
+| Guarded local measurement | Diagnostic candidate |
+|---|---:|
+| Low-rate upload estimate / whole-report bounds, Mbit/s | 0.265 / 0.252–0.280 |
+| Late upload estimate / whole-report bounds, Mbit/s | 1.548 / 1.215–1.935 |
+| Edge/hub voice RTT p99, ms | 75.4 / 161.3 |
+| Edge/hub maximum receive gap, ms | 66.5 / 179.9 |
+| Edge/hub voice losses | 2/1411 / 1/1380 |
+| Edge/hub consecutive losses | 2 / 1 |
+| Edge/hub real-time stale queue drops | 3 / 0 |
+| All small TCP, admission and deadline queue drops | 0 |
+
+Every collected peer snapshot has six class/cause series whose sum equals
+its aggregate small-queue drops. In the complete edge trace, four real-time
+backlog-shedding drops occur 0.866–0.974 seconds after TCP starts, outside
+the guarded active window; three more occur at 15.176–15.284 seconds,
+shortly after the rate upgrade. The two guarded missing edge echoes were
+sent at 15.236/15.256 seconds, inside that latter local snapshot interval.
+The hub loses one echo and has no local queue drops. This establishes
+class/cause and a local timing correlation; it does not identify the lost
+leg or prove that all seven drops were voice. `realtime` also includes other
+small non-TCP traffic. It cannot retrospectively classify the preceding
+candidate's 41 drops.
+
+Immediate direct uploads are 0.521 Mbit/s Starlink and 2.988 Mbit/s 5G at a
+3 Mbit/s offered ceiling; the latter is a lower bound. The same policy now
+has much lower voice loss than the preceding trial but still exceeds
+150 ms hub p99 and gap gates. Retain that variation; no repeatability,
+download gain, all-metric improvement or promotion is established.
+Observer maximum wake delay is 0.974/0.200 ms and maximum aggregate busy CPU
+18.2%/20.5% during guarded local activity. Scheduler statistics are disabled;
+these observations do not measure wanbond's own scheduler delay.
+
+Both deployed binary hashes, empty runtime overrides, absence of owned
+timers/rules, original WAN qdiscs and the initial `raspi5l` exit policy are
+independently verified restored. Owned edge runtime references are archived,
+content-compared and removed; both verified inactive candidate binaries are
+removed. Mobile RX+TX is 9.665 MB for the diagnostic and 10.678 MB through
+cleanup. The enclosing interval of five sets, gaps and background is
+237.797 MB. These intervals overlap and must not be added. Evidence is
+`queue-cause-field-diagnostic-20261005/`.
+
+**Separate model observations:** the existing standby startup outcome fails
+three times on the diagnostic source at 88/100 voice delivery. Added
+failure-only snapshots show 12 real-time stale drops, pacing near 25,284 B/s
+and measured capacity 41,530 B/s after queue delay returns to zero. That
+model does not prove the field's cause. A narrower reproduction fails three
+times: after congestion drains, a new qualified 60,000 B/s capacity
+observation followed by a sparse receipt leaves pacing at 18,050 B/s.
+The current recovery rule reads only the latest receipt and discards the
+usable qualified observation. This is an observed estimator/control defect;
+its contribution to field loss remains inferred. Replace that recovery rule
+with fresh qualified capacity newer than the congestion response, preserving
+age and the completed-drain precondition, then rerun service and voice gates.
+
+The complete-ACK-round push experiment is also retained as rejected:
+100 Mbit/s cellular discovery improves from 2.09/3.40 to 89.20/82.73 Mbit/s,
+but bidirectional noise rises to 158 ms p99, steady utilization falls to
+68.8%/78.8%, and upgrade service is 0/600 B/s. Extending every push is not
+an accepted correction (`stage23-fresh-pacing-complete-round-push-repeat.txt`).

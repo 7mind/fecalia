@@ -2797,5 +2797,15 @@ admission, residence deadline and persistent real-time backlog shedding.
 The public transport/collector test first fails three times on unchanged
 baseline behavior, then passes with counting added; policies and wire fields
 are unchanged. `small_queue_drops_total` emits six series whose sum matches
-the aggregate. These counters were not present during the field set and have
-no field attribution result yet. The detailed numerical gates remain fixed.
+the aggregate. These counters were not present during the paired field set.
+The subsequent counter-only diagnostic observes three guarded real-time
+backlog-shedding drops at the edge, zero small TCP/admission/deadline drops,
+and none at the hub; four startup drops fall outside the guarded window.
+Local loss timing correlates with the later edge drop interval, but no
+per-packet cause or all-metric gain is established. Voice p99 is 75.4/161.3 ms.
+Both hosts and temporary network state are independently verified restored;
+mobile RX+TX is 9.665 MB during the run / 10.678 through cleanup, overlapping
+intervals. Evidence is `queue-cause-field-diagnostic-20261005/`. The detailed
+numerical gates remain fixed. The default standby startup test separately
+reproduces 12 stale real-time drops and 88/100 delivery three times; it does
+not reproduce this field trace.
