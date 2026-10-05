@@ -2947,3 +2947,73 @@ Evidence is `stage23-coherent-rate-window-{delay-diagnostic.txt,
 capacity-and-voice-diagnostic.txt,bond-diagnostic-gate.txt,
 bond-diagnostic-comparison.json,diagnostic.patch}` under
 `/srv/nvme/tmp/wanbond-adaptive-evidence`. No production policy changes.
+
+### C8 demand-step rule removal: measured tradeoff — 2026-10-06, 00:49 IST
+
+**Observed reproduction:** public transports with virtual time, loss-free
+375,000 B/s service and 224-byte real-time datagrams increase from 50 to
+100 datagrams/s after four seconds. C8 loses ten of the next 500 datagrams
+per direction even at 20 ms one-way propagation without jitter. Five
+propagation/jitter cases fail identically three times. Test commit `39fb343`
+precedes candidate code `8e22dbb`; removal of `boundByDelivery`, its callers
+and unused steady-stream predicate delivers all 500 in every case, three
+runs, with no queue drops. No estimator, wire or new rule is added;
+`control.go` remains at 31 constants versus original `f75668e`'s 32.
+**Inferred from code:** recent sparse delivery is used as a startup ceiling
+under higher demand. This substantiates that failure mode with actual paced
+input, without mutating private estimator state.
+
+**Observed field:** source `f2ea16b36decbb1727a3351e5e1bc7ab552021cc`, binary
+SHA-256 `c191ef4562d0ce30651edd6600bcb810f9848fecaca849a00f283d91061cee73`,
+was measured between two deployed C8 phases. Each sends 2,750 voice echoes
+per host over 55 seconds, with timed ten-second 5G and Starlink UDP-only
+interruptions on the edge, separately. No tunnel bulk is offered.
+
+| Metric, edge / concentrator | C8 before | Candidate | C8 after |
+|---|---|---|---|
+| Lost echoes | 5 / 4 | 0 / 0 | 7 / 3 |
+| Median RTT, ms | 36.88 / 38.63 | 31.43 / 31.53 | 35.13 / 33.85 |
+| p95 RTT, ms | 70.48 / 61.23 | 49.34 / 48.95 | 54.13 / 55.07 |
+| p99 RTT, ms | 124.32 / 107.95 | 121.25 / 111.23 | 121.76 / 116.90 |
+| Maximum receive gap, ms | 137.36 / 154.04 | 171.99 / 155.90 | 156.51 / 155.70 |
+| Local interactive queue drops | 0 / 9 | 0 / 0 | 10 / 0 |
+| Repair/copy submissions, 53.8 s window | 1,805 / 1,740 | 3,390 / 3,385 | 1,760 / 1,684 |
+| Mobile RX+TX in that window, MB | 2.846 | 3.961 | 2.800 |
+
+Immediate direct uploads measure Starlink 0.509/0.505/0.504 Mbps and 5G
+2.971/3.087/2.981 Mbps at capped 1/3 Mbps offers. These are contemporaneous
+service references, not configured capacities; reaching a capped offer is
+only a lower bound. All phases complete without cleanup errors or reboots.
+The comparison uses 17.685 MB mobile RX+TX, 18.144 MB through cleanup
+(nested), plus 0.866 MB staging (separate); background traffic is included.
+Independent checks verify restored C8 commit/hash, operator exit policy,
+empty overrides, absent timers, original qdiscs and firewall state. Exact
+owned inactive binaries/reference directories are removed after verification;
+reference contents are archived on the edge. Evidence and analysis scripts:
+`/srv/nvme/tmp/wanbond-adaptive-evidence/c8-demand-step-field-blackout-20261006`.
+
+**Observed limitation:** zero loss and lower median/p95 cost 39–41% more
+mobile bytes and do not improve all latency tails or receive gaps. No
+throughput gain or three-set repeatability is established. The full
+non-privileged candidate gate has one failure: jitter-only voice p99 137 ms
+against unchanged 130 ms; frontend, build/vet and patched-engine checks pass.
+The candidate Nix build passes. The candidate remains isolated and unaccepted;
+C8 `b444920` / `v0.0.3` remains the accepted baseline.
+
+**Inferred follow-up:** removing the sparse-demand ceiling also raises the
+ordinary-copy budget because that budget uses the pacing target, including
+unknown-capacity startup assumptions. The counters show increased copies and
+repairs together, not their separate causes. Retain the demand-step outcome
+and the failed jitter outcome while separating real queued-traffic service
+from redundancy allowance. Fallback copies must follow measured need;
+capacity replacement must remove superseded rules and reduce its constants.
+Do not promote this deletion by itself or repeat its field set as acceptance.
+
+**Observed rejected diagnostic:** matching sender-prefix and receipt intervals
+and dividing delivered bytes by their longer interval, without rate smoothing,
+passes selected demand-step and voice checks three times (jitter p99 127 ms),
+but the complete bond suite has eleven failing tests across rate drops,
+radio service, delay noise, policing, stalls, startup and voice/bulk sharing.
+Retaining smoothing still fails low-latency-lane voice at 77 ms against 70 ms.
+Neither diagnostic is in the field binary. Logs and overlays:
+`/srv/nvme/tmp/wanbond-adaptive-evidence/c8-voice-demand-step-repro`.

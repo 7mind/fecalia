@@ -2873,3 +2873,19 @@ Evidence is `stage23-coherent-rate-window-{delay-diagnostic.txt,
 capacity-and-voice-diagnostic.txt,bond-diagnostic-gate.txt,
 bond-diagnostic-comparison.json,diagnostic.patch}` under
 `/srv/nvme/tmp/wanbond-adaptive-evidence`. No production policy changes.
+
+### C8 demand-step experiment — 2026-10-06
+
+**Observed:** a real-time demand increase on a loss-free modeled lane loses
+fresh datagrams because the startup pacing ceiling follows recent sparse
+delivery. Removing that ceiling fixes all five deterministic cases, three
+runs, but an existing jitter-only gate fails (137 ms p99 versus 130 ms).
+The isolated candidate `f2ea16b` delivers zero lost echoes and zero local
+queue drops in a complete field C8/candidate/C8 set; C8 loses 5/4 and 7/3
+edge/concentrator echoes. Candidate mobile traffic rises 39–41%, receive
+gaps exceed 150 ms and tail latency has no consistent gain. It remains
+unaccepted; both hosts are independently verified back on C8. No wire or
+estimator change was made. The plan's “C8 demand-step rule removal” entry
+records the complete metrics, builds, rejected sampling diagnostics and
+next capacity/redundancy work; raw evidence is under
+`/srv/nvme/tmp/wanbond-adaptive-evidence/c8-demand-step-field-blackout-20261006`.

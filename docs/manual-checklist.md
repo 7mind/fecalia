@@ -546,3 +546,12 @@ also expose bulk-progress regressions. The candidate is unaccepted and both
 hosts are independently verified restored to `b444920`. Preserve the workload,
 contemporaneous direct references and metering with each repeat; see
 [the measurement record](drafts/20261002-1730-adaptive-policy-plan.md#c8-fresh-small-priority-repeat-and-tcp-tradeoff--2026-10-05-2305-utc).
+
+- 2026-10-06 demand-step ceiling removal: complete C8/candidate/C8 voice-only
+  field set delivers candidate 2,750/2,750 both ways with zero queue drops,
+  but increases mobile bytes 39–41% and exceeds the 150 ms gap gate.
+  Candidate is unaccepted; both hosts, exit, timers, qdiscs and firewall are
+  independently restored. Comparison 17.685 MB, through-cleanup 18.144 MB
+  (nested), staging 0.866 MB (separate), all mobile RX+TX with background.
+  Preserve the 137/130 ms model failure while improving capacity measurement
+  and fallback-copy allowance; do not claim throughput from this voice set.
