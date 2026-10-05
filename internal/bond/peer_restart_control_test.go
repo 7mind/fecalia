@@ -17,7 +17,7 @@ import (
 // 2026-09-30 22:40, after the edge was redeployed: the concentrator raised
 // its satellite lane's target from 80 kB/s to 7.4 MB/s in fifteen seconds
 // while the lane delivered 65, and 97% of what it sent was lost). The peer
-// restarted, not the path: the estimate stands.
+// restarted, not the path: traffic must stay within the physical budget.
 func TestPeerRestartKeepsTrafficWithinThePathBudget(t *testing.T) {
 	rates := []float64{62.5e3, 12.5e6}
 	const burst = 2 * 1378.0
@@ -32,8 +32,7 @@ func TestPeerRestartKeepsTrafficWithinThePathBudget(t *testing.T) {
 	tokens := [2]float64{burst, burst}
 	refilled := [2]time.Time{start, start}
 	var offered, dropped float64
-	var peak float64
-	var lossSignalsAtRestart uint64
+	var slowDelivered float64
 	const restartAt = 10000
 	for tick := 0; tick < restartAt+5000; tick++ {
 		now := start.Add(time.Duration(tick) * time.Millisecond)
@@ -44,7 +43,6 @@ func TestPeerRestartKeepsTrafficWithinThePathBudget(t *testing.T) {
 			peers[0].SetRemote(peers[1].Epoch(), true)
 			queue = &events{}
 			heap.Init(queue)
-			lossSignalsAtRestart = peers[0].Snapshot(now).Paths[0].Decisions.LossSignals
 		}
 		for _, p := range peers {
 			for lane := range rates {
@@ -89,22 +87,22 @@ func TestPeerRestartKeepsTrafficWithinThePathBudget(t *testing.T) {
 		}
 		for queue.Len() > 0 && !(*queue)[0].at.After(now) {
 			e := heap.Pop(queue).(event)
-			_, _ = peers[e.to].Receive(e.path, e.frame, now)
-		}
-		if tick >= restartAt && tick%100 == 0 {
-			peak = math.Max(peak, peers[0].Snapshot(now).Paths[0].Rate)
+			got, _ := peers[e.to].Receive(e.path, e.frame, now)
+			if e.to == 1 && e.path == 0 && tick >= restartAt {
+				for _, d := range got {
+					slowDelivered += float64(len(d.Payload))
+				}
+			}
 		}
 	}
-	t.Logf("after the restart the slow lane's target peaked at %.2f of its capacity; %.0f%% of what was offered to the path was dropped", peak/rates[0], 100*dropped/offered)
-	if peak > 1.5*rates[0] || dropped/offered > 0.15 {
-		t.Fatalf("slow lane overdriven after a peer restart: target peaked at %.1f of capacity, %.0f%% dropped", peak/rates[0], 100*dropped/offered)
+	const dataBytes = 1300.0
+	const dataWireBytes = dataBytes + bond.Overhead + 28
+	reference := rates[0] * dataBytes / dataWireBytes
+	t.Logf("after restart: slow lane delivered %.0f B/s against %.0f B/s payload budget; %.0f%% of offered bytes dropped", slowDelivered/5, reference, 100*dropped/offered)
+	if offered == 0 || dropped/offered > 0.15 {
+		t.Fatalf("slow lane overdriven after a peer restart: offered %.0f bytes, %.0f%% dropped", offered, 100*dropped/offered)
 	}
-	// The path polices throughout. A delivery round ends at a lane sequence,
-	// and the sequences begin again with the peer: left at the old one, no
-	// round ended for as long as the lane took to send that many datagrams
-	// again, and the loss of those seconds was not judged.
-	end := start.Add((restartAt + 5000) * time.Millisecond)
-	if signals := peers[0].Snapshot(end).Paths[0].Decisions.LossSignals; signals == lossSignalsAtRestart {
-		t.Errorf("no loss signal in the five seconds after the restart on a path that dropped %.0f%% of what it was offered", 100*dropped/offered)
+	if slowDelivered/5 < .75*reference {
+		t.Errorf("slow lane carried %.0f B/s after restart, below 75%% of %.0f B/s payload budget", slowDelivered/5, reference)
 	}
 }

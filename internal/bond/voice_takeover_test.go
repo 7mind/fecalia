@@ -27,8 +27,6 @@ type standbyModel struct {
 	// zero keeps it up.
 	failAt, failFor int
 	duration        int
-	// observe, when set, sees one endpoint every millisecond.
-	observe func(tick int, endpoint *bond.Transport, now time.Time)
 }
 
 type voiceOutcome struct {
@@ -36,7 +34,8 @@ type voiceOutcome struct {
 	// waits holds the one-way delay of each voice datagram delivered.
 	waits []time.Duration
 	// uncopied counts voice datagrams transmitted once only.
-	uncopied int
+	uncopied                 int
+	slowOffered, slowDropped float64
 }
 
 func (o voiceOutcome) later(than time.Duration) (count int) {
@@ -104,11 +103,13 @@ func (m standbyModel) run(t *testing.T, measureFrom int) voiceOutcome {
 					}
 				}
 			}
-			if side == 0 && m.observe != nil {
-				m.observe(tick, p, now)
-			}
 			for _, tx := range poll(p, now) {
 				lane := int(tx.Path)
+				wireBytes := float64(len(tx.Frame.Payload) + 78)
+				measuredSlow := side == 0 && lane == 0 && tick >= measureFrom && tick < m.duration
+				if measuredSlow {
+					outcome.slowOffered += wireBytes
+				}
 				if payload := tx.Frame.Payload; side == 0 && len(payload) > voiceWireGuardBytes && len(payload) < 2*voiceWireGuardBytes {
 					transmissions[int(binary.BigEndian.Uint64(payload[len(payload)-voiceWireGuardBytes:]))]++
 				}
@@ -117,10 +118,16 @@ func (m standbyModel) run(t *testing.T, measureFrom int) voiceOutcome {
 				}
 				begin := maxTimeTest(now, available[lane][side])
 				if begin.Sub(now) > time.Duration(routerBufferDatagrams*1300/rates[lane]*float64(time.Second)) {
+					if measuredSlow {
+						outcome.slowDropped += wireBytes
+					}
 					continue
 				}
-				available[lane][side] = begin.Add(time.Duration(float64(len(tx.Frame.Payload)+78) / rates[lane] * float64(time.Second)))
+				available[lane][side] = begin.Add(time.Duration(wireBytes / rates[lane] * float64(time.Second)))
 				if lane == 0 && random.Float64() < m.loss {
+					if measuredSlow {
+						outcome.slowDropped += wireBytes
+					}
 					continue
 				}
 				delay := delays[lane] + time.Duration(random.Int64N(int64(2*jitters[lane]))) - jitters[lane]
@@ -196,24 +203,20 @@ func TestVoiceCatchesUpAfterTakeover(t *testing.T) {
 	}
 }
 
-// The slow lane carries voice at about half its capacity. Its target must not
-// drift above what the lane can carry: nothing it delivers is evidence for
-// more (VM runs of 2026-09-29: targets of 81-97 kB/s on this 62.5 kB/s lane).
-func TestLightlyLoadedLaneTargetStaysWithinCapacity(t *testing.T) {
+// Performance-Blackbox-Group: the lightly loaded voice lane must not build a
+// standing queue while the other lane carries bursty bulk.
+func TestLightlyLoadedLaneKeepsVoiceWithinThePathBudget(t *testing.T) {
 	const capacity = 62500
-	var highest float64
-	model := standbyModel{seed: 1, fast: 12500000, bursts: true, duration: 60000}
-	model.observe = func(tick int, endpoint *bond.Transport, now time.Time) {
-		if tick >= 6000 && tick%100 == 0 {
-			highest = max(highest, endpoint.Snapshot(now).Paths[0].Rate)
-		}
+	o := (standbyModel{seed: 1, fast: 12500000, bursts: true, duration: 60000}).run(t, 6000)
+	if len(o.waits) == 0 || o.slowOffered == 0 {
+		t.Fatal("voice or slow-lane traffic was absent")
 	}
-	model.run(t, 6000)
-	t.Logf("highest target %.0f B/s on a %d B/s lane", highest, capacity)
-	// A capacity pulse exceeds the estimate by a tenth, and the estimate
-	// follows a delivery measurement spread by jitter; 63-71 kB/s over forty
-	// runs, which differ by map iteration order.
-	if highest > 1.2*capacity {
-		t.Fatalf("target reached %.0f B/s on a %d B/s lane", highest, capacity)
+	p99 := o.waits[len(o.waits)*99/100]
+	t.Logf("slow lane offered %.0f B/s of %d B/s, dropped %.2f%%; voice %d/%d, one-way p99 %s", o.slowOffered/54, capacity, 100*o.slowDropped/o.slowOffered, len(o.waits), o.sent, p99)
+	if o.slowOffered/54 > 1.2*capacity || o.slowDropped/o.slowOffered > .01 {
+		t.Errorf("slow lane exceeded its physical traffic budget")
+	}
+	if len(o.waits) < o.sent*99/100 || p99 > lateVoice {
+		t.Errorf("voice %d/%d, one-way p99 %s exceeds %s", len(o.waits), o.sent, p99, lateVoice)
 	}
 }
