@@ -1648,3 +1648,87 @@ bidirectional noise to 123 ms RTT p99, but regresses sole slow-lane voice
 from 500/500 at 75 ms to 497/500 at 97 ms. This uncommitted variant receives
 no field trial. Investigate that service regression before another metered
 comparison; the accepted `v0.0.3` reference remains unchanged.
+
+### Fresh-evidence pacing field comparison — 2026-10-05
+
+Experimental `897004cc0a73b902610df99df27535003a5e6f15` combines the reproduced
+ACK-generation clock, sample qualification, acknowledged drain and aged physical
+feedback corrections. Holding recovers only from qualified delivery newer than
+the congestion response; retained capacity evaluates bounded real backlog
+pushes rather than restoring the target unconditionally. Its controller has
+8 constants against the baseline's 31. Selected model outcomes pass three
+times: bidirectional noise at 134 ms RTT p99, steady utilization 94.4%/99.0%,
+and upgrade payload 180,000/181,800 B/s with zero voice loss. The complete
+non-privileged gate still has 20 bond failures; frontend's 44 tests, build,
+vet, patched-engine tests, formatting and all other Go packages pass. Nix
+build passes. This source remains experimental.
+
+**Observed field set:** deployed → candidate → deployed, fresh starts,
+voice-only preflights, immediate direct references and simultaneous loaded
+voice around the same 400 kbit/s → 2 Mbit/s uplink trial. Both hosts run the
+same pinned executable per round. Candidate SHA-256 is
+`0de5355c6c502f26c6986e7de5c3da51d7be9833d8f35623efd5564c1edf2b6c`.
+
+| Guarded measurement | Baseline before | Candidate | Baseline after |
+|---|---:|---:|---:|
+| Low-rate upload, estimated Mbit/s | 0.165 | 0.275 | 0.174 |
+| Low-rate whole-report bounds, Mbit/s | 0.148–0.181 | 0.230–0.282 | 0.148–0.188 |
+| Late upload, estimated Mbit/s | 1.311 | 1.522 | 0.255 |
+| Late whole-report bounds, Mbit/s | 1.077–1.588 | 1.219–1.832 | 0.202–0.301 |
+| Edge voice RTT p99, ms | 63.9 | 143.6 | 119.5 |
+| Hub voice RTT p99, ms | 64.1 | 100.9 | 138.7 |
+| Edge/hub maximum receive gap, ms | 65.4/60.3 | 74.1/89.5 | 314.5/313.7 |
+| Edge voice loss, % | 0 | 1.766 (25/1416) | 0.417 (6/1438) |
+| Hub voice loss, % | 0 | 1.134 (16/1411) | 0.142 (2/1407) |
+| Raw edge peer repairs / expirations / AQM drops | 2176 / 0 / 53 | 2060 / 11 / 19 | 2164 / 36 / 26 |
+| Raw edge small-queue drops | 0 | 41 | 6 |
+
+The low-rate candidate bounds exceed both baseline upper bounds: an observed
+gain in this paired set, not a repeatability claim. Late bounds overlap the
+first baseline, while the returning baseline is substantially different; no
+exact recovery deadline or general improvement follows. Direct Starlink
+upload is 0.524/0.524/0.513 Mbit/s. 5G reaches its 3 Mbit/s offered ceiling
+at 2.935/2.990/2.938 Mbit/s, establishing service lower bounds only.
+
+**Decision:** reject promotion because voice loss exceeds 1% and worsens
+relative to both baselines. Retain the returning baseline's six consecutive
+losses and 314 ms gaps. They also fail their gates; their cause is unknown.
+No download, combined-traffic gain or completed policy is claimed.
+
+Unlike preceding sets, both hosts now have CPU/observer wake records during
+guarded local TCP activity. Candidate observer maximum wake delay is 0.929 ms
+edge / 0.194 ms hub, and maximum aggregate busy CPU is 17.8%/16.7% over
+roughly 100 ms intervals. The returning hub has a 32.8 ms observer delay.
+Per-thread scheduler statistics are disabled. These observations neither
+measure wanbond's own scheduler delay nor exclude a busy individual core.
+
+Both baseline binary hashes, empty overrides, inactive owned timers, original
+WAN qdiscs, removed owned firewall rules and operator `raspi5l` policy are
+independently verified. Owned runtime reference directories are archived and
+content-compared before removal; the verified inactive candidate binaries are
+removed on both hosts. Comparison uses 25.767 mobile RX+TX MB, 34.153 through
+cleanup including background/management. The enclosing interval of four sets,
+their gaps and background is 197.309 MB. These intervals overlap; do not add
+them. Evidence is `fresh-pacing-field-upgrade-20261005/`.
+
+**Next diagnosis:** queue drops concentrate in the first four seconds after
+bulk starts. The new voice-first model passes its absolute gates three times
+on both the candidate and `b444920` using the same updated test driver. It
+does not reproduce the field loss and must not be adjusted to claim it does.
+Constant-delay loaded voice p99 is 101/130 ms candidate versus 41/44 ms
+baseline; varying delay gives 2/500 losses in one candidate direction versus
+zero on the baseline. These are separate model observations. Preserve the
+field trace and classify queue drops before changing scheduling behavior.
+
+The counter-analysis script initially treated the concentrator as unlabelled
+and silently emitted empty results. Actual collected series carry `peer=""`.
+The corrected selector uses that label and rejects empty windows; the original
+output is retained. Corrected concentrator small-queue drops are 0/0/1 and
+expirations 0/0/19. These are peer counters, not useful TCP efficiency ratios.
+
+On unchanged main `15d37f2`, a new public transport/metrics test reproduces
+missing class/cause attribution three times for admission, residence deadline
+and real-time backlog shedding. Each fixture observes two aggregate drops,
+but no detailed counter exists (`stage23-small-queue-classification-red.txt`).
+Add classification counters without changing the queue rules; the current
+field data cannot establish which small-packet class produced its 41 drops.
