@@ -1,16 +1,17 @@
 package bond_test
 
 import (
+	"fmt"
 	"testing"
 	"time"
 )
 
 // Performance-Blackbox-Group: prior physical loss cannot freeze later delay adaptation.
 func TestSettledPropagationServiceAfterEarlierPhysicalLoss(t *testing.T) {
-	for _, loss := range []float64{0, .004} {
+	for _, loss := range []float64{0, .004, .008, .012} {
 		name := "loss-free"
 		if loss > 0 {
-			name = "prior-loss"
+			name = fmt.Sprintf("prior-loss-%.3f", loss)
 		}
 		t.Run(name, func(t *testing.T) {
 			lane := modelLane{rate: 1.25e6, delay: 20 * time.Millisecond}
