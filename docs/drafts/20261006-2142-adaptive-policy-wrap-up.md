@@ -8,10 +8,11 @@ for now. The annotated tag identifies exactly
 `2026-10-06T19:36:15Z`. This wrap-up is a subsequent documentation-only change;
 it does not move the release tag.
 
-**Observed publication limit:** the tag is local. GitHub rejects the available
-HTTPS account's push with HTTP 403, and the authorized field SSH key is rejected
-with `Permission denied (publickey)`. Neither attempt publishes the tag or
-documentation commit; pushing them requires repository write credentials.
+**Observed publication:** the operator publishes the tag and documentation.
+At 2026-10-06 21:48 UTC, remote `v0.0.4` resolves to the selected `ad7fea9`,
+and remote main contains wrap-up commit `58d1e2a`. Earlier agent publication
+attempts failed: the available HTTPS account received HTTP 403 and the field
+SSH key received `Permission denied (publickey)`; those attempts moved no refs.
 
 **Observed source comparison:** production files in `cmd`, `internal`, `web`,
 the flake and module definitions are identical between released `ad7fea9`
