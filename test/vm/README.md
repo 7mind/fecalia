@@ -3846,3 +3846,32 @@ use 17.543 MB including background. TCP download and concurrent up/down are
 unmeasured; future comparison reports must retain them as separate results.
 The [record](../../docs/drafts/20261002-1730-adaptive-policy-plan.md#qualified-short-push-sampling-and-field-rejection--2026-10-06)
 preserves source-matched qualification, counterexamples and limits.
+
+
+## Receiving-edge field download baseline — 2026-10-06
+
+Observed installed source `2f3187e`, without restart, candidate or shaping:
+a six-second reverse TCP transfer offered at 6 Mbit/s delivers 2,386,800
+payload bytes to the edge, 3.182 Mbit/s whole-transfer goodput, and
+5.885 Mbit/s in its last report. Receiving-edge reports are verified
+`sender=false`; concentrator sender totals are not substituted for delivery.
+Last-three-second report bounds are 3.120–6.013 Mbit/s, while a 5.081 Mbit/s
+interpolation assumes uniform arrivals. This is one baseline round.
+
+Both voice preflights receive 500/500. Guarded local TCP-active windows receive
+207/207 and 202/202, with p99 46.076/45.037 ms and maximum gaps
+36.056/39.354 ms. Immediate bound-interface downlink UDP references receive
+1,250/1,250 mobile payloads at 5.780 Mbit/s and 121/200 satellite payloads
+at 0.598 Mbit/s, with zero reported receive-buffer overflow. They do not
+establish maximum capacity or TCP goodput. The reference protocol's identical
+contract passes in memory, over real localhost UDP, and with the production
+raw adapter on both hosts; it is separate from wanbond's wire and estimators.
+
+Independent cleanup verifies deployed hashes, unchanged boots, empty
+overrides, `auto` exit policy, original qdiscs, absent owned rules/timers and
+stopped helpers. Mobile RX+TX for the round is 8.337114 MB including background;
+reference counters are nested. Preparation and pilot add disjoint
+0.076435/1.780861 MB, totaling 10.194410 MB for those three intervals.
+No improvement, candidate acceptance, concurrent-flow result or lab/profile
+pass is claimed. Evidence is `directional-field-reference-20261006/` and
+`tcp-download-baseline-20261006/` under `/srv/nvme/tmp/wanbond-adaptive-evidence`.

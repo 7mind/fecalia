@@ -5230,3 +5230,49 @@ Evidence: `qualified-short-push-branch-*`, `complete-batch-short-push-*`,
 under `/srv/nvme/tmp/wanbond-adaptive-evidence`; frozen source is branch
 `adaptive-qualified-short-push`. Its pre-field qualification manifest remains
 immutable; the separate `field-result.json` records activation and rejection.
+
+
+## Explicit downlink reference and receiving-edge TCP baseline — 2026-10-06
+
+**Observed:** a separate bounded downlink-reference protocol now sends real
+1,200-byte UDP payloads from the concentrator's existing public destination
+to a client bound to each physical edge interface. Requests, payloads and
+completion are nonce-bound and authenticated with a temporary key. Count,
+offer, duration and aggregate bytes are bounded; replay cannot repeat a
+stream. The same contract passes with an in-memory adapter, localhost UDP
+and the production raw-UDP adapter on both hosts. This helper protocol does
+not change wanbond's wire format or feed its estimators.
+
+The pilot observes 1,250/1,250 payloads on 5G at 5.784 Mbit/s and 121/200
+on the bound Starlink interface at 0.599 Mbit/s, with zero reported socket
+overflow. Short receive-span rates are observations, not maximum capacities;
+the Starlink result exceeding the operator's nominal 0.5 Mbit/s ceiling
+cannot establish a sustained rate. Contract checks use 0.076435 MB and the
+pilot 1.780861 MB of mobile RX+TX, including background, in disjoint intervals.
+
+**Observed installed-baseline download:** a separate six-second TCP reverse
+transfer offers 6 Mbit/s after two 500/500 voice preflights and immediate
+physical-downlink references. Both hosts still run `2f3187e`; neither daemon
+is restarted and no candidate or shaping is used. Receiving-edge JSON reports
+are verified `sender=false`, with 2,386,800 payload bytes and 3.182 Mbit/s
+whole-transfer goodput. Six one-second rates are 0.259, 0.796, 2.795, 5.019,
+4.341 and 5.885 Mbit/s. Last-three-second whole-report bounds are
+3.120–6.013 Mbit/s; the 5.081 Mbit/s interpolation assumes uniform arrivals
+within reports and is not an exact timing gate.
+
+Guarded TCP-active voice windows on each host's local clocks have p99
+46.076/45.037 ms, 207/207 and 202/202 received, zero loss, and maximum
+receive gaps 36.056/39.354 ms. The immediately preceding bounded raw 5G
+reference receives 1,250/1,250 at 5.780 Mbit/s; Starlink 121/200 at 0.598.
+These are bounded UDP observations, not TCP or maximum service denominators.
+This round uses 8.337114 MB of mobile RX+TX including background; reference
+intervals are nested and not added. With the two earlier disjoint preparation
+intervals, recorded usage is 10.194410 MB, excluding gaps and later checks.
+
+Independent postchecks verify deployed hashes, unchanged boots, empty
+overrides, original `auto` policy/qdiscs, no owned trial rules/timers and
+stopped helpers. The round establishes a current download baseline, not
+candidate improvement or triplicate acceptance. Concurrent TCP remains an
+independent required measurement. Evidence: `directional-field-reference-20261006/`
+and `tcp-download-baseline-20261006/` under
+`/srv/nvme/tmp/wanbond-adaptive-evidence`.

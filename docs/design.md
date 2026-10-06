@@ -3282,3 +3282,18 @@ independently verified. TCP download and concurrent up/down were unmeasured;
 they are separate required optimization metrics, not inferred from upload.
 No policy is adopted; exact receipt counterexamples, source, gates and field
 limits are in the [continuing record](drafts/20261002-1730-adaptive-policy-plan.md#qualified-short-push-sampling-and-field-rejection--2026-10-06).
+
+
+### Separate TCP download proof — 2026-10-06
+
+Observed installed `2f3187e` delivers 3.182 Mbit/s to the receiving edge in a
+six-second 6 Mbit/s-offer reverse TCP round, reaching 5.885 Mbit/s in its last
+report. Loaded voice p99 is 46.076/45.037 ms with zero loss in guarded local
+windows. Immediate bound-interface downlink UDP references are bounded service
+observations, not TCP or maximum capacities. Their authenticated temporary
+protocol is independent of wanbond's wire and estimator inputs, and its shared
+contract passes in memory, over localhost UDP and on both production hosts.
+The round uses 8.337114 MB mobile RX+TX including background and is independently
+cleaned up. This is one unchanged-baseline observation; no download improvement,
+concurrent-flow result or candidate acceptance follows. See the
+[download baseline record](drafts/20261002-1730-adaptive-policy-plan.md#explicit-downlink-reference-and-receiving-edge-tcp-baseline--2026-10-06).
