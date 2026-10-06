@@ -2927,3 +2927,21 @@ confirmation plus mean RTT meets the retained voice outcome. Preserve these
 counterexamples when replacing acknowledgement timing and capacity policy.
 Main's non-privileged gate and Nix build pass at `19738ec`; production policy
 remains C8, field hosts restored, and the improvement goal remains active.
+
+### Conservative capacity cohort field trial — 2026-10-06
+
+An isolated sampler uses the highest conservative delivery bound across
+immutable ACK-prefix cohorts in the existing eight-round history. Idle or
+sender-limited boundaries and capacity revision clear it; the immediate
+cohort remains available for short pushes. It adds no wire field or constant.
+The held-batch model reproduction passes three times, but the default gate
+still has 20 bond failures. The capped C8/candidate/C8 field comparison
+improves early upload goodput bounds to 0.183–0.220 Mbit/s from
+0.134–0.159 and 0.154–0.170, while loaded voice p99 increases to
+105.55/119.07 ms against 88.82/59.98 and 60.40/57.40 ms (edge/hub).
+Late upload bounds overlap. All voice echoes arrive; local candidate voice
+residence p99 is bounded by 1 ms. These are observed field tradeoffs, not a
+policy acceptance. Both C8 services and network state are restored and
+verified; mobile traffic is 27.154 MB through cleanup plus 0.874 MB staging.
+The plan's conservative-cohort field record retains sources, uncertainty,
+failed diagnostics and the next bounded-push experiment. Main policy remains C8.

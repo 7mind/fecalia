@@ -555,3 +555,12 @@ contemporaneous direct references and metering with each repeat; see
   (nested), staging 0.866 MB (separate), all mobile RX+TX with background.
   Preserve the 137/130 ms model failure while improving capacity measurement
   and fallback-copy allowance; do not claim throughput from this voice set.
+
+- 2026-10-06: conservative-cohort source `b70cb58` completed capped
+  C8/candidate/C8 upload with immediate physical references and voice preflight.
+  Early upload bounds improved, late bounds overlapped, loaded voice p99
+  regressed; no promotion. Both C8 binaries, original exit, qdiscs, firewall,
+  timers and runtime overrides were independently verified restored after
+  owned cleanup. Mobile RX+TX: 27.154 MB through cleanup plus 0.874 MB staging.
+  Evidence: `capacity-cohort-window-field-20261006` under
+  `/srv/nvme/tmp/wanbond-adaptive-evidence`; full detail in the adaptive-policy plan.

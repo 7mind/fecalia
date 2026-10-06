@@ -3055,3 +3055,73 @@ confirmation plus mean RTT meets the retained voice outcome. Preserve these
 counterexamples when replacing acknowledgement timing and capacity policy.
 Main's non-privileged gate and Nix build pass at `19738ec`; production policy
 remains C8, field hosts restored, and the improvement goal remains active.
+
+### Conservative cohort sampler: field tradeoff — 2026-10-06, 01:40 IST
+
+**Observed:** isolated source `b70cb58453823ee20dffaba0da0153d91e28d756`
+(code `5e9403b`, ARM SHA-256
+`a52c671b263e588d7c4cfef7630ddc00ab83593b5d45fee24340656d4d70cfdb`)
+completed capped C8/candidate/C8 upload on stable boots. Each phase first
+received all 500 voice preflight echoes per host, then measured each physical
+uplink immediately before the tunnel. Upload offered 3 Mbit/s for 30 seconds;
+timed shaping affected only edge wanbond UDP on 5G, with a 400 kbit/s
+allowance rising to 2 Mbit/s after 15 seconds. No WAN blackout was involved.
+
+| Observed metric | C8 before | Candidate | C8 after |
+|---|---:|---:|---:|
+| Early receiver goodput bounds, Mbit/s | 0.134–0.159 | 0.183–0.220 | 0.154–0.170 |
+| Late receiver goodput bounds, Mbit/s | 1.012–1.476 | 1.083–1.601 | 1.058–1.580 |
+| Loaded voice p99, edge/hub ms | 88.82/59.98 | 105.55/119.07 | 60.40/57.40 |
+| All voice echoes received, each host | 2750/2750 | 2750/2750 | 2750/2750 |
+
+The early goodput bounds exceed both baseline brackets; the late bounds
+overlap. Bounds retain whole receiver reports inside/overlapping the window;
+interpolated point estimates are not adaptation-deadline proof. Promotion is
+rejected because voice tails increase and default/scenario gates remain
+incomplete. Candidate local real-time residence p99 is at most 1 ms on both
+hosts, with zero interactive queue drops. Observed field wake delay over
+the guarded voice interval is at most 1.70 ms on edge and 3.44 ms on hub;
+these observations do not establish the cause of network latency.
+
+Immediate physical references are Starlink 0.507/0.501/0.512 Mbit/s and 5G
+2.886/2.975/2.921 Mbit/s at 1/3 Mbit/s offers. They are service lower bounds.
+Idle ICMP p99 is 74.3/40.9/46.8 ms on Starlink and 120/71.9/106 ms on 5G;
+raw transmitted/received counts are retained, including missing replies.
+**Inference:** these idle measurements do not establish equal loaded RF
+conditions; the candidate has not established improvement on all metrics.
+
+The new deterministic held-batch reproduction reports 73,500 B/s on
+102,900 B/s steady physical service before replacement, three times. A
+multi-cohort conservative sampler passes its 90–100% bound and existing
+clock/holding, sender-limited, congestion and service checks three times.
+The longest-cohort-only diagnostic slows discovery (30 default bond
+failures versus 20), so it is rejected. Matching ACK-generation clocks
+instead overestimates capacity by 25–43% in two existing physically
+consistent tests. A new exact-rate test therefore expresses an unsupported
+requirement, not proof that the conservative clock rule is defective.
+
+Final full non-privileged checks fail on the same 20 bond tests as predecessor
+`2d48b75`; frontend 44 tests, build/vet, patched-engine checks, formatting and
+all other Go packages pass. Native Nix and ARM builds pass. Code and docs
+are separate commits on the isolated branch; no policy is merged. A follow-up
+using only the immediate cohort for recent congestion evidence reduces one
+radio expiry burst from 186 to 45, but voice p99 remains 187/166 ms and the
+burst gate still fails, three times; that diagnostic is rejected.
+
+Evidence is `capacity-cohort-window-field-20261006`,
+`capacity-cohort-immutable-window-*`, `capacity-cohort-window-full-nonprivileged-gate.txt`,
+`capacity-cohort-recent-service-red.txt`, `capacity-cohort-current-service-rate-fall.txt`
+and `matched-cohort-clocks/rejected-paired-clock.json` under
+`/srv/nvme/tmp/wanbond-adaptive-evidence`. Both deployed C8 hashes, original
+`raspi5l` policy, empty runtime overrides/timers and clean qdiscs/firewall are
+independently verified after restoration and owned cleanup. Mobile RX+TX is
+26.989 MB for comparison, 27.154 MB through cleanup (nested), plus 0.874 MB
+staging; totals include background traffic, not SIM billing. Exact owned
+reference directories are archived and byte-verified before removal.
+
+**Intended next isolation:** derive push gain from a bounded queue budget
+and the measured feedback round, removing the fixed twofold gain and its
+loss-backoff rule; material loss still lowers pacing through the link model.
+Reproduce standing queue and discovery outcomes before choosing a field
+candidate. All stage/profile gates and repeatability remain required;
+installed `b444920` remains the accepted baseline.
