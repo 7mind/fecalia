@@ -2999,3 +2999,16 @@ policy. Batching and steady-queue model outcomes improve; discovery, radio
 service and voice isolation remain failed. Native Nix and ARM builds pass,
 complete checks and field comparison are pending. Main remains C8; the plan
 retains sources, failed alternatives and the original-baseline finding.
+
+
+### Qualified ACK-volume field result — 2026-10-06
+
+Isolated `d09b0b7` improves deterministic batching and steady queues but
+retains 19 full bond failures. Its complete capped field comparison improves
+early upload bounds and the high-rate backlog proxy, while loaded hub voice
+p99 worsens to 152.9 ms against both C8 baselines. Low-rate queue tail also
+worsens, and late throughput overlaps. The source is not promoted; variable
+RF references do not isolate causation. Both hosts are verified restored and
+owned artifacts cleaned. The plan records exact sources, full failures,
+29.831 MB measured mobile use and the next scheduler-ranking isolation.
+Main remains C8.

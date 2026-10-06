@@ -592,3 +592,12 @@ contemporaneous direct references and metering with each repeat; see
   No promotion. Both hosts' deployed C8 hashes, boots, policy and cleanup are
   independently verified. Metered disjoint intervals total 27.333 MB with
   background. See `fresh-ack-cadence-field-20261006/` and the plan for limits.
+
+- 2026-10-06 qualified ACK-volume field comparison: `d09b0b7` with 19 full
+  bond failures completes capped C8/candidate/C8. Early upload bounds exceed
+  both baselines, but late bounds overlap and hub voice p99 152.9 ms worsens
+  against both. No source is promoted. Both hosts' C8 binaries, original exit,
+  timers, firewall and qdiscs are independently verified restored before and
+  after owned cleanup. Disjoint measured mobile intervals total 29.831 MB
+  including background. Evidence: `qualified-aggregation-field-20261006/`;
+  retain the plan's RF context and partial-improvement limits.

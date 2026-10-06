@@ -3438,3 +3438,81 @@ comparison will retain complete gate failures, immediate direct references,
 voice first, caps, timers and mobile accounting. Evidence is
 `qualified-aggregation-{short-push-outcomes,source-selected,nix-build,arm-build}.txt`
 under the adaptive evidence root. Installed `b444920` remains the baseline.
+
+
+### Qualified ACK volume: completed field tradeoff — 2026-10-06, 03:39 IST
+
+**Observed source:** unaccepted `d09b0b752c301cb2bc4cec995a86e878024560e6`,
+code `93e46a7`, ARM SHA-256
+`af8acbae0a0c56516e0e47f32e25492de9684074d585ea16305992aa12f561f9`.
+The exact-source full non-privileged gate finishes with 19 bond failures.
+Compared with the preceding 18-failure full gate and the separately failing
+added batching outcome, batching and random-loss outcomes resolve; slow-link
+ACK utilization and wandering-latency service newly fail. ACK overhead itself
+stays within its bound; forward utilization is 89.8% versus 90% required.
+Frontend 44, build/vet, patched engine, formatting and all other Go packages
+pass. Native Nix and ARM builds pass. No gate or stage is declared complete.
+
+One complete capped 400 kbit/s → 2 Mbit/s C8/candidate/C8 comparison records:
+
+| Observed metric | C8 before | Candidate | C8 after |
+|---|---:|---:|---:|
+| Early receiver upload bounds, Mbit/s | 0.147–0.182 | 0.196–0.260 | 0.132–0.175 |
+| Late receiver upload bounds, Mbit/s | 1.094–1.638 | 1.060–1.680 | 1.068–1.582 |
+| Loaded voice RTT p99, edge/hub ms | 47.4/45.7 | 81.6/152.9 | 149.9/50.7 |
+| Missing echoes of 2750, edge/hub | 0/0 | 0/0 | 0/0 |
+| Whole-phase maximum receive gap, edge/hub ms | 56.0/58.9 | 78.0/77.8 | 305.0/111.7 |
+| Low-rate TBF backlog/service p99, ms | 112.9 | 156.5 | 115.7 |
+| High-rate TBF backlog/service p99, ms | 92.1 | 45.1 | 73.0 |
+
+Candidate early lower bounds exceed both baseline upper bounds. Late bounds
+overlap both. Hub loaded p99 worsens against both and exceeds 150 ms; edge
+p99 lies between the two baselines. The high-rate TBF service proxy improves,
+but its low-rate tail worsens. These partial improvements do not satisfy the
+across-metric objective: the source is rejected for promotion. Receiver bounds
+do not prove exact adaptation deadlines, and backlog/rate is a service-time
+proxy, not measured packet wait. Each voice client uses its own clock. This
+is one comparison, not three repetitions or either lab profile gate.
+
+Immediate direct references on the different OCI route are Starlink
+0.512/0.503/0.509 Mbit/s under a 1 Mbit/s offer, and 5G
+2.966/2.953/2.928 under a 3 Mbit/s offer; near-offer values are lower bounds.
+Idle ICMP to the concentrator has Starlink p99 39.9/43.9/35.9 ms and
+5G 71/145/65 ms, with 100 replies each. Starlink transmitted counts are
+101/101/101; 5G counts are 101/100/101. The candidate's preceding 5G tail is
+higher. These adjacent samples cannot establish loaded UDP service or isolate
+RF changes from policy effects.
+
+In guarded low-rate windows, the candidate sends 94/980 real-time originals
+on 5G versus 15/980 before; its late window sends all 480 over Starlink.
+These are transport submission counters, excluding repair/copy delivery.
+**Inference:** allocation while queues vary merits isolation; these aggregates
+do not establish the cause of the tail. Candidate own real-time residence
+p99 is bounded by 5/1 ms, with no interactive queue drops. Guarded expired
+original deltas are 12/0 versus 11/0 before and 4/0 after; expiry does not
+prove non-delivery. Copies and repairs remain conflated in their counter.
+
+Boots remain unchanged and all cleanup-error lists are empty. Independent
+checks before and after owned cleanup verify C8 source/hashes, original
+`raspi5l` policy, empty overrides, unshaped queues and no temporary timers or
+firewall rules. Only verified inactive candidate files and this run's owned
+reference directories are removed after archiving and byte verification.
+Mobile RX+TX with background is 28.776 MB during comparison, 28.962 MB through
+cleanup (overlapping), plus 0.869 MB separate staging: 29.831 MB over disjoint
+measured intervals. Evidence is `qualified-aggregation-field-20261006/`,
+`qualified-aggregation-full-nonprivileged-gate.txt` and
+`qualified-aggregation-gate-result.json` under the adaptive evidence root.
+
+A separate diagnostic removes fixed headroom from measured holding service
+and keeps congestion backoff. Three repetitions improve cold/rise discovery
+to 12.89/36.12 Mbit/s (still below 75), and resolve slow-link ACK utilization.
+But directional voice p99 worsens to 159/163 ms, so that replacement is
+rejected without production edits or field activation; source/log/patch are
+retained as `measured-service-without-headroom-*`.
+
+**Intended next isolation:** assess scheduler ranking against current physical
+RTT while preserving the capacity clock, flight allowance and congestion
+qualification. Its diagnostic checks are running; raw continuously updated
+RTT is not yet an aged replacement or field candidate. No additional metered
+trial is justified by the preceding partial gains alone. Installed `b444920`
+remains the accepted baseline, and the improvement goal remains active.

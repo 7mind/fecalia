@@ -3507,3 +3507,19 @@ push source `d09b0b7` restores 5.048 MB/s at 120 ms and improves steady
 queue/utilization, but discovery, radio service and isolation still fail.
 No profile, stage or field gate is inferred. Exact logs and rejected source
 diagnostics remain under the evidence root and in the adaptive-policy plan.
+
+
+### Qualified ACK-volume field rejection — 2026-10-06
+
+Exact source `d09b0b7` has 19 full bond failures; other non-privileged
+components, native Nix and ARM builds pass. Its complete capped B/C/B field
+comparison improves early upload bounds to 0.196–0.260 Mbit/s versus
+0.147–0.182 and 0.132–0.175. Late bounds overlap both baselines. Loaded
+voice p99 is 47.4/45.7 → 81.6/152.9 → 149.9/50.7 ms edge/hub, with all
+2750 echoes each delivered. Low-rate TBF service-time p99 worsens, despite
+a smaller high-rate backlog tail. The source is not promoted. Adjacent RF
+references vary; no causal attribution or model/lab acceptance is inferred.
+Both hosts are independently verified restored to C8, with owned runtime
+files archived/removed. Measured disjoint mobile intervals total 29.831 MB
+including background. Full gates, references and limits remain in the plan
+and `qualified-aggregation-field-20261006/` under the evidence root.
