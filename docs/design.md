@@ -1078,7 +1078,12 @@ The peer's count of received bytes proves a complete physical prefix only
 when it equals the sender's wire bytes through the acknowledged sequence.
 An unchanged positive deficit cannot prove receipt: an old arrival can balance
 a newly lost datagram. Positive deficits leave confirmation to the physical
-and global receipt bitmaps. The sender retains missing datagrams for repair. The bitmaps report a receipt once; when datagrams
+and global receipt bitmaps. The sender retains missing datagrams for repair.
+A late arrival can complete a prefix without advancing its highest sequence;
+the sender retains that sequence's sent-wire total after discarding its
+attempt metadata so a later ACK can still prove the complete prefix. The
+retained total is an immutable sequence fact, reset with the peer epoch,
+not a link estimate. The bitmaps report a receipt once; when datagrams
 arrive a hundred at a time, those that only a lost acknowledgement reported
 were never confirmed and were sent again (production, 2026-10-02: 900-1800
 repairs in a 7 s download, all duplicates; the acknowledgements were not lost

@@ -611,3 +611,18 @@ is rejected; hosts are independently verified restored and owned artifacts
 cleaned. Measured mobile RX+TX is 29.536 MB over disjoint intervals including
 background. This does not prove lab profiles or any full stage gate; exact
 source, failures, references and limits are in the adaptive-policy plan.
+
+
+The ACK-prefix trial (`2636afb`, 2026-10-06) retains zero guarded TCP-active
+voice loss in both directions. Download reaches the 6 Mbit/s offer on all
+revisions; upload report bounds overlap and returning-baseline latency reaches
+the candidate's level. No performance improvement is established. Preserve the
+incomplete download manifest from its budget hold and the separately metered
+final baseline; never turn that into a completed three-phase runner. Whole
+returning-upload streams miss one echo per host outside the guarded window.
+Direct download reference code must enforce requested byte/rate bounds on the
+remote sender; its previously unused mode sent a fixed 12.5 MB. All trial state
+is independently verified restored and owned `/run` references/binaries removed.
+Measured disjoint mobile intervals total 77.264 MB including background; see
+[the ACK-prefix measurement record](drafts/20261002-1730-adaptive-policy-plan.md#ack-prefix-field-comparison--2026-10-06-06350656-utc)
+for identities, exact windows and the unproven original-loss occurrence.

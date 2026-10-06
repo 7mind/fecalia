@@ -3651,3 +3651,29 @@ with no delivery beyond 150 ms, but maximum delay rises 110 to 115 ms. These
 are virtual-time correctness and outcome observations, not field gains or
 completed profile gates. Exact revisions, commands, failed baselines, final
 checks/builds and the intended bounded field comparison are in the plan.
+
+
+The ACK-prefix field source `2636afb` passes the exact-source default gate and
+native Nix build, with a clean ARM binary. Complete tagged policy runs retain
+C8's same 47 failure names. Capped download and upload comparisons have zero
+loss in guarded TCP-active voice windows; all download revisions reach the
+6 Mbit/s offer and upload bounds overlap. The returning download baseline
+matches candidate tail latency. Whole returning upload voice misses one echo
+per direction outside the guarded window. No broad field gain is established.
+The first download runner holds its third phase at its budget check; a separately
+metered same-offer baseline completes the bracket with that provenance retained.
+Both hosts and temporary network/runtime state are independently verified
+restored. Disjoint measured RX+TX including background totals 77.264 MB; exact
+bounds, identities, RF references and limits are in the plan.
+
+A second receipt outcome, `TestLateCompletePrefixDoesNotRepeatReceivedDatagrams`,
+loses an older receipt-range ACK, then completes the byte prefix after the
+highest physical attempt's metadata is gone. C8-derived `2636afb` and original
+`f75668e` unnecessarily repair 44 received originals in all four payload sizes,
+three times. Keeping the known sent-byte prefix prevents those repairs while
+all four false-positive receipt cases still repair genuine loss after 145 ms.
+The sender caches an immutable sequence count, not a link estimate. Sparse
+small-flow delivery stays 200/200 with 70 ms one-way p99. This correction's full
+gate, builds and field regression checks are still being completed; it supplies
+no completed stage/profile gate or performance claim. Evidence and revisions
+remain in the adaptive-policy plan.

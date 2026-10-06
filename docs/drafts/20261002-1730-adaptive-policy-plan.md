@@ -4111,8 +4111,9 @@ traffic or wire field; the controller remains C8. Test refinement `3239b96`
 covers all four payload sizes with proper small/bulk classification. Each
 missing datagram now reaches the receiver after 145 ms in three identical
 virtual-time runs. Selected late/lost/cross-lane/reordered receipt checks pass
-three times. The full non-privileged gate passes on `3f11ca8`; final-source
-checks and native/ARM builds are being completed.
+three times. The full non-privileged gate and native Nix build also pass on final source
+`2636afb`; its clean ARM build supplies the field binary. The complete tagged
+policy suite retains exactly C8's 47 failure names, with none added or resolved.
 
 The matched lossy-voice model keeps 5500/5500 delivered and none beyond
 150 ms, but its maximum rises from C8's 110 to 115 ms. No all-metric model
@@ -4126,3 +4127,105 @@ be independently verified after restoration; mobile RX+TX will be reported.
 This tests the verified ACK correction, not the rejected estimator sources.
 Installed `b444920` / `v0.0.3` remains accepted and the improvement goal stays
 active; stage and profile acceptance is still outstanding.
+
+
+### ACK-prefix field comparison — 2026-10-06, 06:35–06:56 UTC
+
+**Observed source:** `2636afb8327414f3b57efbce0323a1dd827b3c06`, ARM SHA-256
+`551ca865001438f70e7e35455d10c5656fcd10c1848eeecb24af059973e10bcb`.
+Both services use this identity only temporarily; installed `b444920` remains
+the baseline. The controller is unchanged C8; the source also carries the
+previous observation counters. No wire field or synthetic traffic is added.
+
+Each phase has a 500-echo voice-only preflight in both directions, immediate
+capped direct upload/download references for each WAN, then 35 seconds of
+bidirectional voice beside a ten-second TCP transfer. The offers are 6 Mbit/s
+for download and 3 Mbit/s for upload. The edge caps only wanbond's 5G uplink
+at 2 Mbit/s, including during download to bound ACK traffic. Candidate and
+network restoration timers precede activation. All preflights pass.
+
+| Observed metric | C8 before | Candidate | C8 after |
+|---|---:|---:|---:|
+| Ten-second download receiver goodput, Mbit/s | 5.994 | 5.999 | 5.998 |
+| Download-active voice RTT p99, edge/hub ms | 49.93 / 51.88 | 42.19 / 42.19 | 40.45 / 42.37 |
+| Upload receiver payload, seconds 5–10, bounded Mbit/s | 1.079–1.615 | 1.117–1.674 | 1.052–1.605 |
+| Upload-active voice RTT p99, edge/hub ms | 50.45 / 52.25 | 46.70 / 43.37 | 46.84 / 45.79 |
+| Guarded TCP-active echo loss, both directions, both transfer types | 0 | 0 | 0 |
+| Whole upload-phase echoes, edge/hub | 1750 / 1750 | 1750 / 1750 | 1749 / 1749 |
+
+The initial download comparison is **incomplete**: its pre-phase mobile-budget
+check holds the last baseline at 31.874 MB. Both services are restored. A
+separately metered, same-offer baseline completes that bracket; its folder and
+provenance remain distinct rather than rewriting the failed manifest. The
+upload comparison completes all three phases. Neither is three repetitions
+or a profile-family acceptance run. The 42 MB own-workload abort path is not
+triggered; uncontrolled background and log collection remain outside it.
+
+Receiver report bounds do not assume uniform within-report arrival and cannot
+prove an adaptation deadline. Download reaches its offer, so it establishes a
+service lower bound rather than more throughput headroom. Every voice window
+uses that host's own TCP timestamps and guards startup/cleanup; no cross-host
+one-way timing is claimed. The returning upload baseline's two missing echoes
+and maximum RTTs 214/273 ms occur outside those guarded windows and are retained.
+The returning download baseline reaches the candidate's tail latency. Upload
+bounds overlap. **No all-metric or causal field improvement is established.**
+
+The immediate direct 5G references deliver about 2.84–3.00 Mbit/s upload and
+6.01–6.18 Mbit/s download against 3/6 Mbit/s offers; Starlink delivers about
+0.49–0.54 Mbit/s. Direct 5G ICMP p99 varies 71–134 ms and Starlink 33–81 ms,
+with transmitted counts and missing replies retained. Similar capped service
+rates do not establish stationary RF latency or maximum capacity.
+
+Both deployed source/hashes, original exit policy, absence of overrides,
+removal timers, test firewall rules and shapers are independently verified
+after restoration and owned cleanup. Reference files are byte-verified into
+separate edge `/var/tmp` archives before their own `/run` directories are
+removed; inactive candidate binaries are removed on both hosts. Disjoint
+measured mobile RX+TX intervals, with background, are 0.854 MB staging,
+33.388 MB initial download through cleanup, 16.491 MB returning download
+baseline through cleanup and 26.531 MB upload through cleanup: **77.264 MB**.
+These exclude unmeasured gaps and are not a SIM billing total. Nested completion
+and cleanup intervals are not added twice.
+
+Evidence is `ack-prefix-proof-field-20261006/`,
+`ack-prefix-proof-download-after-field-20261006/`,
+`ack-prefix-proof-upload-field-20261006/`,
+`ack-prefix-proof-direct-reference-results.json` and
+`ack-prefix-proof-tagged-comparison.json` under the established evidence root.
+The ACK correctness improvement remains demonstrated by the original failing
+models; these capped field checks do not demonstrate that the reproduced loss
+pattern occurred in production. C8 remains accepted; the goal stays active.
+
+### Late complete-prefix receipt proof — 2026-10-06
+
+**Observed reproduction:** a delayed keepalive leaves a positive physical
+byte deficit while 300 real data frames reach the receiver. Losing the first
+receipt-range ACK leaves 44 older originals outside the subsequent bitmaps.
+The keepalive then arrives and a fresh ACK proves the full byte prefix without
+advancing its highest sequence. The sender has already discarded that attempt's
+metadata, ignores this proof and sends unnecessary repairs. The outcome fails
+three times on `2636afb` and `f75668e`. Four payload sizes (32, 160, 384 and
+1200 bytes), properly classified small/bulk, each fail three times on both.
+The first draft fixture miscounted a reverse keepalive as an ACK; the old-revision
+adapter initially missed the historical `Poll` signature. Those failures are
+retained separately and are not defect evidence.
+
+Fail-first commit `1d7ad1c` precedes the correction; `4caa066` expands the
+size matrix. Code `11f7359` retains the sent-wire total for the highest reported
+sequence, invalidates it when that sequence advances without a known total,
+and resets it on peer-epoch changes. This is an immutable sequence fact,
+not an aged capacity or delay estimate. Only an equal received total proves
+receipt. Positive deficits still use selective receipts and repair; the first
+false-positive reproduction still repairs the genuinely lost datagram after
+145 ms in all four sizes. The late-prefix fixture now sends no unnecessary
+data repair in all four sizes, three times. Selected reordered, cross-lane,
+late and lost ACK outcomes pass three times; sparse small flows remain 200/200
+with 70 ms one-way p99. The controller and wire format are unchanged.
+
+**Intended:** finish the full non-privileged gate, source-matched builds and a
+bounded field regression comparison before presenting this combined correction
+as a reviewed candidate. Performance improvement is still unestablished.
+Continue the capacity and allocation investigation with these receipt outcomes
+as constraints; retain the rejected delay/drain and directional-noise results.
+Stage/profile gates, three-run lab series and the full metric objective remain
+outstanding. No release or permanent deployment is made.
