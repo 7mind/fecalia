@@ -3455,3 +3455,21 @@ owned artifacts cleaned. Mobile RX+TX is 22.168 MB through cleanup plus
 plan's held-service record and `observed-service-window-field-20261006` under
 `/srv/nvme/tmp/wanbond-adaptive-evidence`. No VM profile gate is claimed from
 these field or deterministic measurements. Main policy remains C8.
+
+
+### Observed ACK cadence completed field comparison — 2026-10-06
+
+Source `d1b3f74` completes one capped C8/candidate/C8 set with immediate
+physical references on stable boots. Early upload bounds are
+0.130–0.177 / 0.283–0.335 / 0.149–0.184 Mbit/s; loaded edge/hub voice p99 is
+53.01/50.48 / 84.07/75.31 / 50.72/44.43 ms. All 2750 echoes arrive per host
+in every phase. Early goodput improves, voice tails regress and late bounds
+overlap; no promotion or three-run field proof. The default gate fails on
+22 bond tests, with two prior failures resolved and four new failures;
+all other components and Nix/ARM builds pass. Selected steady-path gates
+passing do not substitute for profile gates. The separate cadence-age
+correction passes selected checks and has no field result. Both C8 services,
+network state and owned cleanup are independently verified. Mobile RX+TX is
+27.769 MB through cleanup plus 0.777 MB staging, including background.
+See the plan's observed-cadence field record and
+`observed-ack-window-field-20261006` under the evidence root for limitations.

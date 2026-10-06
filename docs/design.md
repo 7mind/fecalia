@@ -2957,3 +2957,15 @@ holds the return-baseline phase, and no repeatability or promotion is claimed.
 Both C8 services and network state are independently verified restored.
 The plan's held-service record retains the exact source, failed diagnostics,
 measurement interruption and mobile cost. Main policy remains C8.
+
+
+The observed-ACK-cadence field comparison completes one C8/candidate/C8 set.
+Early upload bounds improve to 0.283–0.335 Mbit/s from 0.130–0.177 and
+0.149–0.184, but loaded voice p99 rises to 84.07/75.31 ms from 53.01/50.48
+and 50.72/44.43 ms. Late bounds overlap. The candidate has 22 default bond
+failures, including new service/voice regressions; no promotion occurs.
+A separate idle-history reproduction shows cadence evidence needs its own
+age; its correction passes selected checks and has not been field-tested.
+Both C8 services and network state are restored and independently verified.
+The plan's observed-cadence field record retains exact sources, RF uncertainty,
+traffic cost and the pending confidence checks. Main policy remains C8.

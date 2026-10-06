@@ -3218,3 +3218,93 @@ allowance with measured packet-count-triggered feedback cadence, and distinguish
 capacity/control effects from copy allocation before another bounded field trial. Preserve service,
 voice and queue counterexamples together. Installed `b444920` remains the
 accepted baseline; the improvement goal remains active.
+
+
+### Observed ACK cadence: field gain with voice-tail cost — 2026-10-06, 02:31 IST
+
+**Observed source:** unaccepted `d1b3f74c7c8ec60b7dc1c6388d45908277ba0ce4`,
+code `9c2ba94`, ARM SHA-256
+`5572859873325ab3e8cb19a782546e895bf978665f8aec5dd6a536933a516ee6`.
+It removes the ACK timer minimum from the held-service flight window and
+uses measured cadence. The existing steady-path outcomes pass three times:
+fast utilization 96.2%, queue p90 17.856 ms; slow 95.8%/15.774 ms.
+The queued-receipt guard is first restated in separate commit `8f6c1d6`,
+retaining low service and adding larger-flight coverage with submitted packets.
+It passes three times before production changes and fails three times under
+the queued-delay qualification mutant, proving sensitivity.
+
+The full non-privileged gate fails on 22 bond tests, versus the predecessor's
+20: steady queue and moderate-jitter service resolve; unmatched queued receipt,
+random-loss discovery, single-slow-lane voice and ACK-stream sharing newly fail.
+All other components pass, including frontend 44 tests; native Nix and ARM
+builds pass. Radio buffered rate fall still fails three times at 173/179 ms
+voice p99, a zero-delivery deadline second and six expirations in a burst.
+No stage/profile acceptance is established.
+
+One C8/candidate/C8 field set completes on unchanged boots, with immediate
+physical references and 500/500 preflight echoes per host before each workload.
+The bounded source-matched gate is recorded before staging starts, avoiding
+the previous missing-file interruption. The workload is unchanged: 55 seconds
+bidirectional voice and 30 seconds upload offered at 3 Mbit/s, with only
+wanbond's 5G UDP shaped from 400 kbit/s to 2 Mbit/s after 15 seconds. Removal
+and binary-restoration timers are verified before their respective changes.
+The comparison's admission budget is 45 MB, allowing the return baseline;
+no WAN blackout or permanent deployment occurs.
+
+| Observed metric | C8 before | Candidate | C8 after |
+|---|---:|---:|---:|
+| Early receiver goodput bounds, Mbit/s | 0.130–0.177 | 0.283–0.335 | 0.149–0.184 |
+| Late receiver goodput bounds, Mbit/s | 1.014–1.517 | 1.175–1.734 | 1.060–1.592 |
+| Loaded voice p99, edge/hub ms | 53.01/50.48 | 84.07/75.31 | 50.72/44.43 |
+| All voice echoes received, each host | 2750/2750 | 2750/2750 | 2750/2750 |
+| Low-rate shaper backlog service time median/p99, ms | 26.16/115.66 | 49.10/115.66 | 4.14/56.44 |
+| Guarded low-rate edge voice p99, ms | 55.84 | 130.03 | 50.91 |
+
+Early goodput bounds exceed both baseline brackets. Late bounds overlap;
+within-report interpolation does not prove an adaptation deadline. Loaded
+voice tails worsen against both baselines; promotion is rejected. All echoes
+arrive, and candidate local real-time residence p99 is bounded by 1 ms on both
+hosts, with zero interactive queue drops. Guarded expiry deltas are 5/2
+edge/hub, versus 5/0 and 0/0; expiry alone is not proof of non-delivery.
+Additional-submission counters include optional copies and cannot establish
+timeout-repair cost alone. This is one field set, not three-run repeatability.
+
+Immediate physical references are Starlink 0.510/0.503/0.499 and 5G
+2.999/2.985/2.892 Mbit/s at 1/3 Mbit/s offers; these are service lower bounds.
+Idle ICMP p99 is Starlink 32.0/40.0/78.6 and 5G 75.6/118.0/51.0 ms. Reply
+counts retain missing packets: Starlink 101/100, 101/100, 102/101;
+5G 100/100, 101/100, 101/100. **Inference:** adjacent physical references
+cannot establish equivalent loaded RF behavior or prove that the policy
+causes the tail difference. The field remains the performance reference;
+local test elapsed time is not a throughput observation.
+
+Both deployed C8 hashes, original `raspi5l` exit, empty runtime overrides and
+timers, clean qdiscs/firewall, and exact inactive-candidate removal are
+independently verified. Three owned reference directories are archived and
+byte-verified before removal. Mobile RX+TX is 27.260 MB for comparison,
+27.769 MB through cleanup (nested), plus 0.777 MB separate staging, including
+background traffic. Evidence is `observed-ack-window-field-20261006` and
+`observed-ack-window-{full-nonprivileged-gate,nix-build,arm-build,outcomes,implementation-checks,radio-rate-fall}.txt`
+under `/srv/nvme/tmp/wanbond-adaptive-evidence`.
+
+**Observed follow-up, not field-tested:** the raw-cadence revision treats one
+ACK after idle as fresh evidence while retaining the older cadence value.
+A separate reproduction in `9ca6e72` produces windows 12,000/12,250 bytes
+for identical fresh paths after 11 seconds idle, three times. Timestamping
+actual cadence evidence, expiring it against the existing horizon, and
+retaining the protocol maximum ACK allowance fixes that reproduction and
+selected queued-receipt/restart/slow-voice outcomes three times. The production
+correction is `23f1c45`; complete checks remain pending. Steady-path gains
+remain, random-loss discovery still fails. Evidence is `ack-cadence-age-*.txt`.
+This corrects an unaccepted experiment, not an observed installed-policy defect.
+
+Reapplying matched sender/receiver intervals on this newer sampler still
+fixes persistent lane-improvement selection but regresses sparse delay,
+forward/reverse noise service and the slow steady-path queue gate, three times.
+That overlay is rejected again; evidence is
+`ack-window-coherent-delay-{red,outcomes}.txt`.
+
+**Intended next work:** finish cadence-confidence checks, then correct the
+remaining delay-qualification/control defects with the recorded counterexamples
+before selecting another field candidate. Installed `b444920` remains the
+accepted baseline; the improvement goal remains active.

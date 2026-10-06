@@ -573,3 +573,12 @@ contemporaneous direct references and metering with each repeat; see
   RX+TX: 22.168 MB through cleanup plus 0.779 MB separate staging. Evidence:
   `observed-service-window-field-20261006` under
   `/srv/nvme/tmp/wanbond-adaptive-evidence`; limitations remain in the plan.
+
+
+- 2026-10-06: source `d1b3f74` completes one C8/candidate/C8 capped upload
+  comparison. Early goodput bounds improve; loaded voice tails worsen and
+  late bounds overlap. No promotion. Both C8 hashes, original exit, qdiscs,
+  firewall, timers and owned runtime cleanup are independently verified.
+  Mobile RX+TX: 27.769 MB through cleanup plus 0.777 MB separate staging.
+  Evidence: `observed-ack-window-field-20261006` under the evidence root;
+  full failures, RF context and cadence-age follow-up remain in the plan.
