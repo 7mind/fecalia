@@ -3673,7 +3673,9 @@ highest physical attempt's metadata is gone. C8-derived `2636afb` and original
 three times. Keeping the known sent-byte prefix prevents those repairs while
 all four false-positive receipt cases still repair genuine loss after 145 ms.
 The sender caches an immutable sequence count, not a link estimate. Sparse
-small-flow delivery stays 200/200 with 70 ms one-way p99. This correction's full
-gate, builds and field regression checks are still being completed; it supplies
+small-flow delivery stays 200/200 with 70 ms one-way p99; lossy voice stays
+5500/5500, none beyond 150 ms, maximum 115 ms. The full non-privileged gate
+passes on code `11f7359`; final-source checks/builds and field regression checks
+are still being completed; it supplies
 no completed stage/profile gate or performance claim. Evidence and revisions
 remain in the adaptive-policy plan.

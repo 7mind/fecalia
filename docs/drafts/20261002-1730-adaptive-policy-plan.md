@@ -4222,8 +4222,12 @@ data repair in all four sizes, three times. Selected reordered, cross-lane,
 late and lost ACK outcomes pass three times; sparse small flows remain 200/200
 with 70 ms one-way p99. The controller and wire format are unchanged.
 
-**Intended:** finish the full non-privileged gate, source-matched builds and a
-bounded field regression comparison before presenting this combined correction
+The full non-privileged gate passes on code `11f7359`; the lossy-voice
+outcome remains 5500/5500, zero beyond 150 ms, maximum 115 ms three times.
+The refined fixture explicitly checks unchanged highest sequence and equal
+wire-byte totals.
+
+**Intended:** finish final-source checks/builds and a bounded field regression comparison before presenting this combined correction
 as a reviewed candidate. Performance improvement is still unestablished.
 Continue the capacity and allocation investigation with these receipt outcomes
 as constraints; retain the rejected delay/drain and directional-noise results.
