@@ -3516,3 +3516,101 @@ qualification. Its diagnostic checks are running; raw continuously updated
 RTT is not yet an aged replacement or field candidate. No additional metered
 trial is justified by the preceding partial gains alone. Installed `b444920`
 remains the accepted baseline, and the improvement goal remains active.
+
+
+### Current physical RTT: completed field tradeoff — 2026-10-06, 04:18 IST
+
+**Observed source:** isolated `4e036a919e2f06713806a7f1eac2bc0e585d7923`,
+code `ca993a4`, ARM SHA-256
+`74ad69e52fa06e0682874ebf150bbd0c555c6f98c84b9c23729dcd76e56d8523`.
+The full non-privileged gate finishes with seventeen bond failures, versus
+nineteen before: persistent voice preference and slow-link ACK utilization
+resolve, with no newly failing test. Frontend 44, build/vet, patched engine,
+formatting and every other Go package pass. Native Nix and ARM builds pass.
+No complete gate or stage is declared satisfied.
+
+The new receipt-after-idle reproduction fails original `f75668e` three times
+for the expected stale mean/variation: a fresh 40 ms receipt after eleven
+seconds retains 118.75/187.5 ms with prior history, or 22.5/5 ms without it.
+Only its void Path API call is adapted in the original overlay; production
+diff is empty. This supports section 2's unaged-RTT diagnosis for that case.
+The replacement removes unaged lane fields, uses authenticated probe RTT
+only as fallback and initializes current mean from the first physical receipt.
+The existing ten-second horizon expires mean/variation; peer replacement
+clears it. Preceding test-only commits restate affected fixtures, preserving
+the unchanged sparse-ACK assertion of 112.5 ms. Fourteen selected outcomes
+pass three times. An earlier probe-seeded source failed that assertion and
+was held without field upload. Evidence is `current-delay-age-*`,
+`current-rank-physical-*` and `current-rank-inputs-*`.
+
+This experimental scheduler uses current physical RTT, including loaded
+samples, in ordering, hysteresis and arrival prediction; snapshot delay and
+rank describe those inputs. It deliberately tests an alternative to section
+3's unloaded-delay rank, without changing that accepted target. Liveness,
+capacity qualification, window rules and copies retain their inputs.
+
+One complete capped 400 kbit/s → 2 Mbit/s C8/candidate/C8 comparison records:
+
+| Observed metric | C8 before | Candidate | C8 after |
+|---|---:|---:|---:|
+| Early receiver upload bounds, Mbit/s | 0.122–0.158 | 0.214–0.261 | 0.142–0.178 |
+| Late receiver upload bounds, Mbit/s | 1.096–1.628 | 1.185–1.707 | 1.073–1.599 |
+| Loaded voice RTT p99, edge/hub ms | 82.2/53.2 | 157.3/131.6 | 48.4/44.3 |
+| Missing echoes of 2750, edge/hub | 0/0 | 0/0 | 0/0 |
+| Whole-phase maximum receive gap, edge/hub ms | 92.0/72.6 | 90.8/74.4 | 97.2/73.9 |
+| Low-rate TBF backlog/service p99, ms | 130.3 | 145.5 | 59.6 |
+| High-rate TBF backlog/service p99, ms | 72.2 | 43.0 | 64.7 |
+
+Early candidate lower bounds exceed both baseline upper bounds; late bounds
+overlap both. Loaded voice tails worsen in both directions against both
+baselines, and edge exceeds 150 ms. Low-rate backlog tail worsens despite
+its better high-rate tail. The source is rejected for promotion. These are
+partial measured improvements, not the required improvement across metrics.
+Receiver bounds do not prove adaptation deadlines; backlog/rate is a service
+proxy, not measured packet wait. Each voice client uses its own clock. This
+is one comparison, not three repetitions, lab profiles or a causal isolation
+from RF variation.
+
+Immediate direct uploads on the different OCI route measure Starlink
+0.516/0.493/0.489 Mbit/s under a 1 Mbit/s offer and 5G
+3.046/2.988/2.947 under a 3 Mbit/s offer. Near-offer first-to-last receipt
+measurements retain window-edge effects and do not establish maximum capacity.
+Idle concentrator-route ICMP p99 is Starlink 60.2/38.9/81.1 ms and
+5G 114/48.3/94.3 ms. Replies/transmitted are Starlink
+100/102, 100/101, 100/101 and 5G 100/103, 101/101, 100/101. Candidate
+adjacent idle tails are lower, but these samples cannot establish loaded UDP
+service or causally attribute the loaded tail to policy.
+
+Guarded late edge first-submission counters are bulk Starlink/5G
+13/625 → 80/602 → 12/621, and real-time originals
+437/43 → 360/121 → 482/0. These exclude copies/repairs and do not prove
+physical receipt. Candidate own real-time residence p99 is bounded by
+5/1 ms, with no real-time queue drops; one small-TCP deadline drop occurs.
+Guarded expired-original deltas are 10/0 → 7/0 → 4/0 edge/hub; expiry
+does not prove non-delivery. Repair/copy counts remain conflated.
+
+Boots are unchanged and all cleanup-error lists are empty. Independent checks
+before and after owned cleanup verify C8 sources/hashes, original `raspi5l`
+policy, empty overrides, unshaped queues and no temporary timers/firewall
+rules. Verified inactive candidate files and only this run's owned reference
+directories are removed after archiving and byte verification. Mobile RX+TX
+with background is 28.164 MB during comparison, 28.528 through cleanup
+(overlapping), plus 1.008 separate staging: 29.536 MB over disjoint measured
+intervals. Evidence is `current-rank-inputs-field-20261006/`,
+`current-rank-inputs-full-nonprivileged-gate.txt` and its gate-result JSON.
+
+A no-headroom diagnostic combined with current ranking still fails
+directional voice at 159/163 ms and discovery at 12.89/36.12 Mbit/s,
+identically three times. It is rejected without production changes or field
+activation; `current-rank-measured-service-*` retains its source, log and patch.
+
+**Observed diagnostic:** in the unchanged slow-voice isolation model, all
+75 bulk dispatches on the slow lane in the measured fifteen seconds occur
+with both lanes live. Voice has up to 20.264 ms modeled service wait; its
+p99 is 31 ms against 25 required. **Inferred from code:** an active probe
+explicitly disables real-time lane isolation; failover does not explain these
+observed dispatches. The removal experiment is running against the unchanged
+outcome and single-lane discovery guards; its success and field effect are
+not yet established. `slow-voice-{wire-isolation,lane-state}-*` retains traces.
+Installed `b444920` remains the accepted baseline; the improvement goal stays
+active and no new release is tagged.

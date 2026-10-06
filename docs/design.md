@@ -3012,3 +3012,23 @@ RF references do not isolate causation. Both hosts are verified restored and
 owned artifacts cleaned. The plan records exact sources, full failures,
 29.831 MB measured mobile use and the next scheduler-ranking isolation.
 Main remains C8.
+
+
+### Current physical RTT field result — 2026-10-06
+
+Isolated `4e036a9` replaces unaged raw RTT with a ten-second physical
+observation, initializing from the first timed receipt and retaining probe
+RTT only as fallback. Its receipt-after-idle reproduction fails original
+`f75668e`; fourteen selected outcomes pass three times, including unchanged
+sparse delay. The full gate retains seventeen bond failures; other
+components and native/ARM builds pass. This experiment ranks loaded physical
+RTT as an alternative to the plan's unloaded-delay target, without changing
+that accepted target.
+
+One capped B/C/B field comparison improves early upload bounds and the
+high-rate backlog proxy, but loaded voice p99 worsens to 157.3/131.6 ms
+against both baselines; late throughput overlaps and low-rate backlog tail
+worsens. It is not promoted. Both hosts are independently verified restored
+to C8 and owned runtime artifacts cleaned. The plan records exact sources,
+RF references, limits, seventeen failures and 29.536 MB measured mobile use.
+The next diagnostic removes the probe exception to voice-lane isolation.

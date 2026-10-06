@@ -601,3 +601,13 @@ contemporaneous direct references and metering with each repeat; see
   after owned cleanup. Disjoint measured mobile intervals total 29.831 MB
   including background. Evidence: `qualified-aggregation-field-20261006/`;
   retain the plan's RF context and partial-improvement limits.
+
+
+The 2026-10-06 current-physical-RTT experiment (`4e036a9`) completes one
+capped upload B/C/B comparison with adjacent direct references. Early upload
+bounds improve, but loaded voice p99 worsens against both C8 baselines and
+late throughput overlaps. All 2750 echoes per host/phase arrive. The candidate
+is rejected; hosts are independently verified restored and owned artifacts
+cleaned. Measured mobile RX+TX is 29.536 MB over disjoint intervals including
+background. This does not prove lab profiles or any full stage gate; exact
+source, failures, references and limits are in the adaptive-policy plan.

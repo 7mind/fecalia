@@ -3523,3 +3523,21 @@ Both hosts are independently verified restored to C8, with owned runtime
 files archived/removed. Measured disjoint mobile intervals total 29.831 MB
 including background. Full gates, references and limits remain in the plan
 and `qualified-aggregation-field-20261006/` under the evidence root.
+
+
+### Current physical RTT field rejection — 2026-10-06
+
+Exact source `4e036a9` has seventeen full bond failures, two fewer than
+the preceding experiment and no new failure. Other non-privileged components,
+native Nix and ARM builds pass. Its original-baseline RTT-age reproduction
+and fourteen selected corrected-source outcomes are recorded in the plan.
+A complete capped B/C/B comparison improves early upload to 0.214–0.261
+Mbit/s versus 0.122–0.158 and 0.142–0.178, but loaded voice p99 is
+82.2/53.2 → 157.3/131.6 → 48.4/44.3 ms edge/hub. All 2750 echoes per
+host/phase arrive. Late bounds overlap; low-rate backlog tail worsens.
+The source is not promoted. Adjacent RF references and first-submission
+counters do not establish causation, and no VM/profile gate is inferred.
+Both hosts are independently verified restored to C8 before/after owned
+cleanup. Disjoint metered intervals total 29.536 MB including background.
+Evidence is `current-rank-inputs-field-20261006/` under the adaptive evidence
+root, with source/build checks and precise limits in the adaptive-policy plan.
