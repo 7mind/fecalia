@@ -2969,3 +2969,19 @@ age; its correction passes selected checks and has not been field-tested.
 Both C8 services and network state are restored and independently verified.
 The plan's observed-cadence field record retains exact sources, RF uncertainty,
 traffic cost and the pending confidence checks. Main policy remains C8.
+
+
+### Cadence-age field rejection — 2026-10-06
+
+Isolated source `1366136` ages and bounds observed ACK cadence. The unchanged
+idle-history outcome passes, and full default failures fall from 22 to 19 with
+no new failing names; native Nix and ARM builds pass. Its complete capped
+B/C/B field comparison does not establish improvement: early/late upload
+bounds overlap different surrounding baselines, and loaded voice p99
+130.8/152.0 ms exceeds both baselines. All 2750 echoes per direction arrive.
+RF references vary and do not identify the cause; no source is promoted.
+Both hosts are independently verified restored to C8 after owned cleanup.
+The plan records raw evidence, limits and 27.333 MB disjoint measured mobile
+traffic including background. An application-receipt delay-control correction
+remains isolated and has no field result. ACK aggregation is a research
+direction, not part of the installed transport.

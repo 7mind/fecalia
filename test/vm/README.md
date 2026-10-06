@@ -3473,3 +3473,24 @@ network state and owned cleanup are independently verified. Mobile RX+TX is
 27.769 MB through cleanup plus 0.777 MB staging, including background.
 See the plan's observed-cadence field record and
 `observed-ack-window-field-20261006` under the evidence root for limitations.
+
+
+### Cadence-age field and model results — 2026-10-06
+
+The cadence-age follow-up `1366136` passes its failing idle-history outcome
+three times and restores queued-receipt, slow-voice and ACK-sharing outcomes;
+19 full default bond failures remain. Other non-privileged components and
+Nix/ARM builds pass. A complete timer-backed B/C/B field comparison records
+early upload bounds 0.220–0.264 / 0.204–0.268 / 0.140–0.176 Mbit/s and late
+bounds 0.171–0.267 / 0.876–1.438 / 1.106–1.655. Loaded voice p99 is
+97.5/122.3 / 130.8/152.0 / 59.3/59.0 ms edge/hub; all 2750 echoes per
+direction arrive. The source is not promoted. Immediate RF references,
+receiver-bound provenance and the preceding baseline's zero late 5G bulk
+submissions are retained; causal attribution remains unknown.
+
+Both C8 source/hashes, boots, policy, unshaped queues and cleanup are
+independently verified. Disjoint measured mobile staging/cleanup intervals
+total 27.333 MB with background. Evidence is
+`fresh-ack-cadence-field-20261006/` and `ack-cadence-age-*.txt` under the
+evidence root; full detail is in the adaptive-policy plan. No three-run
+profile gate, completed stage or across-metric improvement is inferred.

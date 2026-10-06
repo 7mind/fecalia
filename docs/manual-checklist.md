@@ -582,3 +582,13 @@ contemporaneous direct references and metering with each repeat; see
   Mobile RX+TX: 27.769 MB through cleanup plus 0.777 MB separate staging.
   Evidence: `observed-ack-window-field-20261006` under the evidence root;
   full failures, RF context and cadence-age follow-up remain in the plan.
+
+
+- 2026-10-06 cadence-age field comparison: source `1366136`, ARM SHA-256
+  `3d6998b7ce621a3308729e4b7a259e1fab7904b80e801f36409f651fb8c3d255`;
+  complete capped C8/candidate/C8 upload set, voice first and immediate physical
+  references. Upload bounds overlap surrounding baselines; loaded voice p99
+  130.8/152.0 ms worsens against both. All 2750 echoes per direction arrive.
+  No promotion. Both hosts' deployed C8 hashes, boots, policy and cleanup are
+  independently verified. Metered disjoint intervals total 27.333 MB with
+  background. See `fresh-ack-cadence-field-20261006/` and the plan for limits.

@@ -3308,3 +3308,93 @@ That overlay is rejected again; evidence is
 remaining delay-qualification/control defects with the recorded counterexamples
 before selecting another field candidate. Installed `b444920` remains the
 accepted baseline; the improvement goal remains active.
+
+
+### Fresh ACK cadence: completed field rejection — 2026-10-06, 02:53 IST
+
+**Observed source:** unaccepted `13661368605118b06b1c41b85bb11508761d0820`,
+ARM SHA-256 `3d6998b7ce621a3308729e4b7a259e1fab7904b80e801f36409f651fb8c3d255`.
+The cadence-age correction removes stale/unknown feedback spacing from flight
+calculation, uses the existing protocol maximum when unknown/aged, and stamps
+actual interval evidence. Its fail-first idle-history check passes three
+times. Full non-privileged gate has 19 bond failures versus 22 on `d1b3f74`,
+with no new failing names; unmatched queued receipt, slow-lane voice and
+ACK-sharing outcomes return to passing. Frontend 44, build/vet, patched engine,
+formatting and other Go packages pass; native Nix and ARM builds pass.
+No wire, synthetic-probe, copy-policy or constant change is introduced.
+
+One complete timer-backed 400 kbit/s → 2 Mbit/s B/C/B upload set records:
+
+| Observed metric | C8 before | Cadence-age candidate | C8 after |
+|---|---:|---:|---:|
+| Early receiver upload bounds, Mbit/s | 0.220–0.264 | 0.204–0.268 | 0.140–0.176 |
+| Late receiver upload bounds, Mbit/s | 0.171–0.267 | 0.876–1.438 | 1.106–1.655 |
+| Loaded voice RTT p99, edge/hub ms | 97.5/122.3 | 130.8/152.0 | 59.3/59.0 |
+| Missing echoes of 2750, edge/hub | 0/0 | 0/0 | 0/0 |
+| Whole-phase receive gap, edge/hub ms | 102.6/103.1 | 95.9/149.9 | 67.8/106.1 |
+| Low-rate TBF backlog/service median/p99 ms | 0/0 | 22.0/114.7 | 33.1/85.4 |
+
+Candidate early bounds exceed only the returning baseline, and overlap the
+preceding baseline. Late bounds exceed only the preceding baseline and overlap
+the returning baseline. Loaded voice p99 worsens against both; one direction
+exceeds 150 ms. This result does not establish improvement across metrics, and
+the source is not promoted. Bounds use receiver-local reporting intervals and
+do not prove exact adaptation deadlines; voice uses each client's own clock.
+This is one B/C/B comparison, not three repeats of either profile family.
+
+The preceding C8 phase submits zero 5G bulk originals in its guarded late
+window, while 5G carries 478/480 real-time originals. Candidate submits 458
+5G bulk originals while 5G carries 464/470 real-time originals. Returning C8
+submits 644 5G bulk originals, while Starlink carries 476/480 real-time
+originals. These are first-submission counters, not physical TCP receipts.
+**Inference:** stale ranking/allocation may contribute to the first baseline's
+low upload; these aggregates cannot exclude RF or other service changes.
+
+Direct upload references on the different OCI route are Starlink
+0.510/0.518/0.512 Mbit/s under a 1 Mbit/s offer and 5G
+2.959/2.929/2.960 Mbit/s under a 3 Mbit/s offer. Near-offer rates are service
+lower bounds. Idle ICMP to the concentrator has Starlink p99 37.1/41.9/44.1 ms
+and 5G 96.4/133.0/98.6 ms. All samples have 100 replies; transmitted counts
+are 101/101/101 for Starlink and 101/100/100 for 5G. The candidate's preceding
+5G tail is higher, and adjacent references do not establish service throughout
+the loaded interval or identify the cause of its worse voice tail.
+
+Candidate own real-time queue residence p99 is bounded by 5/1 ms, with zero
+interactive queue drops. Guarded expired-original deltas are 4/0, versus 9/0
+before and 5/0 after. TBF backlog/rate is a service-time proxy, not a measured
+packet wait. Both boot identities remain stable. Independent checks verify
+deployed C8 hashes, original `raspi5l` policy, removed overrides, unshaped
+queues and absence of temporary timers/firewall rules, before and after
+archiving/removing only the owned runtime files. Mobile RX+TX with background
+is 26.317 MB during comparison, 26.558 MB through cleanup (overlapping), plus
+0.775 MB separate staging: 27.333 MB over disjoint measured intervals.
+Evidence is `fresh-ack-cadence-field-20261006/` and
+`ack-cadence-age-{red,full-nonprivileged-gate,field-source-nix-build,arm-build}.txt`
+under `/srv/nvme/tmp/wanbond-adaptive-evidence`.
+
+Two local replacements are rejected without field activation. Advancing pushes
+after qualified service gains raises cold discovery from 5.17 to 46.36 Mbit/s
+(still below 75), but slow-lane voice falls from 500/500 at 60 ms to 490/500
+at 89 ms. Restricting unloaded delay qualification to transit minima fixes
+persistent lane choice but loses roughly half the forward/reverse noise-case
+voice, and still fails sparse-delay and busy-radio outcomes. Each repeats
+three times; source overlays, results and rejected patches are retained as
+`measured-progress-probe-*` and `low-transit-delay-*`.
+
+A separate idle-only reproduction cuts prototype pacing from 125,000 to
+87,292 B/s without application traffic. Replacing keepalive timing as
+delay-driven capacity-cut evidence with timed application receipt passes that
+unchanged outcome and twelve selected queue/service/voice outcomes three times.
+It is isolated on `adaptive-application-delay-control`, code `e4f1adc`, with
+separate documentation; broader checks are running and field gain is unknown.
+This change was absent from the field source. No policy is promoted.
+
+**Intended next work:** preserve that idle outcome, reproduce the effect of ACK
+batching on productive flight, and replace allowances only if the reproduction
+fails for the claimed reason. The [BBR draft-06 §5.5.9](https://www.ietf.org/archive/id/draft-ietf-ccwg-bbr-06.html#section-5.5.9)
+measures excess acknowledged volume separately from bandwidth and ages it over
+delivery rounds. **Inference:** that separation may replace fixed flight
+allowances without confusing radio/ACK variation with standing self-queue;
+it is a research direction, not an implemented wanbond estimator or observed
+field gain. A revised source still needs paired field measurements against
+installed `b444920` / `v0.0.3`; local host elapsed-time metrics remain diagnostic.
