@@ -141,6 +141,7 @@ func (p *policyTCP) acknowledge(payload []byte, now time.Time, send func(uint64)
 		if acknowledged >= s.roundEnd {
 			if s.cwnd < s.ssthresh && s.previousMin > 0 && s.roundMin >= s.previousMin+max(4*time.Millisecond, s.previousMin/8) {
 				s.ssthresh, s.wMax, s.k, s.epoch = s.cwnd, s.cwnd, 0, now
+				s.renoWindow = s.cwnd
 			}
 			s.previousMin, s.roundMin, s.roundEnd = s.roundMin, 0, s.next
 		}

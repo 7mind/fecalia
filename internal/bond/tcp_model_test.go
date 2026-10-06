@@ -113,6 +113,7 @@ const (
 	tcpInitialCwnd  = 10
 	tcpCubicC       = 0.4
 	tcpCubicBeta    = 0.7
+	tcpRenoAlpha    = 3 * (1 - tcpCubicBeta) / (1 + tcpCubicBeta)
 	tcpInitialRTO   = time.Second
 	tcpMinimumRTO   = 200 * time.Millisecond
 	tcpDuplicateACK = 3
@@ -139,6 +140,7 @@ type tcpSender struct {
 	roundEnd              uint64
 	roundMin, previousMin time.Duration
 	wMax, k               float64
+	renoWindow            float64
 	epoch                 time.Time
 	srtt, rttVar          time.Duration
 	lastProgress          time.Time
@@ -153,6 +155,7 @@ type tcpSender struct {
 func (s *tcpSender) reduce(now time.Time) {
 	s.wMax = s.cwnd
 	s.ssthresh = math.Max(2, s.cwnd*tcpCubicBeta)
+	s.renoWindow = s.ssthresh
 	s.k = math.Cbrt(s.wMax * (1 - tcpCubicBeta) / tcpCubicC)
 	s.epoch = now
 }
@@ -162,12 +165,17 @@ func (s *tcpSender) grow(now time.Time, newly float64) {
 		s.cwnd += newly
 		return
 	}
+	if s.renoWindow == 0 {
+		s.renoWindow = s.cwnd
+	}
+	s.renoWindow += tcpRenoAlpha * newly / s.cwnd
 	target := tcpCubicC*math.Pow(now.Sub(s.epoch).Seconds()-s.k, 3) + s.wMax
 	if target > s.cwnd {
 		s.cwnd += (target - s.cwnd) / s.cwnd * newly
 	} else {
 		s.cwnd += newly / (100 * s.cwnd)
 	}
+	s.cwnd = math.Max(s.cwnd, s.renoWindow)
 }
 
 func (s *tcpSender) sample(rtt time.Duration) {
@@ -416,6 +424,7 @@ func (m tcpTransfer) run(t *testing.T) tcpOutcome {
 					if acknowledged >= s.roundEnd {
 						if s.cwnd < s.ssthresh && s.previousMin > 0 && s.roundMin >= s.previousMin+max(4*time.Millisecond, s.previousMin/8) {
 							s.ssthresh = s.cwnd
+							s.renoWindow = s.cwnd
 							s.wMax, s.k, s.epoch = s.cwnd, 0, now
 						}
 						s.previousMin, s.roundMin, s.roundEnd = s.roundMin, 0, s.next
