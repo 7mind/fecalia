@@ -4446,3 +4446,69 @@ voice, copy cost, settled service, genuine capacity falls and variable delay
 as simultaneous constraints. Installed `b444920` / `v0.0.3` remains the baseline.
 No stage/profile repetition, existing lab gate or full metric objective is
 completed. The goal remains active.
+
+
+## Settled capacity drops and physical drain qualification — 2026-10-06
+
+**Observed:** `TestSettledCapacityDropDrainsWithoutLosingService` first requires
+three seconds of measured payload service above 75% of available capacity.
+It drops capacity at 20 seconds to 80%, 50% or 25%, then checks queue residence
+and service in seconds 24–27. All three cases pass on `f75668e` in three runs
+and on current main, whose full non-privileged gate passes after the test-only
+commit `4122bae`. This is a finding, not a baseline failure: section 2 does
+not establish inability to adapt to these settled drops. It does not prove
+scenario 2a, a deadline shorter than four seconds, or a variable RF outcome.
+The existing early-drop test can pass before discovery establishes substantial
+service; retain both checks and do not substitute that pass for congestion
+recovery. Evidence is `settled-capacity-drop-{main-outcomes,original-repeat3}.txt`
+and `settled-capacity-main-nonprivileged-gate.txt` under the evidence root.
+
+**Observed, rejected clock hypothesis:** equal ACK holding at both clock
+endpoints lowers an untimed cohort's rate in a new diagnostic. Subtracting the
+previous ACK generation time would cancel that holding, but contradicts the
+existing later-batch receipt bound in
+`TestDeliveryCapacityBatchDoesNotSubtractPriorACKHolding`. The cancellation
+expectation is rejected; no estimator or wire format is changed. Preserve
+`ack-hold-clock-endpoints-{red,finding}.txt` as hypothesis evidence rather than
+calling the diagnostic a proven correction.
+
+**Observed, isolated probe experiments:** keeping a gain of two for a complete
+feedback round restores noisy bulk but fails capacity-drop queues and puts
+seven lossy voice packets beyond 150 ms. Spreading the original excess budget
+across that round at a smaller gain passes the selected noisy service,
+serialization, settled-shift and lossy-voice outcomes three times; voice p99
+is 76/78 ms and noisy bulk 732600/816480 B/s. The complete default suite still
+fails 24 top-level tests, and the complete tagged suite fails 114 entries
+(44 top-level tests). Cold discovery is slower. These selected passes neither
+make a release candidate nor establish a field gain.
+
+**Observed, fail-first drain corrections:** the experimental sampler can
+certify delay after physical metadata is retired despite a positive received
+byte deficit. Its complete-prefix control passes while the deficit case
+fails three times. Test-only `ce31ce2` precedes correction `8b41b35`, which
+requires the actual acknowledged wire prefix and rejects later outstanding
+bulk. A separate three-run reproduction shows that the ACK clearing old
+flight cannot certify its own pre-drain transmission as unloaded. After
+restating the outcome in `2a0036e`, `c0861e2` excludes ACK-aggregation allowance
+from the diagnostic's propagation flight budget: the initial two-receipt
+fixture had also changed that independent allowance, which was not evidence
+of delay certification. Keep the uncorrected diagnostic output for provenance.
+
+The early-end experiment initially collapses settled service after a pure
+propagation increase. Its trace shows approximately 73 ms RTT but only
+30–53 ms between observing the drain and the old phase deadline. Correction
+`6807427` starts a bounded measurement deadline at the observed drain and
+accepts a subsequent transmission; the phase can end when that measurement
+arrives. Both direct qualification checks pass three times. With the smaller
+round probe, the settled-shift and genuine settled-drop outcomes pass, all
+5500 lossy voice packets arrive within 150 ms, and noisy service passes.
+Cellular discovery still fails at 1.36 Mbit/s cold and 7.44 Mbit/s after an
+increase on a healthy 100 Mbit/s model lane. This branch remains unmerged.
+Evidence is `delay-measurement-{prefix,observed-drain,observed-round,two-phase}*`
+and `qualified-drain-{round-budget,observed-*}*`.
+
+**Intended:** improve discovery while preserving the qualified physical
+measurement, genuine capacity-drop recovery, voice deadlines and settled bulk.
+No new field experiment follows the recorded `307ca74` comparison yet. The
+installed `b444920` / `v0.0.3` remains the performance baseline; the goal is
+active and no stage/profile gate or all-metric objective is completed.

@@ -3728,3 +3728,14 @@ mobile RX+TX with background is 28.296 MB. `repair_packets_total` includes
 ordinary replication and must not be read as timeout-only repair. Exact
 sources, raw outcomes, RF references, accounting and continuing investigation
 are in the [field record](../../docs/drafts/20261002-1730-adaptive-policy-plan.md#qualified-capacitydrain-field-comparison--2026-10-06-09020916-utc).
+
+
+For a capacity-drop result, establish actual pre-change service before treating
+its queue pass as congestion recovery. The deterministic
+`TestSettledCapacityDropDrainsWithoutLosingService` verifies this before dropping
+capacity to 80%, 50% and 25%; original `f75668e` passes all three, three times.
+The separate smaller-gain probe passes selected outcomes but still fails 24
+default top-level tests and 114 tagged entries. No new lab/profile completion,
+field run or release follows. Physical drain and measurement deadline
+reproductions, sources and rejected hypotheses are in the
+[continuing policy record](../../docs/drafts/20261002-1730-adaptive-policy-plan.md#settled-capacity-drops-and-physical-drain-qualification--2026-10-06).

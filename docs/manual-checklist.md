@@ -650,3 +650,11 @@ mobile RX+TX with background is 28.296 MB. `repair_packets_total` includes
 ordinary replication and must not be read as timeout-only repair. Exact
 sources, raw outcomes, RF references, accounting and continuing investigation
 are in the [field record](drafts/20261002-1730-adaptive-policy-plan.md#qualified-capacitydrain-field-comparison--2026-10-06-09020916-utc).
+
+
+A passing capacity-drop queue check requires substantial measured service
+before the drop. Preserve latency, bulk and discovery outcomes together;
+selected model passes are insufficient when the full suite still regresses.
+The original baseline's three-run settled-drop passes and the unmerged
+physical-drain corrections are retained in the
+[continuing policy record](drafts/20261002-1730-adaptive-policy-plan.md#settled-capacity-drops-and-physical-drain-qualification--2026-10-06). No new metered field run is claimed.

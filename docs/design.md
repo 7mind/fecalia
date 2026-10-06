@@ -3168,3 +3168,12 @@ mobile RX+TX with background is 28.296 MB. `repair_packets_total` includes
 ordinary replication and must not be read as timeout-only repair. Exact
 sources, raw outcomes, RF references, accounting and continuing investigation
 are in the [field record](drafts/20261002-1730-adaptive-policy-plan.md#qualified-capacitydrain-field-comparison--2026-10-06-09020916-utc).
+
+
+Observed settled capacity-drop tests now require measured pre-change service;
+all three drops pass on the original `f75668e` baseline in three runs. The
+isolated replacement's drain measurement now distinguishes physical receipt
+proof from retired metadata and a later post-drain transmission from the ACK
+clearing old flight. These corrections are unmerged; slower discovery and
+broader policy failures remain. Sources and evidence limits are in the
+[continuing policy record](drafts/20261002-1730-adaptive-policy-plan.md#settled-capacity-drops-and-physical-drain-qualification--2026-10-06).
