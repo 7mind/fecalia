@@ -745,3 +745,13 @@ prove TCP capacity or RF stationarity. The baseline-only tunnel run receives
 2.945 Mbit/s with loaded voice p99 48/50 ms and all echoes. Method, missing
 receipt limits and mobile accounting are in the
 [measurement record](drafts/20261002-1730-adaptive-policy-plan.md#same-destination-references-and-probe-budget-diagnostics--2026-10-06).
+
+The complete-prefix short-push candidate `034298f` is rejected after a capped
+upload comparison against observed installed `2f3187e`: lower upload, larger
+voice tails and one missing echo. Independent deployed identity, boot, exit,
+network and owned runtime cleanup checks pass. Recorded disjoint mobile
+intervals total 17.543 MB including background; the [execution record](drafts/20261002-1730-adaptive-policy-plan.md#qualified-short-push-sampling-and-field-rejection--2026-10-06)
+retains exact limits. Future candidate reports must include TCP download,
+TCP upload and simultaneous up/down independently, each from its receiving
+side and with immediate directional references, voice latency/loss/gaps and
+metered bytes. This upload-only trial proves no download result.

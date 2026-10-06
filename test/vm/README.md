@@ -3832,3 +3832,17 @@ the repeated steady model but regress discovery and propagation, so no policy
 is adopted. These diagnostics do not establish lab/profile acceptance; the
 [measurement record](../../docs/drafts/20261002-1730-adaptive-policy-plan.md#same-destination-references-and-probe-budget-diagnostics--2026-10-06)
 retains scope, restoration and mobile usage.
+
+The unmerged complete-prefix short-push sampler `034298f` passes selected
+model outcomes three times but fails 25 default groups and 45 tagged groups
+(94 entries), including new radio/stall regressions. Nix/ARM builds pass;
+there is no new source-specific lab run or profile acceptance. Its capped
+upload field comparison against observed installed `2f3187e` rejects it:
+0.196 Mbit/s between 0.258/1.758 baselines, loaded voice p99 153/184 ms and
+one missing hub echo. Direct references use the same public UDP destination
+and instrument socket drops on both ends; their UDP service is not TCP
+capacity. Independent restoration passes. Disjoint measured mobile intervals
+use 17.543 MB including background. TCP download and concurrent up/down are
+unmeasured; future comparison reports must retain them as separate results.
+The [record](../../docs/drafts/20261002-1730-adaptive-policy-plan.md#qualified-short-push-sampling-and-field-rejection--2026-10-06)
+preserves source-matched qualification, counterexamples and limits.

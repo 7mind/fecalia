@@ -3269,3 +3269,16 @@ The paired baseline observation and smaller-push model diagnostics establish
 no new policy gain: steady-model queueing improves, while discovery and
 propagation regress. Source, receipt/drop limits, restoration and mobile
 accounting are in the [measurement record](drafts/20261002-1730-adaptive-policy-plan.md#same-destination-references-and-probe-budget-diagnostics--2026-10-06).
+
+A subsequent unmerged sampler uses existing complete physical receipt prefixes
+and bitmaps to qualify newer ACK-history intervals for short demand pushes.
+It removes the discovery AQM exemption while retaining the longer initial
+queue deadline. Selected deterministic discovery, steady-queue and prior-loss
+outcomes improve, but full gates retain radio/stall regressions. A temporary
+comparison against newly observed installed `2f3187e` rejects frozen
+`034298f`: upload is lower than both baselines and voice tails/loss increase.
+Both deployed builds, original exit/network state and owned cleanup are
+independently verified. TCP download and concurrent up/down were unmeasured;
+they are separate required optimization metrics, not inferred from upload.
+No policy is adopted; exact receipt counterexamples, source, gates and field
+limits are in the [continuing record](drafts/20261002-1730-adaptive-policy-plan.md#qualified-short-push-sampling-and-field-rejection--2026-10-06).

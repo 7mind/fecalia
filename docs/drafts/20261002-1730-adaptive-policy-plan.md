@@ -876,7 +876,9 @@ policy, without calling an incomplete intermediate stage accepted.
 
 | Metric | Desired change and retained targets |
 |---|---|
-| TCP payload goodput, upload/download and together | Higher relative to contemporaneous available service; 75% in steady changed conditions, 70% under cellular variation |
+| TCP download payload goodput (concentrator to edge) | Higher relative to immediately measured downlink service; preserve 75% steady and 70% cellular targets; receiving edge supplies the result |
+| TCP upload payload goodput (edge to concentrator) | Higher relative to immediately measured uplink service; preserve 75% steady and 70% cellular targets; receiving concentrator supplies the result |
+| Simultaneous TCP download and upload | Measure each receiving direction independently under concurrent load, including reverse TCP ACK demand and voice; neither one-direction result substitutes for this |
 | Voice round-trip latency | Lower median/p95/p99; p99 under 150 ms during rate changes, survivor idle p99 +50 ms after failover |
 | Voice jitter and receive gaps | Lower latency spread; no gap of 150 ms |
 | Voice loss | Under 1%, at most three consecutive losses; preserve zero-loss cases |
@@ -5129,3 +5131,102 @@ Evidence under `/srv/nvme/tmp/wanbond-adaptive-evidence`:
 `concentrator-direct-overflow-field-20261006/`,
 `direct-reference-independent-postconditions.{py,json,log}`,
 `feedback-sized-push-*` and `receipt-bound-feedback-sized-push-*`.
+
+## Qualified short-push sampling and field rejection — 2026-10-06
+
+**Observed fail-first reproduction:** two consecutive complete physical
+receipt batches represent two new datagrams over matching two-millisecond
+send/receive intervals. Parent `33efb4f` reports 64048 B/s instead of
+1329000 B/s in three runs. The sampler only consults cohort points captured
+before those acknowledgements arrived. Two negative cases pass on the
+parent: an older arrival enlarges the byte delta, or compensates for a new
+missing datagram. Preserve their byte and bitmap qualifications; this is a
+candidate-parent reproduction, not an original-`f75668e` scenario failure.
+
+Experimental tests `c577837` first restate the physical-cohort mechanism as
+an unmatched-receipt service bound. Code `09fa011` replaces captured history
+with current physical receipt history, permitting newer points only when
+the existing bitmap and byte prefixes prove a complete matching interval.
+It returns to short excess-service pushes and removes the discovery AQM
+exemption. A traced prior-loss case otherwise remains in discovery, disables
+AQM and drops a local deadline burst. The longer cold ingress deadline stays:
+removing it loses 31/40 initial datagrams. Unguarded current history inflates
+the negative estimate to 1993500 B/s and is rejected. No wire field,
+controller constant, synthetic policy traffic or copy rule is added.
+The experimental controller has eight constants versus installed C8's 31
+and original `f75668e`'s 32; it remains outside main.
+
+**Observed qualification of frozen source `034298f`:** selected checks pass
+three times, including 97.45/98.37 Mbit/s discovery, steady utilization
+99.2%/97.4% with queue p90 9.15/9.04 ms, physical-receipt counterexamples,
+all four prior-loss propagation cases and all three settled capacity drops.
+These deterministic model observations do not establish field performance.
+Native Nix and ARM builds and extra tagged vet pass. The full default gate
+fails 25 top-level bond groups; the complete tagged run fails 45 groups,
+94 entries. Eight new default regressions include variable-delay service,
+radio jitter, stalls and silent-lane repair outcomes. Other default components
+pass. No new lab run or profile acceptance is claimed.
+
+**Observed installed-state change:** before staging, both hosts report
+`2f3187ec28f95ac9f72f19be93c56b651da0b5b7`, matching deployed SHA-256
+`a53dbded1b699e48bd2b235e000fa3d7665e360d34340a125176911bc0e13c5a`
+and empty service overrides. The prior `b444920` guard stops before upload
+or activation. Subsequent comparison uses the observed installation, with
+its operator exit policy `auto`; earlier `b444920` results remain separate.
+This is observed runtime identity, not a new agent deployment or release.
+
+**Observed field comparison, 16:40–16:46 UTC:** restart baseline/candidate/
+baseline, two voice-only preflights, immediate Starlink then 5G references to
+`45.11.171.73:51820`, then two 50 Hz voice streams and a six-second capped
+6 Mbit/s TCP upload. No shaping, blackout or passive frame capture is used.
+Restoration timers precede candidate activation and temporary TCP permission.
+
+| Observed metric | `2f3187e` before | `034298f` | `2f3187e` after |
+|---|---:|---:|---:|
+| Receiving-hub whole TCP upload, Mbit/s | 0.258 | 0.196 | 1.758 |
+| Receiver payload bounds, seconds 3–6, Mbit/s | 0.186–0.406 | 0.096–0.253 | 1.299–2.733 |
+| Guarded TCP-active voice p99, edge/hub ms | 54.8/57.1 | 152.8/184.0 | 53.3/48.8 |
+| Whole missing echoes, edge/hub, out of 1250 each | 0/0 | 0/1 | 0/0 |
+| Preceding raw 5G payload, receiver-span Mbit/s | 2.447 | 2.625 | 3.146 |
+| Preceding raw Starlink payload, receiver-span Mbit/s | 0.584 | 0.587 | 0.589 |
+| TCP download / simultaneous up-down | Not measured | Not measured | Not measured |
+
+Every voice-only preflight is 500/500. Raw 5G forward counts are
+1086/1127/1250 of 1250; return counts are 1086/1126/1250. Both raw receiver
+and UDP client collect socket-overflow counters and observe zero. Independent
+loopback checks deliberately overflow the UDP receive buffers on both hosts
+and observe 99 drops. Missing forward datagrams and the one unmatched return
+receipt retain unknown causes. These bounded UDP references are neither TCP
+service nor maximum capacities; RF and baseline performance vary widely.
+Receiver bounds and guarded same-host clocks retain their stated uncertainty.
+
+**Verdict:** reject this candidate as a performance improvement. It delivers
+less upload than both baselines, adds a missing echo and has larger voice
+tails. RF variation does not establish causal attribution. Sampled candidate
+5G first-bulk submissions remain zero through the transfer, although the
+capacity display stays near 272123 B/s; a displayed value alone does not prove
+fresh, usable capacity. This mismatch motivates a focused reproduction,
+not a speculative scheduling patch.
+
+**Observed restoration/accounting:** independent checks verify both deployed
+`2f3187e` hashes, unchanged boots, empty overrides, original `auto` policy,
+original qdiscs, no trial firewall rules/timers, stopped owned helpers,
+removed private keys and absent owned candidate binaries. Staging 0.788592 MB,
+comparison 16.734975 MB and later runtime cleanup 0.019308 MB are disjoint
+mobile RX+TX intervals with background, totaling 17.542875 MB. Nested direct
+reference intervals are not added. Inter-window and later verification
+traffic are excluded; this is not a whole-goal total.
+
+**Operator clarification, 2026-10-06:** TCP download is an independent
+optimization metric. Section 11 now lists download, upload and concurrent
+up/down separately. Future candidate comparisons must report receiving-side
+results for all three, with immediate references in the measured direction,
+voice latency/loss/gaps and a bounded byte budget. An upload result cannot
+establish download improvement. No source is promoted or tagged; work on the
+improvement objective continues, and the full section 4/profile gates remain.
+
+Evidence: `qualified-short-push-branch-*`, `complete-batch-short-push-*`,
+`qualified-short-push-final-*` and `qualified-short-push-field-20261006/`
+under `/srv/nvme/tmp/wanbond-adaptive-evidence`; frozen source is branch
+`adaptive-qualified-short-push`. Its pre-field qualification manifest remains
+immutable; the separate `field-result.json` records activation and rejection.
