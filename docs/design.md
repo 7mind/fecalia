@@ -2945,3 +2945,15 @@ policy acceptance. Both C8 services and network state are restored and
 verified; mobile traffic is 27.154 MB through cleanup plus 0.874 MB staging.
 The plan's conservative-cohort field record retains sources, uncertainty,
 failed diagnostics and the next bounded-push experiment. Main policy remains C8.
+
+The subsequent held-service flight-window experiment uses observed held
+service to size the flight allowance during a temporary rate push. It clears
+the slow steady-path queue gate, but still has 20 default bond failures,
+including new jitter/service regressions. Its incomplete C8/candidate field
+comparison improves early upload bounds and high-rate voice tails, while
+low-rate tails worsen. Candidate local voice residence p99 is bounded by
+1 ms; this does not establish the cause of network delay. The traffic guard
+holds the return-baseline phase, and no repeatability or promotion is claimed.
+Both C8 services and network state are independently verified restored.
+The plan's held-service record retains the exact source, failed diagnostics,
+measurement interruption and mobile cost. Main policy remains C8.

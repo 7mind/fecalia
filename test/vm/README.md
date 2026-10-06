@@ -3437,3 +3437,21 @@ policy acceptance. Both C8 services and network state are restored and
 verified; mobile traffic is 27.154 MB through cleanup plus 0.874 MB staging.
 The plan's conservative-cohort field record retains sources, uncertainty,
 failed diagnostics and the next bounded-push experiment. Main policy remains C8.
+
+### Held-service flight-window field trial — 2026-10-06
+
+Source `4406761` sizes the flight window from held service during a push.
+The deterministic slow steady-path outcome passes three times; fast queueing
+and new jitter/service failures remain. Full non-privileged checks fail on
+20 bond tests, with all other components passing; native Nix/ARM builds pass.
+The capped field C8/candidate phases improve early upload bounds from
+0.153–0.175 to 0.230–0.298 Mbit/s, while loaded voice p99 rises from
+66.22/86.71 to 141.10/136.81 ms. All 2750 echoes arrive on each host.
+The return baseline is held by the traffic guard, so the comparison remains
+incomplete; high-rate subperiod improvements are not acceptance evidence.
+Both C8 services and network state are independently verified restored and
+owned artifacts cleaned. Mobile RX+TX is 22.168 MB through cleanup plus
+0.779 MB staging, including background. Evidence and limitations are in the
+plan's held-service record and `observed-service-window-field-20261006` under
+`/srv/nvme/tmp/wanbond-adaptive-evidence`. No VM profile gate is claimed from
+these field or deterministic measurements. Main policy remains C8.

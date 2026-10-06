@@ -3119,9 +3119,102 @@ independently verified after restoration and owned cleanup. Mobile RX+TX is
 staging; totals include background traffic, not SIM billing. Exact owned
 reference directories are archived and byte-verified before removal.
 
-**Intended next isolation:** derive push gain from a bounded queue budget
+**Intended next isolation at this checkpoint:** derive push gain from a bounded queue budget
 and the measured feedback round, removing the fixed twofold gain and its
 loss-backoff rule; material loss still lowers pacing through the link model.
 Reproduce standing queue and discovery outcomes before choosing a field
 candidate. All stage/profile gates and repeatability remain required;
 installed `b444920` remains the accepted baseline.
+
+### Held-service flight window: incomplete field comparison — 2026-10-06, 02:05 IST
+
+**Observed source:** unaccepted `440676150a0acdabafe6f108fc8dd1b67311869e`,
+code `b66aae1`, ARM SHA-256
+`a82f5d57dc791c598e968b0a71b8a8c59ce479880f5b4dc65827481e7c6af93b`.
+The preceding comment-only test commit retains the steady-path utilization
+and queue limits. The production change sizes the flight window from held
+service rather than the temporary commanded push rate; it adds no rule,
+constant or wire field. The slow steady-path result improves from 91.7%
+utilization/69.1 ms queue p90 to 95.8%/15.8 ms, three times. The fast result
+is 94.5%/29.8 ms and still fails the unchanged 20 ms queue gate.
+
+The full non-privileged gate fails on 20 bond tests. Relative to the preceding
+sampler, five failures resolve and five new service/jitter failures appear;
+equal counts do not establish non-regression. Frontend's 44 tests, build/vet,
+patched engine, formatting and other Go packages pass. Native Nix and ARM
+builds pass. No model, lab or field acceptance is claimed.
+
+The capped field runner completes C8 and candidate phases on unchanged boots,
+with 500/500 voice preflight echoes on each host and immediate direct uplink
+references before each tunnel workload. Shaping affects only wanbond UDP on
+5G: 400 kbit/s rising to 2 Mbit/s after 15 seconds during a 30-second upload
+offered at 3 Mbit/s. Each network mutation has its removal timer; binary
+restoration is armed before activation. No WAN blackout occurs.
+
+| Observed metric | C8 before | Candidate |
+|---|---:|---:|
+| Early receiver goodput bounds, Mbit/s | 0.153–0.175 | 0.230–0.298 |
+| Late receiver goodput bounds, Mbit/s | 1.116–1.597 | 1.094–1.701 |
+| Loaded voice p99, edge/hub ms | 66.22/86.71 | 141.10/136.81 |
+| All voice echoes received, each host | 2750/2750 | 2750/2750 |
+| Low-rate shaper backlog service time median/p99, ms | 22.02/131.70 | 63.78/156.50 |
+| High-rate shaper backlog service time median/p99, ms | 6.06/81.67 | 1.47/55.15 |
+| Guarded low/high-rate edge voice p99, ms | 45.43/87.81 | 165.19/42.65 |
+
+Early goodput bounds exceed the first baseline's; late bounds overlap.
+Low-rate voice tails worsen, while high-rate tails improve. Backlog/rate is
+a service-time proxy, not a measured packet delay. This correlation does not
+prove the cause of the voice tail. Candidate local real-time residence p99 is
+bounded by 1 ms on both hosts, with zero interactive queue drops. Guarded
+expired-original deltas are 3/0 edge/hub versus 0/0 before; expiry alone
+does not establish non-delivery. Existing repair counters include optional
+copies, so their increases cannot be attributed to timeout repair alone.
+
+**Measurement limitation:** after the first baseline, the runner fails because
+the source-matched model result file is not yet available; no candidate has
+activated at that point. Independent restoration is verified before resuming
+only the remaining phases, retaining the initial mobile counters. After the
+candidate completes and C8 is restored, the conservative traffic guard holds
+the final baseline at 21.57 MB consumed. The comparison stays incomplete;
+there is no return-baseline bracket or three-run field proof. Promotion is
+rejected, not inferred from the improved subperiods.
+
+Immediate direct references are Starlink 0.493/0.491 and 5G 3.040/2.834 Mbit/s
+at 1/3 Mbit/s offers. Their first-to-last receiver intervals give service
+lower bounds, not ceilings. Idle ICMP p99 is Starlink 74.6/48.0 and 5G
+134.0/88.5 ms; transmitted/received counts are 101/100 for both baseline
+links, 101/100 and 101/101 for the candidate. **Inference:** adjacent direct
+measurements cannot establish equal loaded RF conditions throughout upload.
+
+Both deployed C8 hashes, original `raspi5l` exit policy, empty runtime overrides
+and timers, clean qdiscs/firewall and removal of the exact inactive candidate
+are independently verified. Two owned reference directories are archived and
+byte-verified before removal. Mobile RX+TX is 21.570 MB through comparison,
+22.168 MB through cleanup (nested), plus 0.779 MB staging (separate), including
+background traffic. Evidence is `observed-service-window-field-20261006`,
+`observed-service-window-{bond-gate,full-nonprivileged-gate,nix-build,arm-build}.txt`
+and `observed-service-window-outcomes.txt` under
+`/srv/nvme/tmp/wanbond-adaptive-evidence`.
+
+Further model diagnostics are retained rather than promoted. Removing the
+fixed wait after ACK-proven drainage raises cold discovery from 5.17 to
+52.18 Mbit/s (still below 75 required), while recovered capacity reaches
+98.36 Mbit/s. It leaves a 29.04 ms fast standing queue and fails radio-jitter
+and voice-isolation checks, three times. Substituting measured feedback delay
+minus queue delay in the flight window collapses fast utilization to 1.1%
+and slow utilization to 85.1%, three times. Evidence is
+`ack-drained-probe-{outcomes.txt,rejection.json,rejected.patch}` and
+`physical-feedback-window-{outcomes.txt,rejection.json,rejected.patch}`.
+
+**Observed isolation finding:** fixing the minima leaves the fast standing
+queue unchanged at 29.835 ms/94.5% utilization, three times; slow utilization
+instead falls to 85.1%. Floor aging is therefore not necessary for this
+reproduction. This does not disprove section 6's separate risk on other inputs
+or justify adding a periodic drain. Evidence is
+`fixed-floor-isolation-{outcomes.txt,finding.json,rejected.patch}`.
+
+**Intended next isolation:** compare the flight window's minimum 25 ms ACK
+allowance with measured packet-count-triggered feedback cadence, and distinguish
+capacity/control effects from copy allocation before another bounded field trial. Preserve service,
+voice and queue counterexamples together. Installed `b444920` remains the
+accepted baseline; the improvement goal remains active.

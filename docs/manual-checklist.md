@@ -564,3 +564,12 @@ contemporaneous direct references and metering with each repeat; see
   owned cleanup. Mobile RX+TX: 27.154 MB through cleanup plus 0.874 MB staging.
   Evidence: `capacity-cohort-window-field-20261006` under
   `/srv/nvme/tmp/wanbond-adaptive-evidence`; full detail in the adaptive-policy plan.
+
+- 2026-10-06: held-service flight-window source `4406761` completed capped
+  C8/candidate upload; the budget guard held the final baseline. Early upload
+  improved, loaded voice tails worsened and late bounds overlapped. No
+  promotion or repeatability claim. Both C8 hashes, exit, timers, qdiscs,
+  firewall and owned-artifact cleanup were independently verified. Mobile
+  RX+TX: 22.168 MB through cleanup plus 0.779 MB separate staging. Evidence:
+  `observed-service-window-field-20261006` under
+  `/srv/nvme/tmp/wanbond-adaptive-evidence`; limitations remain in the plan.
