@@ -1,6 +1,7 @@
 package bond
 
 import (
+	"strconv"
 	"testing"
 	"time"
 )
@@ -8,6 +9,13 @@ import (
 // Correctness-Subcutaneous-Group: a full byte prefix must retain its receipt
 // meaning after its highest physical attempt has left the sender ledger.
 func TestLateCompletePrefixDoesNotRepeatReceivedDatagrams(t *testing.T) {
+	for _, bytes := range []int{32, 160, 384, 1200} {
+		t.Run(strconv.Itoa(bytes), func(t *testing.T) { lateCompletePrefixDoesNotRepeatReceivedDatagrams(t, bytes) })
+	}
+}
+
+func lateCompletePrefixDoesNotRepeatReceivedDatagrams(t *testing.T, bytes int) {
+	t.Helper()
 	start := time.Unix(100, 0)
 	a, b := New(Epoch{Boot: 1, Generation: 1}), New(Epoch{Boot: 2, Generation: 1})
 	a.SetRemote(b.Epoch(), true)
@@ -35,8 +43,8 @@ func TestLateCompletePrefixDoesNotRepeatReceivedDatagrams(t *testing.T) {
 	}
 	const count = 300
 	for number := 0; number < count; number++ {
-		payload := make([]byte, 160)
-		deliver(a.transmit(&packet{payload: payload, created: start.Add(201 * time.Millisecond), class: classRealtime, interactive: true}, path, start.Add(201*time.Millisecond)), start.Add(211*time.Millisecond))
+		payload := make([]byte, bytes)
+		deliver(a.transmit(&packet{payload: payload, created: start.Add(201 * time.Millisecond), class: classify(bytes, PacketMetadata{}), interactive: classify(bytes, PacketMetadata{}) != classBulk}, path, start.Add(201*time.Millisecond)), start.Add(211*time.Millisecond))
 	}
 	// Lose the ACK reporting the older receipt range.
 	acks := func(now time.Time) []Transmission {
