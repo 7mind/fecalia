@@ -3655,3 +3655,77 @@ field-first amendment; no promotion is intended from selected model gains.
 The forty-five-MB comparison ceiling, source/hash checks and restorations
 remain. Preparation is `probe-isolation-field-20261006/`; staging is running,
 no result or acceptance is claimed. Installed C8 remains accepted.
+
+
+### Probe isolation: completed fixed-rate field tradeoff — 2026-10-06, 04:46 IST
+
+**Observed:** the timer-backed `7a7092c` C8/candidate/C8 trial completes with
+fixed 2 Mbit/s wanbond 5G shaping and capped 3 Mbit/s offered upload. The
+fifteen-second event only verifies the unchanged shaping rate. No rate-rise
+or adaptation deadline is tested. Receiver-report bounds and client-local
+loaded echo measurements are:
+
+| Metric | C8 before | `7a7092c` | C8 after |
+|---|---:|---:|---:|
+| Upload bounds, seconds 5–15, Mbit/s | 1.186–1.440 | 1.071–1.212 | 1.213–1.486 |
+| Upload bounds, seconds 25–30, Mbit/s | 1.060–1.588 | 1.092–1.665 | 1.238–1.651 |
+| Loaded voice p99 edge/hub, ms | 45.45/47.08 | 50.18/48.31 | 82.42/79.70 |
+| Whole voice echoes per host | 2750/2750 | 2750/2750 | 2750/2750 |
+| TBF backlog/rate p99 first/second window, ms | 91.48/104.80 | 52.03/103.14 | 109.47/58.08 |
+| TBF drops first/second window | 0/8 | 0/2 | 13/0 |
+
+The candidate's late throughput bounds overlap; early throughput is below
+return-baseline bounds. Loaded tails exceed the preceding baseline's,
+although lower than the return baseline's. **Inference:** this comparison
+establishes no all-metric improvement and does not justify promotion.
+TBF backlog/rate is a service-time proxy, not measured packet wait; TCP
+bounds include report-boundary uncertainty. This is one comparison, not
+three-run profile gates or causal isolation from variable RF conditions.
+
+Adjacent direct uploads are Starlink 0.516/0.518/0.506 Mbit/s under a
+1 Mbit/s offer, and 5G 2.954/2.969/2.883 under a 3 Mbit/s offer on the
+OCI route. Idle concentrator-route ICMP p99 is Starlink 45.0/86.7/34.2 ms
+and 5G 113/99/49.7 ms. Replies/transmitted are Starlink
+100/101, 100/102, 100/101 and 5G 100/102, 100/101, 100/101.
+These are bounded observations, not maximum capacities or loaded UDP
+references. Late first bulk submissions on Starlink/5G are
+13/597 → 0/658 → 8/636; real-time originals are
+456/25 → 479/1 → 481/0. Submissions exclude copies/repairs and do not
+prove delivery. Candidate own real-time residence p99 is bounded by 1 ms
+in each direction, with no real-time or small-TCP queue drops. Guarded
+expired counters edge/hub are 16/0 → 6/0 → 20/6; expiry is not loss,
+and repair/copy counts remain conflated.
+
+Both boots are unchanged, all cleanup-error lists empty, and independent
+checks before/after owned cleanup verify installed C8 source/hash, original
+`raspi5l` policy, no overrides, timers, shaping or temporary firewall rules.
+Verified inactive candidate files and only this comparison's reference
+directories are removed after byte-verified archiving. Edge archive is
+`/var/tmp/wanbond-probe-isolation-upload-reference-archive-20261006.tar.gz`,
+SHA-256 `90ba7324f2320f063400e91c358707fcb4daf6bfe51c3fa8ab0000b3371e7130`.
+Mobile RX+TX with background is 39.185 MB during comparison, 39.312 through
+cleanup (overlapping), plus 0.780 separate staging: 40.092 MB over disjoint
+measured intervals. Evidence is `probe-isolation-field-20261006/` under the
+existing root. Its new model loss-case failure and full seventeen failures
+remain; the source is not promoted.
+
+**Next source, observed:** removal of the per-size forward-delay mean and
+its mean-minus-floor congestion allowance (`7eccafb`, source `b564d74`,
+ARM SHA-256 `4205086a773e2eb26882627b4936dc49e4905e5a158872cf56ca6195fc18a9ef`)
+resolves the repeated loss-case outcome: 0/5500 after 150 ms, longest 92 ms,
+versus 7/5500 and 209 ms. Eight selected outcomes pass three times; four
+selected failures remain. The full non-privileged source gate has sixteen
+bond failures, resolving loss-case voice with no new failure. Other gate
+components and native Nix/ARM builds pass. Code removes the estimator and
+its rule without new constants, copies or wire fields; `control.go` retains
+eight constants versus C8's thirty-one. Existing tests do not inspect the
+removed field. Its cold-discovery trace shows nearly empty physical queues
+and 41 pushes by 4.75 seconds while capacity remains about 443 kB/s.
+**Inference:** probe/sampling cadence merits investigation; this trace does
+not establish a field cause or justify changing an estimator untested.
+
+The same bounded fixed-rate field method is now staging source `b564d74`,
+with the sixteen failures retained and no result yet. Logs and patches are
+`queue-offset-removal-*`; preparation is
+`queue-offset-removal-field-20261006/`. The goal remains active; installed
+C8 remains accepted and no experimental release is tagged.

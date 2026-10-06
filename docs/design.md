@@ -3043,3 +3043,16 @@ rejected. A bounded fixed-2-Mbit/s B/C/B field comparison is being staged
 to isolate useful-service voice protection; it is not a rate-rise gate or
 acceptance. Exact sources, traces, research provenance and limitations remain
 in the adaptive-policy plan.
+
+
+The completed `7a7092c` fixed-2-Mbit/s field comparison establishes no
+all-metric gain: loaded voice p99 is 45.45/47.08 → 50.18/48.31 →
+82.42/79.70 ms edge/hub, with all echoes received; late upload bounds overlap
+and early service is below the return baseline's. Both installed C8 builds
+and cleanup are independently verified. Disjoint measured mobile intervals
+total 40.092 MB with background. The forward-mean-allowance removal source
+`b564d74` restores the lossy-voice model deadline in three repetitions,
+retains sixteen full bond failures with no new failure, and passes other
+gate components and native/ARM builds. It is staging under the same bounded
+field method; no effect or acceptance is claimed. Full references, report
+bounds, traces and limits are retained in the adaptive-policy plan.
