@@ -4593,3 +4593,112 @@ paths before attributing the observed voice tail, then correct the reproduced
 TCP/delay failure without losing genuine congestion recovery. The field remains
 the performance reference. Installed `b444920` / `v0.0.3` remains the accepted
 baseline, stage/profile gates are incomplete, and the goal remains active.
+
+
+## Frame-timestamp field repeat and paced TCP regression — 2026-10-06
+
+**Observed:** the exact `2099735` ARM binary from the previous field round is
+compared again with installed `b444920` / `v0.0.3`, interleaved before/after.
+The daemon source/hash is unchanged from that experiment. Each phase has a
+500/500 echo preflight per host, immediate direct uplink references, and the
+same ten-second 3 Mbit/s offered TCP upload, wanbond-only 2 Mbit/s 5G cap and
+35-second bidirectional voice workload. Restoration timers precede all changes.
+No WAN blackout, wire change or permanent deployment occurs.
+
+| Observed metric | C8 before | `2099735` | C8 after |
+|---|---:|---:|---:|
+| Whole-phase edge voice p50, ms | 37.18 | 37.27 | 29.89 |
+| Whole-phase edge voice p99, ms | 57.22 | 60.79 | 91.60 |
+| Whole-phase hub voice p50, ms | 38.29 | 35.01 | 31.01 |
+| Whole-phase hub voice p99, ms | 59.89 | 54.96 | 111.06 |
+| Upload-active edge/hub p99, ms | 57.78 / 56.54 | 65.93 / 58.69 | 44.33 / 109.94 |
+| Late upload receiver bounds, Mbit/s | 1.12320–1.70688 | 0.93504–1.43808 | 1.06368–1.59744 |
+| Whole-phase edge/hub echoes | 1750 / 1750 | 1750 / 1750 | 1750 / 1749 |
+| Largest edge/hub receive gap, ms | 51.93 / 72.96 | 58.30 / 52.96 | 114.67 / 154.33 |
+| Direct 5G upload, 3 Mbit/s offer | 2.066 | 2.934 | 2.917 |
+| Direct Starlink upload, 1 Mbit/s offer | 0.513 | 0.506 | 0.451 |
+
+**Observed limits:** the previous 134/108 ms experimental p99 does not repeat.
+Both the tunnel baseline and contemporaneous direct references vary. The
+trailing baseline loses one hub echo and exceeds the 150 ms receive-gap gate.
+The experiment has some better voice results against that trailing round,
+but no consistent latency/bulk improvement against both baselines. Receiver
+bounds use whole reports certainly within/possibly overlapping seconds 5–10;
+no within-report interpolation proves a deadline. Direct references measure
+capped offered service, not maximum capacity. No RF stationarity or causal
+attribution to policy alone is claimed. Failed source gates remain unchanged.
+
+**Built and observed instrumentation:** a temporary Go observer authenticates
+CONTROL data with each device's local configured peer key and records outer
+epoch/sequence/attempt IDs, lane, size, direction and kernel timestamps. It
+exports neither keys nor packet payloads and does not alter the daemon.
+The initial IPv4-only socket captured inbound replies but no outbound requests;
+that failed smoke check is retained. Linux's transmit hook serves `ETH_P_ALL`
+listeners, as confirmed from upstream Linux `net/core/dev.c`. The corrected
+observer captures both directions; parser/tampering tests, vet and ARM build
+pass. Its exact ARM SHA-256 is
+`2582813751dcee0666b3e1376888fd846c1fce148d359f81aa337d4f6e32e5aa`.
+All nine 45-second phase/interface captures report zero decode failures,
+truncations and kernel drops. Timestamps observe kernel packet hooks, not
+physical on-wire emission or inner/application acceptance. Copy gaps compare
+one host's timestamps; no cross-host one-way clock assumption is made.
+
+For 224-byte encrypted interactive frames in local upload-active windows,
+the edge's copy transmit-gap p99 is 65.55 / 45.58 / 60.90 ms. These frames
+match the controlled voice size, but other equal-sized traffic is not excluded.
+The candidate's lower copy gap does not establish lower application RTT.
+Each lane contributes its first attempt when comparing copies; same-lane
+retries do not substitute for a second path. The observer sources, reproduction,
+checks and binary identity remain under the persistent adaptive evidence root;
+the temporary project source directory is removed after byte-verified archiving.
+
+Both deployed source/hashes, exit, empty overrides, original network state and
+absence of owned inactive binaries/runtime references are independently verified
+after cleanup. Three edge references are byte-verified into
+`/var/tmp/wanbond-post-drain-frames-upload-reference-archive-20261006.tar.gz`
+then removed. A transient SSH `No route to host` occurs after the initial
+independent restoration check; final artifact cleanup is retried only after
+access returns, with unchanged edge boot ID. Its cause is unknown. Measured
+mobile RX+TX with background is 1.060978 MB staging plus the nested
+33.770681 MB trial-through-cleanup interval: **34.831659 MB**. The intermediate
+27.681100 MB trial interval is not added again. Separate non-overlapping
+observer smoke checks use 0.525268 and 0.534301 MB; combined measured intervals
+are **35.891228 MB**, excluding intervening gaps and later read-only SSH.
+
+**Observed regression protection:** main commits the settled TCP
+propagation/loss outcome in `94dc9fd`. Main and accepted `b444920` pass three
+times with identical test harnesses; `2099735` fails both cases three times.
+The original `f75668e` verdict for this new TCP fixture remains unknown.
+Diagnostic loss-free traces record zero physical drops while pacing cuts
+repeat against a 15 ms propagation-level difference. Samples between 20–22 s
+show no active delay measurement. **Inferred from code:** requiring tunnel
+backlog for that measurement can exclude a paced TCP sender even while it
+receives repeated delay cuts. Earlier physical loss is not its sole cause.
+
+**Built, unmerged experiment:** `c7ecab6` (code `b270409`, preceding test
+`593faa4`) replaces periodic backlog-gated delay measurement with bounded
+measurement on a fresh delay signal. Material loss still acts immediately;
+subsequent delay cuts remain possible. A reproduced queued-receipt expansion
+of the flight window (5700 to 8763 bytes) is corrected by excluding ordinary
+sender-idle qualification during measurement; only an explicitly qualified
+post-drain receipt overrides it. Direct physical-prefix, timing, material-loss,
+queued-receipt and settled TCP outcomes pass three times. Selected genuine
+capacity drops, settled propagation service and voice constraints pass;
+noisy voice p99 is 102/103 ms and bulk 800760/844200 B/s. All 5500 lossy voice
+datagrams arrive within 150 ms, maximum 115 ms. Discovery (3.23/5.40 Mbit/s)
+and jittery startup still fail. Full checks/builds are running; this new source
+has no field result. No estimator, control constant, synthetic traffic or wire
+field is added; `control.go` has eight constants against main's 31.
+
+Evidence is `post-drain-frames-field-20261006/`,
+`field-frame-{smoke,smoke-all,observer-source}-20261006/`,
+`prior-loss-propagation-service-{b444,main-committable}-repeat3.txt`,
+`prior-loss-propagation-{service-current-trace,control-trace-v2}.txt`, and
+`reactive-measurement-{source-reproductions,qualified-reproductions,
+qualified-selected,qualified-capacity-drop,final-*}.*` under
+`/srv/nvme/tmp/wanbond-adaptive-evidence`.
+
+**Intended:** preserve the new qualifications, finish source checks and test
+in the field, while resolving discovery and noisy startup. The installed
+`b444920` / `v0.0.3` remains the accepted baseline. No new tag, completed stage,
+three-run lab/profile acceptance or all-metric improvement is claimed.

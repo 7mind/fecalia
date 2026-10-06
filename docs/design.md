@@ -3190,3 +3190,21 @@ are independently verified. Disjoint mobile RX+TX including background is
 unresolved packet-placement/fallback hypothesis are retained in the
 [field record](drafts/20261002-1730-adaptive-policy-plan.md#post-drain-current-delay-field-comparison--2026-10-06-10131026-utc). The accepted baseline remains `b444920` / `v0.0.3`;
 no new stage, repeated field acceptance or release is claimed.
+
+
+A second timestamp-instrumented field round of exact source `2099735` does
+not repeat its earlier 134/108 ms voice tail. Baselines and direct references
+vary, including a trailing baseline receive-gap failure; upload bounds still
+overlap and no consistent all-metric win is established. The temporary
+observer authenticates outer metadata locally and records no keys/payloads;
+all captures have zero kernel drops. Within-host copy timing is distinct from
+application RTT and physical on-wire emission. Both deployed identities,
+network state and owned cleanup are independently verified. Disjoint measured
+mobile intervals total 35.891 MB, including observer validation and background.
+The new settled TCP propagation/loss outcome passes accepted `b444920` and
+main three times and fails `2099735`; this is a candidate regression, with no
+original `f75668e` verdict. An isolated reactive-delay correction retains
+selected drain/congestion/voice outcomes while discovery/startup fail; full
+checks/builds are pending and it has no field result. Sources, timing limits,
+cleanup, metering and continuing work are in the
+[record](drafts/20261002-1730-adaptive-policy-plan.md#frame-timestamp-field-repeat-and-paced-tcp-regression--2026-10-06). No release or lab/profile completion is claimed.
