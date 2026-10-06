@@ -3386,7 +3386,7 @@ A separate idle-only reproduction cuts prototype pacing from 125,000 to
 delay-driven capacity-cut evidence with timed application receipt passes that
 unchanged outcome and twelve selected queue/service/voice outcomes three times.
 It is isolated on `adaptive-application-delay-control`, code `e4f1adc`, with
-separate documentation; broader checks are running and field gain is unknown.
+separate documentation; the full gate has 18 bond failures versus 19 before, with no new failing names, and native Nix passes. Field gain is unknown.
 This change was absent from the field source. No policy is promoted.
 
 **Intended next work:** preserve that idle outcome, reproduce the effect of ACK
@@ -3398,3 +3398,43 @@ allowances without confusing radio/ACK variation with standing self-queue;
 it is a research direction, not an implemented wanbond estimator or observed
 field gain. A revised source still needs paired field measurements against
 installed `b444920` / `v0.0.3`; local host elapsed-time metrics remain diagnostic.
+
+
+### Physical batching finding and next isolated source — 2026-10-06
+
+**Observed:** unchanged public `TestPhysicalBatchingKeepsBulkAndVoiceProductive`
+passes production `f75668e` three times at 25/50/100 ms batching: bulk
+5.412/5.403/5.227 MB/s, voice 750/750, one-way p99 70/90/140 ms. Its
+production files and existing mixed-load harness are verified unchanged; only
+the added test is supplied by overlay. This is a finding, not a reproduced
+original-policy defect or proof about the distinct section 4 scenarios.
+Evidence is `aggregation-service-original-red-or-finding.txt`. The prototype
+fails the 50 ms diagnostic voice bound and delivers only 2.913 MB/s at
+100 ms, versus at least 4.688 MB/s. Its test is separately committed in
+`ea69d6b`; the additive 20 ms diagnostic allowance does not amend section 4.
+
+Measured ACK-volume allowance alone restores batch bulk but worsens voice and
+steady queue, including when expected service uses bandwidth correctly. Two
+initial diagnostics incorrectly used the held target; they cannot establish
+a limitation of the BBR algorithm. Liveness and duplicate class-cap changes
+leave batching failed, while uncapping ACK spacing costs slow-lane voice.
+These are rejected with source/logs retained, without field activation.
+
+The combined source `d09b0b7` (code `93e46a7`) uses physically matched, aged
+excess ACK volume instead of spacing-based flight allowance, and shorter
+demand pushes based on the existing excess budget. Obsolete spacing-age state
+is removed with the replaced rule; physical drain remains required. Qualified
+increased service replaces the quiet wait. Wire, synthetic-traffic policy and
+copy policy are unchanged, and control still has eight constants versus
+C8's 31. It is an isolated experiment, not the installed policy or full BBR.
+
+Three diagnostic repetitions pass all batching cases with 5.552/5.304/5.048
+MB/s and 55/80/120 ms voice p99. Steady utilization is 99.2%/97.4%, with
+9.181/9.528 ms queue p90. Idle-history and queued-receipt guards pass on the
+actual source. Discovery, busy-radio service and voice isolation remain
+failed; complete exact-source tests are still running. Native Nix and ARM
+builds pass. No field improvement is claimed. The next bounded B/C/B field
+comparison will retain complete gate failures, immediate direct references,
+voice first, caps, timers and mobile accounting. Evidence is
+`qualified-aggregation-{short-push-outcomes,source-selected,nix-build,arm-build}.txt`
+under the adaptive evidence root. Installed `b444920` remains the baseline.

@@ -3494,3 +3494,16 @@ total 27.333 MB with background. Evidence is
 `fresh-ack-cadence-field-20261006/` and `ack-cadence-age-*.txt` under the
 evidence root; full detail is in the adaptive-policy plan. No three-run
 profile gate, completed stage or across-metric improvement is inferred.
+
+
+### Physical batching finding — 2026-10-06
+
+The unchanged new batching test passes original production `f75668e` three
+times at 25/50/100 ms batching (5.412/5.403/5.227 MB/s, 750/750 voice,
+70/90/140 ms one-way p99). Production and the existing model harness are
+unchanged; the new test is supplied by overlay. Prototype 100 ms bulk is
+2.913 MB/s, below 75% of modeled wire service. The combined ACK-volume/short
+push source `d09b0b7` restores 5.048 MB/s at 120 ms and improves steady
+queue/utilization, but discovery, radio service and isolation still fail.
+No profile, stage or field gate is inferred. Exact logs and rejected source
+diagnostics remain under the evidence root and in the adaptive-policy plan.

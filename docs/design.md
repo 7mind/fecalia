@@ -2985,3 +2985,17 @@ The plan records raw evidence, limits and 27.333 MB disjoint measured mobile
 traffic including background. An application-receipt delay-control correction
 remains isolated and has no field result. ACK aggregation is a research
 direction, not part of the installed transport.
+
+
+### Physical batching investigation — 2026-10-06
+
+The separately committed physical-batching outcome passes original production
+`f75668e` but fails the experimental replacement. Its result is a prototype
+regression, not evidence of an original-policy defect. Isolated `d09b0b7`
+replaces spacing-based flight allowance with physically matched, aged excess
+ACK volume and removes the forced full-round push minimum. It retains
+physical drain, bounded real-traffic pushes, wire authentication and copy
+policy. Batching and steady-queue model outcomes improve; discovery, radio
+service and voice isolation remain failed. Native Nix and ARM builds pass,
+complete checks and field comparison are pending. Main remains C8; the plan
+retains sources, failed alternatives and the original-baseline finding.
