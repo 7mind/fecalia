@@ -70,6 +70,7 @@ func TestOldArrivalCannotAcknowledgeANewLostDatagram(t *testing.T) {
 		for _, tx := range poll(a, now) {
 			for _, got := range deliver(tx, now) {
 				if len(got.Payload) == 1 && got.Payload[0] == missing {
+					t.Logf("repaired after %s", now.Sub(start.Add(41*time.Millisecond)))
 					return
 				}
 			}

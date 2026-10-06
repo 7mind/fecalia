@@ -301,7 +301,6 @@ type lane struct {
 	seq                uint64
 	ackRevision        uint64
 	receivedHigh       uint64 // the highest lane sequence the peer reported
-	arrived            arrived
 	stall              stall
 	ackReceipts        receiptWindow
 	ackedBytes         uint64
@@ -452,7 +451,7 @@ func (t *Transport) SetRemote(epoch Epoch, adopted bool) bool {
 		p.feedbackSent = rateMeter{}
 		p.losses, p.lossMark, p.lossMarked = lossLedger{}, 0, false
 		p.reordering, p.newestConfirmed = peak{bucket: reorderMemory}, time.Time{}
-		p.ackRevision, p.receivedHigh, p.arrived = 0, 0, arrived{}
+		p.ackRevision, p.receivedHigh = 0, 0
 		p.model, p.stall = linkModel{}, stall{}
 		p.ackReceipts = receiptWindow{}
 		p.ackedBytes, p.ackedElapsed = 0, 0
@@ -589,39 +588,24 @@ func (p *lane) rto() time.Duration {
 	return max(minimumRTO, p.rtt+4*variation+p.peerACKInterval(), p.feedbackRTT+4*p.feedbackRTTVariation)
 }
 
-// arrived is the last acknowledgement's account of the lane: the sequence it
-// acknowledged, and the bytes sent up to it that the peer had not received.
-type arrived struct {
-	high    uint64
-	missing int64
-	known   bool
-}
-
 // confirmArrived takes the peer's count of received bytes as a cumulative
 // acknowledgement. Every acknowledgement says how many bytes the lane has
 // delivered, and the sender knows how many it sent up to the acknowledged
-// sequence. When no more are missing than at the last acknowledgement, every
-// datagram sent between the two arrived, whatever the bitmaps cover.
+// sequence. Equal totals prove that the complete prefix arrived. An unchanged
+// positive deficit does not: an old arrival can balance a new loss.
 //
 // The bitmaps report each receipt once: 64 datagrams by lane, 256 by
 // receipt. When datagrams arrive a hundred or more at a time, the datagrams
 // that only a lost acknowledgement reported were never confirmed, and each
 // was sent again though it had arrived
-// (`TestLostAcknowledgementDoesNotCauseRepairs`). A datagram that arrives late
-// lowers the count of missing bytes; then the count proves nothing about the
-// others, and the bitmaps decide as before.
+// (`TestLostAcknowledgementDoesNotCauseRepairs`). A positive deficit leaves
+// receipt to the bitmaps, irrespective of its change since the previous ACK.
 func (t *Transport) confirmArrived(p *lane, a acknowledgement, through uint64) {
-	missing := int64(through) - int64(a.bytes)
-	last := p.arrived
-	if a.high <= last.high && last.known {
-		return
-	}
-	p.arrived = arrived{a.high, missing, true}
-	if !last.known || missing != last.missing {
+	if through != a.bytes {
 		return
 	}
 	for seq, sent := range p.attempts {
-		if seq <= last.high || seq > a.high {
+		if seq > a.high {
 			continue
 		}
 		if !sent.released {
