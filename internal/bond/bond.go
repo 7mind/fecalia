@@ -301,6 +301,7 @@ type lane struct {
 	seq                uint64
 	ackRevision        uint64
 	receivedHigh       uint64 // the highest lane sequence the peer reported
+	receivedThrough    uint64 // sent wire bytes through receivedHigh, zero when unknown
 	stall              stall
 	ackReceipts        receiptWindow
 	ackedBytes         uint64
@@ -451,7 +452,7 @@ func (t *Transport) SetRemote(epoch Epoch, adopted bool) bool {
 		p.feedbackSent = rateMeter{}
 		p.losses, p.lossMark, p.lossMarked = lossLedger{}, 0, false
 		p.reordering, p.newestConfirmed = peak{bucket: reorderMemory}, time.Time{}
-		p.ackRevision, p.receivedHigh = 0, 0
+		p.ackRevision, p.receivedHigh, p.receivedThrough = 0, 0, 0
 		p.model, p.stall = linkModel{}, stall{}
 		p.ackReceipts = receiptWindow{}
 		p.ackedBytes, p.ackedElapsed = 0, 0
@@ -1098,6 +1099,9 @@ func (t *Transport) receive(path PathID, f frame.Control, now time.Time) ([]Deli
 func (t *Transport) ack(p *lane, a acknowledgement, now time.Time, fresh bool) {
 	silence := p.model.progressAge(now)
 	progressed := fresh && (a.high > p.receivedHigh || a.bytes > p.ackedBytes)
+	if a.high > p.receivedHigh {
+		p.receivedThrough = 0
+	}
 	p.receivedHigh = max(p.receivedHigh, a.high)
 	if progressed {
 		p.model.progressAt = now
@@ -1207,8 +1211,13 @@ func (t *Transport) ack(p *lane, a acknowledgement, now time.Time, fresh bool) {
 			delete(p.attempts, seq)
 		}
 	}
-	if fresh && counted {
-		t.confirmArrived(p, a, through)
+	if fresh {
+		if counted {
+			p.receivedThrough = through
+		}
+		if p.receivedThrough > 0 && a.high == p.receivedHigh {
+			t.confirmArrived(p, a, p.receivedThrough)
+		}
 	}
 	for _, path := range t.paths {
 		var feedbackSample time.Duration
