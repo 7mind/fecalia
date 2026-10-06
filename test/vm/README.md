@@ -3822,3 +3822,13 @@ unshaped field upload is 2.86 Mbit/s between 3.63/3.19 C8 baselines, without
 an across-metric gain. This is a rejected experiment, not completed lab or
 profile qualification. The [source-matched record](../../docs/drafts/20261002-1730-adaptive-policy-plan.md#rtt-duration-discovery-trial-and-unshaped-field-comparison--2026-10-06)
 retains direct-reference limits, restoration and 32.879 MB mobile accounting.
+
+Subsequent field infrastructure establishes bounded HMAC UDP references to
+the tunnel's public endpoint without replacing its socket. Reference and
+decoder/counter qualification remain separate phases. Receiver overflow
+accounting has a positive concentrator hardware check; unmatched return
+receipts retain their unknown cause. Smaller RTT-budgeted pushes improve
+the repeated steady model but regress discovery and propagation, so no policy
+is adopted. These diagnostics do not establish lab/profile acceptance; the
+[measurement record](../../docs/drafts/20261002-1730-adaptive-policy-plan.md#same-destination-references-and-probe-budget-diagnostics--2026-10-06)
+retains scope, restoration and mobile usage.

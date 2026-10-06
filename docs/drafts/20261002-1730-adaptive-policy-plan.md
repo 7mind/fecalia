@@ -5033,7 +5033,7 @@ delivers less on the candidate, 328800 versus 368400 B/s. These are model
 observations, not a field improvement or a justification for a new fix.
 Direct public SSH port 22 times out over both WANs in a later bounded check,
 which changes no firewall and records 0.086039 MB mobile RX+TX. Its cause is
-unknown; same-destination transfer references have not been established.
+unknown; the subsequent same-destination references are recorded below.
 Keep those findings, retained
 propagation regressions and source-matched full-gate failures. Neither local
 wall-clock speed nor a model gain establishes a field gain. Existing stage,
@@ -5044,3 +5044,88 @@ Evidence is `rtt-length-unshaped-field-20261006/`, `rtt-length-final-*`,
 `rtt-length-selected-repeat3.txt`, `recent-prefix-floor-duration-before-repeat3.txt`,
 `recent-prefix-probe-diagnostic-matrix-20261006.json`, `finite-voice-primed-upload-*`
 and `unshaped-baseline{,-6mbit}-field-20261006/` under the existing evidence root.
+
+## Same-destination references and probe-budget diagnostics — 2026-10-06
+
+**Observed infrastructure:** an isolated authenticated UDP helper reaches
+`45.11.171.73:51820` from the edge's bound 5G source. A raw UDP socket on
+the concentrator observes its requests alongside the deployed daemon,
+without replacing its socket, endpoint or service. Requests and small receipts
+use a separate random HMAC key, nonce, sequence and deduplication. Private
+keys are transferred over SSH and removed by cleanup. Each upload is capped
+at 1250 datagrams of 1200 bytes and a 6 Mbit/s payload offer; the receiver
+has 2 MB/4096-message and 45-second bounds. Verified removal timers precede
+helper activation. These are application benchmark datagrams, not synthetic
+probes added to transport policy.
+
+The foreign reference frames are rejected by wanbond's existing decoder.
+Keep direct references separate from tunnel frame/counter qualification;
+the observer gate is unchanged. Receiver timestamps are userspace monotonic
+timestamps, not kernel arrival times. Direct UDP service is neither TCP
+payload goodput nor maximum capacity, and sequential measurements do not
+establish stationary RF conditions.
+
+| Observed direct upload | Forward datagrams received | Authenticated receipts at edge | Receiver-span payload Mbit/s | Receiver socket drops |
+|---|---:|---:|---:|---|
+| First bounded upload | 1250/1250 | 1250/1250 | 4.837 | Not collected |
+| Immediately before baseline tunnel workload | 1124/1250 | 1124/1250 | 2.694 | Not collected |
+| Instrumented upload | 1250/1250 | 1247/1250 | 4.015 | Zero observed |
+
+The missing 126 forward datagrams have unknown cause: that run collected
+no receiver overflow counter. The later receiver enables Linux
+[`SO_RXQ_OVFL`](https://man7.org/linux/man-pages/man7/socket.7.html)
+before binding, fails on ancillary truncation and logs counter changes.
+A separate concentrator loopback-only positive check overflows a 2304-byte
+raw socket buffer and observes 98 drops. Its zero therefore has a non-vacuous
+hardware check. Three missing return receipts remain unexplained; the edge
+client has no equivalent socket-drop observation. The direct-only runs
+change no route, firewall or deployed service.
+
+**Observed paired baseline:** accepted `b444920` receives 2.945 Mbit/s
+whole-run TCP upload under a six-second 6 Mbit/s offer. Receiver bounds in
+seconds 3–6 are 2.019–3.917 Mbit/s. Guarded loaded voice p99 is 48.3/50.0 ms
+edge/hub, and all 1250/1250 whole-run echoes arrive at each host. The preceding
+UDP reference is below the tunnel mean; the different protocols and time
+intervals do not define a maximum-utilization ratio. This baseline-only run
+establishes no candidate gain. Its temporary TCP permission is removed;
+independent binary, boot, exit, queue and timer checks pass.
+
+**Observed cleanup/accounting:** both hosts retain deployed `b444920`, empty
+service overrides and unchanged boot IDs. Independent checks find no helper
+key, matching process or active timer for all three uploads. The connectivity
+pilot uses 0.135044 MB mobile RX+TX including background, the first upload
+1.803554 MB, the paired baseline 8.110886 MB and the instrumented upload
+1.838206 MB. Their disjoint intervals total 11.887690 MB. The paired reference's
+1.867201 MB is nested and not added again. Inter-window traffic and later SSH
+verification are excluded; this is not a whole-goal usage total.
+
+**Observed local diagnostic, not adopted:** the RTT-duration source fails
+both steady-path outcomes three times, with approximately 47 ms p90 queueing.
+Replacing its fixed multiplicative push with an excess-service budget over
+the unloaded RTT passes both three times: utilization 99.5%/98.1%, queue p90
+9.20/9.09 ms. One control constant is removed (eight to seven), but discovery
+falls to 1.54/9.55 Mbit/s, noisy bulk falls to 157320 B/s in the impaired
+direction, and all four prior-loss propagation cases fail. The trace observes
+non-full windows and slow growth of the low estimate; it does not justify
+a window enlargement. All three settled capacity-drop cases pass. This
+selected model result establishes neither a full gate nor a field improvement.
+
+**Rejected inference:** `receiverBound` does not prove physical saturation;
+the code sets it when the receive interval is the longer timing bound.
+An isolated selector using the smaller push only for that flag retains cold
+discovery at 95.68 Mbit/s but fails rate increase at 72.64, both steady-path
+cases and all four propagation cases. Neither diagnostic is activated in
+the field or adopted. Source/output hashes are retained and the scratch
+checkout is restored. No assertion, original gate or wire field changes.
+
+**Intended:** explain short-push delivery feedback and estimate confidence
+before another controller change. Preserve the physical receipt qualifications
+and negative outcomes. Accepted `b444920` / `v0.0.3` remains the baseline;
+no new release or completed stage is claimed.
+
+Evidence under `/srv/nvme/tmp/wanbond-adaptive-evidence`:
+`concentrator-direct-reference-20261006/`,
+`same-endpoint-baseline-field-20261006/`,
+`concentrator-direct-overflow-field-20261006/`,
+`direct-reference-independent-postconditions.{py,json,log}`,
+`feedback-sized-push-*` and `receipt-bound-feedback-sized-push-*`.

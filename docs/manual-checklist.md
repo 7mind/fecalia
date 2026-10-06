@@ -735,3 +735,13 @@ direct service varies. Both hosts and owned cleanup are independently
 verified, with 32.879 MB mobile RX+TX across disjoint recorded intervals.
 The [method and rejection](drafts/20261002-1730-adaptive-policy-plan.md#rtt-duration-discovery-trial-and-unshaped-field-comparison--2026-10-06)
 retain the destination mismatch; use same-destination references next.
+
+The subsequent same-destination helper measures bounded authenticated UDP
+alongside the deployed concentrator socket. Keep its foreign frames outside
+tunnel decoder/counter qualification. Verify socket-drop instrumentation
+with a positive overflow check and independent key/process/timer cleanup.
+Receiver spans are userspace observations; sequential UDP references do not
+prove TCP capacity or RF stationarity. The baseline-only tunnel run receives
+2.945 Mbit/s with loaded voice p99 48/50 ms and all echoes. Method, missing
+receipt limits and mobile accounting are in the
+[measurement record](drafts/20261002-1730-adaptive-policy-plan.md#same-destination-references-and-probe-budget-diagnostics--2026-10-06).

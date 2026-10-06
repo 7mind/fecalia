@@ -3260,3 +3260,12 @@ between C8 baselines of 3.63/3.19; direct references also vary. Voice is
 loss-free but shows no consistent gain across metrics. The field rejection,
 restoration, sampling limits and next investigation are recorded in the
 [RTT-duration trial](drafts/20261002-1730-adaptive-policy-plan.md#rtt-duration-discovery-trial-and-unshaped-field-comparison--2026-10-06).
+
+A subsequent isolated HMAC UDP reference reaches the same public concentrator
+endpoint alongside the deployed socket. Its foreign frames are rejected by
+wanbond; reference and tunnel decoder qualification remain separate phases.
+Receiver socket-drop instrumentation has a positive hardware overflow check.
+The paired baseline observation and smaller-push model diagnostics establish
+no new policy gain: steady-model queueing improves, while discovery and
+propagation regress. Source, receipt/drop limits, restoration and mobile
+accounting are in the [measurement record](drafts/20261002-1730-adaptive-policy-plan.md#same-destination-references-and-probe-budget-diagnostics--2026-10-06).
