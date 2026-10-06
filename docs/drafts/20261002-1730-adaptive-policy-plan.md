@@ -4370,3 +4370,79 @@ bounded field trials against immediate direct-link references and returning
 failure is diagnostic evidence, not a substitute for a field verdict. Stages,
 profile repetitions and improvement across all metrics remain outstanding;
 the goal remains active.
+
+
+### Qualified capacity/drain field comparison — 2026-10-06, 09:02–09:16 UTC
+
+**Observed source:** isolated `307ca742b91eeb3e45ff7fb01fa6de82dbbb81d0`,
+ARM SHA-256 `d004d933c375ac97d4035e5ad47af90ef33908f99ce5168c61cafbaef6e1f966`.
+Native Nix and clean ARM builds pass. The full non-privileged gate reaches
+all Go tests after its other checks pass, then fails only in bond: 24 top-level
+outcomes fail. Tagged policy tests have 70 failed entries. The source remains
+unmerged and unaccepted; these gates have not been waived for promotion.
+
+This builds on rejected estimator `22d0657`, integrating both main receipt
+corrections and the settled-service constraint. Fail-first `79bc488` reproduces
+lower sender-paced/equal-clock samples renewing lower capacity across a new
+feedback round; the initial same-round fixture passed and is retained as an
+insufficient reproduction. Its correction keeps the delivery sample but lets
+the older higher capacity age without certifying a new lower limit. Receiver-
+limited lower samples remain usable. Fail-first `7affa93` separately shows
+active delay measurement suppressing material-loss response; `8ac296b` restores
+that response. Both direct matrices and the earlier capacity/ACK outcomes pass
+three times. The controller replacement has eight declared constant names,
+versus 31 on main, and no new wire field or synthetic probe traffic.
+
+Under the operator's authorization to measure despite failed models, the same
+bounded upload comparison completes C8/experiment/C8. Each phase restarts its
+source, delivers 500/500 voice-only preflight echoes per host, takes immediate
+capped direct-link references, then offers 3 Mbit/s TCP for ten seconds against
+a 2 Mbit/s cap on wanbond's 5G uplink beside 35 seconds of voice. All whole
+voice streams deliver 1750/1750 each way.
+
+| Observed metric | C8 before | Experiment | C8 after |
+|---|---:|---:|---:|
+| Upload receiver payload, seconds 5–10, bounded Mbit/s | 1.154–1.659 | 1.037–1.392 | 0.991–1.540 |
+| Guarded upload-active voice RTT p99, edge/hub ms | 87.93 / 92.95 | 87.76 / 97.89 | 52.15 / 51.25 |
+| Whole-phase voice RTT p99, edge/hub ms | 55.01 / 64.76 | 48.93 / 50.17 | 55.00 / 51.18 |
+| Whole-phase missing echoes, edge/hub | 0 / 0 | 0 / 0 | 0 / 0 |
+| Adjacent direct 5G upload against 3 Mbit/s offer | 2.925 | 2.922 | 3.021 |
+| Direct 5G ICMP p99 to the concentrator, ms | 90.2 | 94.5 | 103.0 |
+
+Whole-phase voice percentiles are lower, an observation rather than causal
+proof. Loaded tails are substantially higher than the returning baseline,
+while throughput bounds overlap. Similar direct offered-service rates do not
+establish unchanged RF delay or maximum capacity. This is not improvement
+across all metrics, repeated acceptance evidence, or a reason to replace C8.
+Neither cross-host one-way timing nor interpolated deadline goodput is claimed.
+The metric named `repair_packets_total` includes ordinary small-packet copies:
+its help text and transmit accounting confirm this. Its counts cannot be
+interpreted as timeout repairs alone.
+
+Both deployed sources/hashes, absence of overrides and removal of temporary
+network state are independently verified after restoration and again after
+owned cleanup. The edge's three owned runtime reference directories are
+byte-verified into
+`/var/tmp/wanbond-qualified-drain-upload-reference-archive-20261006.tar.gz`
+before removal. Inactive candidates are removed on both hosts. Measured disjoint
+mobile RX+TX with background is 0.873 MB staging plus 27.423 MB trial through
+cleanup: **28.296 MB**, excluding gaps and without adding nested reference or
+trial counters twice. Evidence is `qualified-drain-field-20261006/` and
+`qualified-drain-final-{nonprivileged-gate,nix-build,arm-build,tagged}.*`.
+
+**Observed separate local diagnostic:** qualified low-flight receipts during
+active delay measurement leave unloaded delay at the old 20 ms and jitter
+allowance at 10 ms because smoothed rates still describe earlier bulk. The
+reproduction fails three times. Feeding those receipts into the delay model
+passes that direct check but worsens noisy bulk from 576000 to 246000 B/s
+against an 867845 B/s reference, despite 66/69 ms voice p99. Selected capacity
+falls and settled shifts still pass; lossy voice is 5500/5500, zero beyond
+150 ms, maximum 142 ms. This overlay is rejected and never deployed.
+
+**Intended:** retain the field's lower whole-phase percentiles alongside its
+failed loaded tails and uncertain throughput. Investigate capacity clock
+endpoints and demand-limited sampling before another field comparison, with
+voice, copy cost, settled service, genuine capacity falls and variable delay
+as simultaneous constraints. Installed `b444920` / `v0.0.3` remains the baseline.
+No stage/profile repetition, existing lab gate or full metric objective is
+completed. The goal remains active.

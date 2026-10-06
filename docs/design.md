@@ -3154,3 +3154,17 @@ a fail-first drain-ACK reproduction; broader capacity and voice failures remain.
 These sources are diagnostic work, not the controller on main or in the field.
 Exact outcomes, sources and evidence limits are in the
 [adaptive-policy plan](drafts/20261002-1730-adaptive-policy-plan.md#settled-service-and-sender-paced-evidence--2026-10-06).
+
+
+The isolated qualified-capacity/drain source `307ca74` completes one capped
+C8/experiment/C8 field upload comparison. All 1750 echoes per host/phase arrive;
+whole-phase p99 is lower for the experiment, but upload-active p99 exceeds the
+returning baseline and throughput report bounds overlap. Native/ARM builds
+pass, while 24 default bond outcomes and 70 tagged entries fail. The source
+is unmerged and supplies no completed stage or all-metric improvement.
+Deployed binaries and temporary state are independently verified restored;
+owned runtime references are byte-archived and removed. Disjoint measured
+mobile RX+TX with background is 28.296 MB. `repair_packets_total` includes
+ordinary replication and must not be read as timeout-only repair. Exact
+sources, raw outcomes, RF references, accounting and continuing investigation
+are in the [field record](drafts/20261002-1730-adaptive-policy-plan.md#qualified-capacitydrain-field-comparison--2026-10-06-09020916-utc).
