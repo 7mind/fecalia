@@ -1074,10 +1074,11 @@ the estimator initialization in [RFC 6298 §2.2](https://www.rfc-editor.org/rfc/
 This is a bounded datagram repair policy, not TCP's full retransmission timer.
 Physical attempt records expire after two seconds and release their in-flight
 bytes even when an RTT spike has raised the repair timer beyond that horizon.
-The peer's count of received bytes is a cumulative acknowledgement: when no
-more bytes are missing below the acknowledged sequence than at the last
-acknowledgement, every datagram sent between the two arrived and is confirmed,
-whatever the bitmaps cover. The bitmaps report a receipt once; when datagrams
+The peer's count of received bytes proves a complete physical prefix only
+when it equals the sender's wire bytes through the acknowledged sequence.
+An unchanged positive deficit cannot prove receipt: an old arrival can balance
+a newly lost datagram. Positive deficits leave confirmation to the physical
+and global receipt bitmaps. The sender retains missing datagrams for repair. The bitmaps report a receipt once; when datagrams
 arrive a hundred at a time, those that only a lost acknowledgement reported
 were never confirmed and were sent again (production, 2026-10-02: 900-1800
 repairs in a 7 s download, all duplicates; the acknowledgements were not lost

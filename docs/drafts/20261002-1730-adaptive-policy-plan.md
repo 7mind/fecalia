@@ -4078,3 +4078,51 @@ Evidence is `field-residual-service-*`, `directional-noise-committed-repro-*`,
 root. Installed C8 remains deployed; the improvement goal stays active.
 **Intended:** keep this regression as a constraint on the continuing capacity
 and allocation investigation; do not suppress the field/model distinction.
+
+
+### False cumulative receipt proof — 2026-10-06
+
+**Observed:** the delay/drain diagnostics remain rejected. They preserve bulk
+through a propagation-level shift but either lose service under variable delay
+or leave excessive queues after a real capacity drop. A distribution-based
+replacement additionally fails lossy voice at 23 late deliveries, maximum
+851 ms. An ownership/attempt mismatch is observed, but changing that counter
+alone leaves this result unchanged; it does not establish the regression's
+cause. Evidence is `latency-{level-shift,congestion-drain,one-response,qualified-distribution,tracked-distribution}-*`
+under the existing evidence root. None of these diagnostics runs in the field.
+
+**Observed separate defect:** an old physical arrival and a new loss of equal
+wire length preserve a positive byte deficit. The existing sender treats that
+as proof that newer datagrams arrived, removes a genuinely missing datagram
+from pending repair, and never delivers it. A direct wire-frame fixture
+isolates ACK accounting from capacity discovery. Its first version fails
+three times on C8 and `f75668e` for this reason, after adapting only the old
+`Path`/`Poll` signatures. Four realistic payload sizes (32, 160, 384 and
+1200 bytes) also fail three times on both baselines. This is a new correctness
+reproduction, not an RF replay or a replacement for any section 4 gate.
+
+Test commit `1072882` precedes the correction. Before removing the cached
+proof mechanism, `7cb86e3` makes the reordered-ACK fixture's physical prefix
+genuinely incomplete using a lost keepalive; its delivery, freshness and
+replay checks pass three times on unchanged C8. Code `3f11ca8` confirms a
+cumulative prefix only when its deficit is zero and removes the unsupported
+equal-positive-deficit rule and its history. It adds no estimator, constant,
+traffic or wire field; the controller remains C8. Test refinement `3239b96`
+covers all four payload sizes with proper small/bulk classification. Each
+missing datagram now reaches the receiver after 145 ms in three identical
+virtual-time runs. Selected late/lost/cross-lane/reordered receipt checks pass
+three times. The full non-privileged gate passes on `3f11ca8`; final-source
+checks and native/ARM builds are being completed.
+
+The matched lossy-voice model keeps 5500/5500 delivered and none beyond
+150 ms, but its maximum rises from C8's 110 to 115 ms. No all-metric model
+gain, throughput gain or field improvement is established. Logs are
+`ack-prefix-proof-*`, including exact baseline adaptations and gate output.
+**Intended:** a timer-backed C8/candidate/C8 field comparison with voice-first
+preflights, immediate capped direct upload/download references, a 6 Mbit/s
+offered TCP download for ten seconds, and a 2 Mbit/s cap on wanbond's 5G
+uplink to bound ACK traffic. Both deployments and network/policy state will
+be independently verified after restoration; mobile RX+TX will be reported.
+This tests the verified ACK correction, not the rejected estimator sources.
+Installed `b444920` / `v0.0.3` remains accepted and the improvement goal stays
+active; stage and profile acceptance is still outstanding.

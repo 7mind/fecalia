@@ -3635,3 +3635,19 @@ new or resolved failure. Other gate components and native Nix builds pass;
 the new directional-noise outcome passes. This is correction of a rejected
 experiment, not a new field candidate or accepted improvement. Exact fixture inputs, revisions, logs and
 continuing constraints are recorded in the adaptive-policy plan.
+
+
+The ACK-prefix reproduction `TestOldArrivalCannotAcknowledgeANewLostDatagram`
+submits wire-valid frames at a converged fixture rate, then observes repair
+delivery. An old arrival balances a new loss while the byte deficit stays
+positive. C8 and `f75668e` incorrectly discard the missing datagram; all four
+payload sizes fail three times. The correction requires a zero deficit for
+cumulative prefix proof, otherwise retaining selective receipts and repair.
+All four sizes now repair after 145 ms three times. A lost keepalive keeps
+the reordered-ACK fixture physically incomplete, so its older bitmap remains
+necessary; that fixture passes before and after the correction. Full default
+checks pass on the code correction. Matched lossy voice is still 5500/5500
+with no delivery beyond 150 ms, but maximum delay rises 110 to 115 ms. These
+are virtual-time correctness and outcome observations, not field gains or
+completed profile gates. Exact revisions, commands, failed baselines, final
+checks/builds and the intended bounded field comparison are in the plan.
