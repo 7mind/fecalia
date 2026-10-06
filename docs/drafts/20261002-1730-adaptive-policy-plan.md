@@ -4295,3 +4295,78 @@ small-standby constraints. Shipping a correction does not complete adaptive
 stages 2–3 or justify using the rejected estimator. Installed `b444920` / `v0.0.3`
 remains the performance baseline; all profile/lab repetition gates and the
 field metric objective remain outstanding. The goal stays active.
+
+
+### Settled service and sender-paced evidence — 2026-10-06
+
+**Observed:** test-only `42c160e` adds
+`TestSettledBulkServiceSurvivesAPropagationLevelShift`. Capacity discovery must
+first deliver at least 75% of the fixture's available payload service; a
+propagation-only change at 20 seconds must then preserve at least 75% of the
+measured pre-change service in each second from 22 through 31. Main and original
+`f75668e` pass three times, with about 33 MB/s maintained. Section 2's predicted
+latency-rise throughput failure is wrong for this settled-service case. This
+is a retained finding, not a failing stage-0 reproduction or a completed 2b
+gate. The older early-discovery check alone did not establish this constraint.
+The full non-privileged gate passes with the new test. No production code changes.
+
+On the isolated `adaptive-ack-corrected-policy` branch, `b599ee4` first
+reproduces lower-capacity certification from sender-paced evidence, three times:
+2000 wire bytes over a 100 ms send span and a 20 ms receive span revise a
+fresh 100000 B/s estimate to 20000 B/s. `946e380` separately reproduces an
+expired older capacity leaving a held/draining pacing target at 95000 B/s
+against fresh 20000 B/s evidence. Both are defects of the rejected estimator
+prototype, not asserted defects of main or `f75668e`.
+
+**Observed diagnostic outcomes:** scratch Go overlays retain both ACK-prefix
+corrections, keep gates unchanged and remove/replace the prototype rules they
+exercise. Control constant counts are main 31, rejected estimator 8 and the
+separate delay-only isolation 28, measured with the Go parser.
+
+| Experiment | Result and limit |
+|---|---|
+| Qualify lower capacity by the receive clock; leave delay response unchanged | Both directional-noise service checks and the twelve capacity-drop cases pass, but all four early propagation shifts collapse bulk |
+| Also age the held target against fresh capacity | New direct reproductions and early shifts pass; one variable-delay bulk direction delivers 521880 B/s against an 867845 B/s reference; settled propagation change reduces 34.1 MB/s to 7.5 MB/s |
+| Use current path delay for that window | Settled shift passes, but noise voice p99 reaches 215/216 ms and lossy voice has 23 datagrams beyond 150 ms |
+| Drain for an active delay measurement, initially pausing all bulk | Repeated unconfirmed timeouts starve bulk; preserved failed result is not acceptance evidence |
+| Admit one queued bulk datagram at a time during the drain and wait before retrying | Settled and early shifts, twelve capacity drops, standby serialization and lossy voice pass once; variable-delay voice p99 is 65/67 ms, but one bulk direction delivers only 288120 B/s against 867845 B/s |
+
+The trace of the last experiment records repeated delay cuts and a low target
+while the noisy forward direction is still discovering capacity. Changing the drain interval from one to five seconds restores noisy bulk
+to 786360/828840 B/s with 96 ms voice p99, but fails all four early shifts
+and the settled-shift constraint (34.0 MB/s before, 5.0 MB/s at second 22).
+The first versions and failures are retained separately. These are virtual-time results; host wall-clock
+speed is not substituted for link performance. None is a field improvement,
+new release or completed stage/profile gate.
+
+**Observed separate delay-only isolation:** `d98e6a4` reapplies the historical
+delay replacement to corrected main receipts. Fail-first `78560cb` shows an
+ACK from queued draining traffic being used as unloaded path evidence. The
+working correction qualifies at receipt time and removes the transmission-time
+`unqueued` latch; the direct reproduction fails three times before and passes
+three times after. Variable-delay bulk and voice pass selected checks, while
+capacity-drop, propagation-shift and slow-survivor failures remain. The branch
+is unaccepted and has never been installed in the field.
+
+**Documented research, read:** the IETF
+[BBR draft, ProbeRTT section](https://datatracker.ietf.org/doc/html/draft-ietf-ccwg-bbr-06#section-5.3.4)
+describes active draining to measure propagation delay without feeding a
+standing queue back into the flight limit. **Inferred hypothesis:** a qualified
+low-flight measurement can distinguish a changed propagation level from the
+prototype's self-induced window limit. The scratch drain is not a BBR
+implementation; its failed service results limit this inference.
+
+Both field hosts were independently read at 08:03 UTC: deployed `b444920`
+binaries and hashes match, service overrides are absent and both WANs are UP.
+No throughput experiment, shaping or candidate activation occurs in this
+interval; read-only SSH traffic has not been separately metered. The prior
+104.166 MB figure remains the earlier disjoint receipt-experiment total.
+
+**Intended:** continue resolving qualified capacity discovery and active-delay
+measurement together, retaining settled service, real capacity falls, variable
+delay, slow standby and voice outcomes. Compare any coherent controller in
+bounded field trials against immediate direct-link references and returning
+`b444920` baselines. The operator's field authority remains binding; model
+failure is diagnostic evidence, not a substitute for a field verdict. Stages,
+profile repetitions and improvement across all metrics remain outstanding;
+the goal remains active.

@@ -3695,3 +3695,22 @@ The same corrections on the rejected estimator pass their new matrices but
 retain its sixteen top-level default failures. That source remains outside the
 field. Exact identities, clocks, RF references, bounds and next investigation
 are retained in the plan; no stage/profile acceptance or release is made.
+
+
+The default virtual-time `TestSettledBulkServiceSurvivesAPropagationLevelShift`
+requires established discovery before comparing propagation-change service.
+It passes three times on main and `f75668e`; it is a baseline finding, not a
+failed original stage gate. The full non-privileged gate passes with this test.
+Virtual elapsed time, rather than host run duration, determines its verdict.
+
+Scratch estimator/drain overlays now reproduce unsupported sender-paced
+capacity reduction and stale held pacing. Active draining restores settled
+propagation-shift service but currently fails the variable-delay bulk constraint
+(288120 B/s versus an independent 867845 B/s reference), despite 65/67 ms voice
+p99 and no missing voice echoes. Increasing the flight window instead raises
+voice p99 to 215/216 ms. Neither experiment is an accepted field candidate.
+A separately isolated delay-only receipt qualification passes its direct
+fail-first reproduction while broader service failures remain. Exact source
+provenance, unchanged gates and intended field comparisons are retained in the
+[plan](../../docs/drafts/20261002-1730-adaptive-policy-plan.md#settled-service-and-sender-paced-evidence--2026-10-06);
+no lab/profile completion or new metered field run is claimed.

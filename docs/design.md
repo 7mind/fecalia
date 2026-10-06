@@ -3132,3 +3132,25 @@ new or resolved failure. Other gate components and native Nix builds pass;
 the new directional-noise outcome passes. This is correction of a rejected
 experiment, not a new field candidate or accepted improvement. Exact fixture inputs, revisions, logs and
 continuing constraints are recorded in the adaptive-policy plan.
+
+
+### Settled-service constraint and unaccepted drain diagnostics — 2026-10-06
+
+The public virtual-time `TestSettledBulkServiceSurvivesAPropagationLevelShift`
+first establishes capacity discovery, then compares each later second against
+measured service before a propagation-only change. Main and `f75668e` both pass
+three times; the earlier plan's predicted failure does not hold in this case.
+The full non-privileged gate passes. The test changes no production behavior.
+
+Unaccepted eight-constant estimator overlays reproduce sender-paced delivery
+being mistaken for lower capacity, stale capacity leaving an excessive held
+target, and a feedback loop between capacity and the old flight window.
+Increasing the window with current delay restores settled bulk but fails voice
+tails. Actively draining and admitting one real queued bulk datagram restores
+propagation-shift outcomes, but repeated drains impede variable-delay bulk
+discovery. No synthetic data or wire-format change is used. A separate
+28-constant delay-only branch removes its send-time unloaded-state latch after
+a fail-first drain-ACK reproduction; broader capacity and voice failures remain.
+These sources are diagnostic work, not the controller on main or in the field.
+Exact outcomes, sources and evidence limits are in the
+[adaptive-policy plan](drafts/20261002-1730-adaptive-policy-plan.md#settled-service-and-sender-paced-evidence--2026-10-06).
