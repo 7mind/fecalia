@@ -3056,3 +3056,14 @@ retains sixteen full bond failures with no new failure, and passes other
 gate components and native/ARM builds. It is staging under the same bounded
 field method; no effect or acceptance is claimed. Full references, report
 bounds, traces and limits are retained in the adaptive-policy plan.
+
+
+The `b564d74` allowance-removal field comparison completes without an overall
+gain: loaded voice p99 is 49.95/52.40 → 101.61/75.22 → 46.67/43.60 ms
+edge/hub despite lower TBF backlogs; TCP receiver bounds overlap. All echoes
+arrive. Both C8 source/hashes and owned cleanup are independently verified;
+disjoint mobile intervals total 40.472 MB including background. The source
+remains unaccepted with sixteen bond failures; native/ARM builds pass.
+Longer probes improve modeled discovery but regress voice/queue outcomes.
+Delayed copies and their reservations also expose a service/deadline tradeoff.
+Those diagnostics remain local; the plan records exact sources and limits.

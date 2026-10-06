@@ -3729,3 +3729,74 @@ with the sixteen failures retained and no result yet. Logs and patches are
 `queue-offset-removal-*`; preparation is
 `queue-offset-removal-field-20261006/`. The goal remains active; installed
 C8 remains accepted and no experimental release is tagged.
+
+
+### Allowance removal: completed field rejection — 2026-10-06, 04:57 IST
+
+**Observed:** exact `b564d743437889aef393477c470657530e8288a7` completes
+one timer-backed C8/candidate/C8 comparison at fixed 2 Mbit/s wanbond 5G
+shaping and capped 3 Mbit/s upload. No rate-rise gate is tested.
+
+| Metric | C8 before | `b564d74` | C8 after |
+|---|---:|---:|---:|
+| Upload bounds seconds 5–15, Mbit/s | 1.233–1.502 | 1.129–1.402 | 1.214–1.519 |
+| Upload bounds seconds 25–30, Mbit/s | 1.127–1.642 | 1.012–1.513 | 1.114–1.672 |
+| Loaded voice p99 edge/hub, ms | 49.95/52.40 | 101.61/75.22 | 46.67/43.60 |
+| Whole voice echoes per host | 2750/2750 | 2750/2750 | 2750/2750 |
+| TBF backlog/rate p99 first/second window, ms | 88.92/104.80 | 35.51/51.12 | 70.75/78.28 |
+| TBF drops first/second window | 0/3 | 0/0 | 0/0 |
+
+**Inference:** smaller shaped backlogs establish neither improved application
+latency nor throughput. Loaded tails exceed both surrounding baselines and
+TCP bounds overlap; the source is not promoted. Whole-run echo medians are
+31.53/32.87 → 29.47/30.88 → 31.74/32.78 ms and maximum arrival gaps are
+68.30/99.09 → 63.41/59.85 → 53.97/122.59 ms edge/hub. These partial gains
+do not establish an all-metric improvement. Receiver bounds preserve report
+uncertainty; TBF backlog/rate remains a proxy. No three-run profile gate or
+causal isolation from variable physical links is inferred.
+
+Adjacent direct OCI-route uploads measure Starlink 0.513/0.516/0.519 Mbit/s
+under a 1 Mbit/s offer and 5G 2.883/2.950/2.983 under a 3 Mbit/s offer.
+Idle concentrator-route ICMP p99 is Starlink 45.7/41.3/37.9 ms and
+5G 102/110/77.6 ms. Replies/transmitted are Starlink 100/101 in each phase,
+and 5G 100/101, 100/101, 100/102. These bounded references are not maximum
+capacities or loaded UDP samples. Late bulk first-submission deltas on
+Starlink/5G are 15/613 → 2/575 → 14/640, and real-time originals are
+471/0 → 481/0 → 467/14. They exclude copies/repairs and do not prove
+physical delivery. Candidate own real-time residence p99 is bounded by
+1 ms both ways, with no real-time or small-TCP queue drops. Guarded expired
+counters edge/hub are 23/0 → 3/0 → 8/0; expiry is not proof of loss.
+
+Boots remain unchanged, phase cleanup-error lists empty, and independent
+checks before and after owned cleanup verify deployed C8 source/hash,
+original `raspi5l` policy, no overrides, timers, shaping or temporary rules.
+Verified inactive binaries and only this run's reference directories are
+removed after byte-verified archiving. The edge archive
+`/var/tmp/wanbond-queue-offset-removal-upload-reference-archive-20261006.tar.gz`
+has SHA-256 `4da561a79d2df75b9983b322b2cff6e0438974b361608855d4cbc583ff7743d1`.
+Mobile RX+TX with background measures 39.347 MB during comparison,
+39.705 through cleanup (overlapping), plus 0.767 separate staging:
+40.472 MB over disjoint measured intervals. Evidence is
+`queue-offset-removal-field-20261006/` under the existing root. Native/ARM
+builds and other gate components pass; sixteen full bond failures remain.
+No new candidate is active and installed C8 remains accepted.
+
+**Observed local diagnostics:** replacing the short push duration with a
+feedback round reaches 92.84/92.89 Mbit/s cold/rise discovery in three runs,
+but batched voice p99 is 85/120/160 ms and steady utilization is only
+92.0/92.1%, with 35.76/29.32 ms queue p90. Batching, sole-lane bulk, startup
+voice and steady outcomes fail. The change is rejected without production
+mutation or field activation; `queue-offset-feedback-round-push-*` retains it.
+
+Deferring ordinary voice copies until floor RTT plus ACK cadence preserves
+suspect fallback and permits 3483/5500 uncopied in the loss case, with one
+late packet, but collapses mixed bulk service. A trace records both lanes
+live and about 19 kB/s still reserved for mostly withheld copies; 40 of 45
+sampled receipts are demand-backed, so application-limited status alone does
+not explain the plateau. Removing the unused reservation restores mixed
+bulk but loses the deadline outcome (14 late, one undelivered). Copying at
+floor RTT alone restores one late packet but leaves only four uncopied.
+Each repeats three times. These are unshipped diagnostics, not field gains.
+`queue-offset-{delayed-copy,floor-timed-copy}-*` retains sources and outcomes.
+A measured-copy-demand reservation diagnostic is running. Its outcome and
+any field effect remain unknown; the improvement goal stays active.
