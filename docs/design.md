@@ -3092,3 +3092,14 @@ baseline observation establishes no improvement or profile gate. Receipt-gap
 copies fail the unchanged model deadline and remain unshipped; an aged-floor
 and directional-noise ranking diagnostic is running. The plan records exact
 sources, collection failures, recovery, archives, clocks and sampling limits.
+
+
+Floor ranking `47551f9` adds a reproduced transient-delay outcome failure and
+is held without staging. The conditional unloaded-mean alternative also
+fails persistent choice. Corrected `734f7ad` retains the physical-ACK RTT mean
+and replaces RTT variation with forward noise; seven selected outcomes pass
+three times, but lightly loaded p99 rises 51 to 55 ms within its unchanged
+gate. Native/ARM builds pass; complete corrected checks are running. The
+bounded field comparison is prepared with independent cleanup and a measured
+owned-workload abort threshold. No candidate is uploaded or active. Exact
+sources, failures, experimental target limits and metering are in the plan.

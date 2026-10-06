@@ -3921,3 +3921,47 @@ ranking with the existing aged RTT floor plus forward-delay noise. That
 single-rule overlay adds no estimator, constant or wire field. Repeated model
 checks are running; no source is promoted. Installed C8 remains accepted and
 the improvement goal stays active.
+
+
+### Directional-noise ranking: rejected floor and corrected mean — 2026-10-06, 05:57 IST
+
+**Observed:** floor-ranking code `5ed8454`, built as `47551f9`, passes ten
+selected outcomes three times but adds a default outcome failure. A 50 ms
+low sample makes the slower lane carry subsequent voice originals. The
+unchanged transient/persistent choice outcome passes `b564d74` three times,
+while floor ranking fails transient choice three times. Persistent choice
+still passes. This is an experimental regression, not an original-`f75668e`
+defect. Full non-privileged checks retain seventeen bond failures; other
+components and native/ARM builds pass. This source is never staged.
+
+Using the existing conditional unloaded-delay mean fixes the transient dip
+but fails persistent improvement three times: its sampling condition leaves
+current evidence stale. That diagnostic is rejected. Reusing the aged mean
+refreshed by timed physical acknowledgements and replacing RTT variation with
+forward-delay noise resolves both outcomes. Corrected code `5fcd3bb`, built
+as `734f7ad8918ee5f95cc0bb7d351a042c26d0649e`, retains repair/AQM timing,
+copies and hysteresis, and adds no estimator, constant, traffic or wire field.
+It weights existing evidence; loaded mean RTT still includes both directions.
+It is an explicit experimental alternative, not the accepted unloaded-delay
+target or a causal correction proved by the packet capture.
+
+Seven selected outcomes pass three times on the correction, including delay
+choice, directional noise, lossy voice, lightly loaded voice, isolation,
+sharing and batching. Lossy voice is 5500/5500, none beyond 150 ms, longest
+95 ms. Lightly loaded voice p99 is 55 ms versus 51 ms on the parent; there
+is no all-metric model gain. Native Nix and ARM builds pass; complete exact
+non-privileged and tagged checks are running. ARM SHA-256 is
+`eca6c34c9673065bee4ca9621f73336247bf6ab7b98ce60930bc7c8266c70b3d`.
+Sources, repeated repros, rejected alternatives and gates are
+`directional-{rank,current-mean}-*` under the existing evidence root.
+
+The prepared bounded field comparison is
+`directional-current-mean-field-20261006/`: fixed 2 Mbit/s wanbond 5G shaping,
+voice-first preflight, adjacent direct references, capped 3 Mbit/s TCP and
+C8/candidate/C8. It is not a rate-rise gate. Network changes retain timers;
+cleanup accepts an expired timer then independently verifies postconditions.
+A measured forty-two-MB comparison threshold repeatedly stops owned TCP and
+voice senders, with PID/identity guards, while retaining observation.
+Uncontrolled background and collection remain outside volume enforcement.
+Corrected source is not uploaded or active; exact gate review remains first.
+Installed C8 remains accepted and the improvement goal stays active.
