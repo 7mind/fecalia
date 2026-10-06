@@ -5276,3 +5276,89 @@ candidate improvement or triplicate acceptance. Concurrent TCP remains an
 independent required measurement. Evidence: `directional-field-reference-20261006/`
 and `tcp-download-baseline-20261006/` under
 `/srv/nvme/tmp/wanbond-adaptive-evidence`.
+
+## Directional TCP comparison and queue-period correction — 2026-10-06
+
+**Observed reproduction:** the bulk queue latches its first congestion
+deadline using one feedback period, then tests that deadline while using a
+different period. Both longer-feedback and recovered-feedback outcomes fail
+on the original `f75668e` three times and on the installed-policy source.
+Test-only `58d4863` precedes correction `49c6348`; documentation freezes
+experimental source `07731c7` on `adaptive-aqm-current-feedback`. It records
+the start of standing delay and compares its duration to the current period.
+It adds no estimator, threshold, probe traffic, copy or wire-format change.
+The full non-privileged gate, native Nix and ARM build pass. These checks
+establish a correction, not completion of the adaptive stage/profile gates.
+
+**Observed field method:** compare installed `2f3187e`, temporary `07731c7`,
+then restored `2f3187e`, restarting each group and using download, upload,
+concurrent in that order. Retain startup records. Voice-only preflights receive
+250/250 in each direction before every case. Each TCP transfer lasts six
+seconds: download offers 6 Mbit/s, upload 3 Mbit/s, concurrent 3 Mbit/s each.
+Every case has immediately preceding bounded physical UDP references in its
+tested direction; concurrent has both. No WAN shaping or blackout is used.
+Candidate activation uses `candidate.sh`, compressed edge upload and a
+15-minute restore timer. Exit pinning and temporary firewall permission have
+their own removal timers.
+
+| Observed metric | Baseline before | Candidate | Baseline after |
+|---|---|---|---|
+| TCP download receiver goodput, Mbit/s | 4.105 | 6.002 | 3.507 |
+| TCP upload receiver goodput, Mbit/s | 2.413 | 2.222 | 1.508 |
+| Concurrent TCP download, Mbit/s | 2.820 | 2.978 | 2.956 |
+| Concurrent TCP upload, Mbit/s | 2.944 | 2.980 | 2.975 |
+| Download-active voice p99, edge/hub ms | 45.262 / 46.249 | 43.462 / 40.914 | 66.156 / 79.914 |
+| Upload-active voice p99, edge/hub ms | 51.315 / 49.673 | 68.941 / 69.431 | 43.272 / 42.593 |
+| Concurrent-active voice p99, edge/hub ms | 84.384 / 97.836 | 51.292 / 52.666 | 47.755 / 47.235 |
+
+All nine cases receive 1,000/1,000 whole-run voice echoes on each host.
+Download bytes come from the receiving edge; upload bytes come from the
+receiving hub. The installed iperf bidirectional format passes an actual
+loopback receiver contract on each host: its client reports remote upload
+totals with `sender=true`, so that label cannot substitute for local receiver
+reports. Guarded voice windows use each host's own clocks with one-second
+margins; this is not an exact section 4 adaptation-deadline proof.
+
+**Observed limits:** the original coordinator stops before its final two
+cases at its conservative budget guard, after 63.042593 MB mobile RX+TX
+including background. Its seven-case manifest remains incomplete. A separate
+baseline-only completion uses 18.318095 MB under a new 28 MB ceiling, with
+no restart or candidate activation; retain the intervening pause. Staging and
+runtime cleanup use disjoint 0.990278 / 0.022353 MB, giving 82.373319 MB across
+these four recorded intervals. Nested reference counters are not added;
+gaps, contract preparation and other verification traffic are excluded.
+
+The capped direct 5G downlink observations span 5.765–5.784 Mbit/s, while
+uplink observations span 4.591–5.876. They establish neither maximum capacity
+nor TCP service. A captured parser failure exposed one forward payload with
+a lost return echo: 1,250 hub receipts, 1,249 client confirmations. Forward
+service now uses the hub's unique authenticated receipts and verifies that
+echoed sequences are their subset. Return-echo loss cannot be counted as
+forward payload loss. The failing output is retained before that correction.
+
+**Inference from observations and code:** the candidate's download exceeds
+both bracket values, but this single set does not establish a repeatable
+policy gain. The first baseline and candidate download record no AQM drops;
+the final baseline records two. Candidate upload has one AQM drop and a
+larger voice tail than either baseline. Concurrent service is near the cap
+on candidate and final baseline. No improvement across all metrics, maximum
+download-rate gain, release promotion or triplicate acceptance is established.
+
+Independent postchecks verify deployed hashes, unchanged boots, empty
+overrides, original `auto` exit policy/qdiscs, no owned rules/timers, stopped
+helpers and removed private keys. The staged candidate binaries are removed.
+Evidence is `aqm-current-feedback-*`, `aqm-directional-field-20261006/` and
+`aqm-directional-baseline-completion-20261006/` under the evidence root.
+
+**Observed rejected hypotheses:** subtracting prior ACK generation time in
+the capacity sampler conflicts with existing ACK-holding bounds. The first
+new fixture also lacked backlog; correcting that input produces a valid
+conservative bound, not a proven defect requiring exact equality. No sampler
+change follows. Removing bulk isolation and the probe class-window clamp
+does not resolve finite download service, still fails plan-change routing
+and increases radio policing loss from 64.7% to 72.0%. Using predicted bulk
+completion time in place of the voice rank also leaves finite download
+unchanged. Preserve `generation-byte-clock-*`, `probe-service-isolation-*`
+and `bulk-completion-rank-*`; these diagnostics are not candidates. Work
+continues on qualified discovery, with all three TCP workloads required in
+future field comparisons.

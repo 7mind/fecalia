@@ -3297,3 +3297,36 @@ The round uses 8.337114 MB mobile RX+TX including background and is independentl
 cleaned up. This is one unchanged-baseline observation; no download improvement,
 concurrent-flow result or candidate acceptance follows. See the
 [download baseline record](drafts/20261002-1730-adaptive-policy-plan.md#explicit-downlink-reference-and-receiving-edge-tcp-baseline--2026-10-06).
+
+### Experimental queue period and directional TCP comparison — 2026-10-06
+
+Unmerged source `07731c7` replaces the queue's latched congestion deadline
+with a standing-delay start time, comparing its duration to the current
+feedback period. Both changed-period outcomes fail on original `f75668e`
+three times before correction. Its full non-privileged gate, native Nix and
+ARM build pass; main has not adopted this policy change.
+
+Observed temporary field comparison against installed `2f3187e`: receiving
+TCP download is 4.105 / 6.002 / 3.507 Mbit/s for baseline/candidate/baseline;
+upload is 2.413 / 2.222 / 1.508. Concurrent down/up is
+2.820/2.944, 2.978/2.980, 2.956/2.975. Offers are capped at 6 Mbit/s for
+download, 3 for upload and 3 each concurrently. Every case receives all
+1,000 voice echoes in each direction. Candidate upload voice p99 exceeds
+both baselines; a repeatable gain across all metrics is not established.
+No candidate is promoted. The first baseline and candidate downloads have
+no AQM drops, so their difference does not establish that correction's effect.
+
+Bidirectional download uses the edge's local reverse-stream receiver reports;
+upload uses the hub's local normal-stream receiver reports. Actual loopback
+contracts on both hosts establish this mapping. Physical upload references
+use unique authenticated hub receipts, with returned confirmations checked
+as their subset: a lost return echo does not negate a forward receipt.
+These bounded UDP references are not TCP or maximum capacities.
+
+The original comparison stops at its budget guard; final upload/concurrent
+baselines are measured separately after a pause, without another restart.
+Independent deployed/network/owned cleanup checks pass, including removal
+of staged candidates. Four disjoint recorded intervals use 82.373319 MB
+mobile RX+TX with background. Exact guarded voice results, byte accounting,
+source qualification and incomplete stage/profile proofs are in the
+[directional comparison record](drafts/20261002-1730-adaptive-policy-plan.md#directional-tcp-comparison-and-queue-period-correction--2026-10-06).

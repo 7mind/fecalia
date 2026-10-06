@@ -755,3 +755,17 @@ retains exact limits. Future candidate reports must include TCP download,
 TCP upload and simultaneous up/down independently, each from its receiving
 side and with immediate directional references, voice latency/loss/gaps and
 metered bytes. This upload-only trial proves no download result.
+
+The subsequent `07731c7` trial measures all three TCP workloads against
+observed `2f3187e`. Download uses local receiving-edge reports, upload local
+receiving-hub reports; verify bidirectional report mapping rather than using
+remote sender labels. A physical upload's lost return echo is separate from
+forward receipt. The candidate reaches its 6 Mbit/s download cap, but upload
+voice tails worsen and concurrent service matches the later baseline closely.
+Do not promote that single observation as improvement across all metrics.
+The original budget guard leaves seven cases; a separate unchanged-baseline
+run completes the final upload/concurrent references after a recorded pause.
+Independent restoration and staged-binary cleanup pass, with 82.373319 MB
+mobile RX+TX across four disjoint recorded intervals including background.
+The [directional record](drafts/20261002-1730-adaptive-policy-plan.md#directional-tcp-comparison-and-queue-period-correction--2026-10-06)
+retains caps, source/gates, directional references and guarded voice windows.

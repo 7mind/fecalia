@@ -3875,3 +3875,42 @@ reference counters are nested. Preparation and pilot add disjoint
 No improvement, candidate acceptance, concurrent-flow result or lab/profile
 pass is claimed. Evidence is `directional-field-reference-20261006/` and
 `tcp-download-baseline-20261006/` under `/srv/nvme/tmp/wanbond-adaptive-evidence`.
+
+## Directional TCP field comparison — 2026-10-06
+
+Unmerged queue-period correction `07731c7` passes the full non-privileged
+gate, native Nix and ARM build. Its two deterministic feedback-period
+outcomes fail on original `f75668e` in three runs before correction. This is
+separate from the incomplete adaptive lab/profile gates; no new lab pass is
+claimed. Main retains its existing queue policy.
+
+Observed six-second field receiving goodput, baseline/candidate/baseline:
+
+| TCP workload | Baseline before, Mbit/s | Candidate, Mbit/s | Baseline after, Mbit/s |
+|---|---|---|---|
+| Download, 6 Mbit/s offer | 4.105 | 6.002 | 3.507 |
+| Upload, 3 Mbit/s offer | 2.413 | 2.222 | 1.508 |
+| Concurrent download, 3 Mbit/s offer | 2.820 | 2.978 | 2.956 |
+| Concurrent upload, 3 Mbit/s offer | 2.944 | 2.980 | 2.975 |
+
+All cases receive 1,000/1,000 voice echoes on both hosts. Immediate physical
+references are measured in the tested direction, with both for concurrent
+traffic. A bidirectional receiver contract passes on both hosts: use edge
+reverse-stream reports for download and hub normal-stream reports for upload.
+Forward UDP upload service uses hub receipt timestamps; return-echo loss is
+separate. Its captured unequal-count parser failure is retained before repair.
+
+Each group starts afresh in the same case order. The initial coordinator's
+budget guard stops after final-baseline download, leaving its manifest
+incomplete; final upload/concurrent references are completed in a separate
+baseline-only run after a pause, without restart. Recorded disjoint staging,
+initial comparison, follow-up and runtime cleanup use 82.373319 MB mobile
+RX+TX including background. Independent cleanup verifies deployed hashes,
+unchanged boots, empty overrides, original exit/qdiscs, absent owned
+rules/timers/keys, stopped helpers and removed staged candidates.
+
+One capped field set does not establish repeatable improvement across all
+metrics. Upload voice tails worsen on candidate; concurrent service is near
+the offer on candidate and final baseline. Source, guarded latency results,
+reference limits and evidence paths are in the
+[comparison record](../../docs/drafts/20261002-1730-adaptive-policy-plan.md#directional-tcp-comparison-and-queue-period-correction--2026-10-06).
