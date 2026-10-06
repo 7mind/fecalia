@@ -4034,3 +4034,41 @@ regress voice/queue outcomes. **Intended next investigation:** isolate the
 remaining delivery-sampling and residual-service constraints while retaining
 voice protection and physical-reference measurements. This source remains
 unaccepted; installed C8 is the baseline and the improvement goal is active.
+
+
+### Directional-noise ranking regression and removal — 2026-10-06, 06:24 IST
+
+**Observed after the field trial:** a new virtual-time outcome fixture uses
+voice from 0–55 s, upload from 10–40 s, a policed 0.5 Mbit/s standby lane,
+2 Mbit/s cellular upload and 100 Mbit/s cellular download. Deterministic
+50 ms delay steps range from 4–28 ms in forward, reverse or both cellular
+directions. These are hypothesis inputs, not captured RF replay.
+Fixed-delay cases pass both C8 and the prototype three times, so fixed
+capacities alone do not reproduce the field deficit.
+
+The bidirectional-noise case passes C8 three times (1250/1250 echoes each
+way, p99 45/58 ms, 171888 B/s upload). Source `734f7ad` fails three times:
+1250/1250 and 1241/1250, p99 67/179 ms, 163248 B/s upload. Restoring only
+parent RTT-variation ranking passes three times: 1250/1250 each way,
+p99 45/52 ms, 163296 B/s. This isolates an experimental ranking regression;
+it is neither an original `f75668e` defect nor a field causal reproduction.
+The complete pre-field failure-name comparison remains valid for the suite
+then present; this subsequently added counterexample supplies further
+rejection evidence.
+
+The outcome is committed first as `dde50c7`; code `fc5e186` removes the
+forward-noise-only ranking replacement. The reproduction now passes three
+times, also with the shared unchanged voice loss, gap, consecutive-loss and
+150 ms tail gates. Test refinement `a5a82dd` removes duplicated voice checks.
+Seven selected existing outcomes pass three times. Production policy equals
+parent `b564d74` after removal: no new estimator, constant, traffic or wire
+field is added. The `control.go` count remains eight versus thirty-one in C8.
+This corrects a rejected experiment, not a new field improvement or release.
+Complete removal-source gates and Nix build remain pending at this record.
+
+Evidence is `field-residual-service-*`, `directional-noise-committed-repro-*`,
+`directional-noise-shared-voice-gates-green.txt` and
+`directional-noise-removed-selected-outcomes.txt` under the existing evidence
+root. Installed C8 remains deployed; the improvement goal stays active.
+**Intended:** keep this regression as a constraint on the continuing capacity
+and allocation investigation; do not suppress the field/model distinction.

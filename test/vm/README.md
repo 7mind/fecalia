@@ -3621,3 +3621,15 @@ inactive candidate binaries are removed. Disjoint measured mobile RX+TX
 with background is 41.167 MB. The observation-only probe trace refutes early
 probe termination in the cellular discovery failure. Exact source, failed
 gates, bounds, references, metering and continuing investigation are in the plan.
+
+
+A subsequent virtual-time bidirectional-noise fixture rejects `734f7ad`:
+voice is 1241/1250 in one direction with 179 ms p99, identically three times.
+C8 passes that fixture. Restoring only parent RTT-variation ranking gives
+1250/1250 each way and 45/52 ms p99 three times; no field causal conclusion
+follows. The new outcome is committed before removing the failed ranking
+rule. Production then equals parent `b564d74`; shared voice gates and seven
+selected outcomes pass three times. Complete removal-source checks/build
+remain pending. This is correction of a rejected experiment, not a new field
+candidate or accepted improvement. Exact fixture inputs, revisions, logs and
+continuing constraints are recorded in the adaptive-policy plan.
