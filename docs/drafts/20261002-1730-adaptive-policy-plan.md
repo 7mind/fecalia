@@ -4771,3 +4771,43 @@ files under `/srv/nvme/tmp/wanbond-adaptive-evidence`.
 **Intended:** keep the accepted `b444920` / `v0.0.3` deployment and continue
 capacity-discovery diagnosis with the physical receipt qualifications intact.
 No new release, completed stage or three-run lab/profile acceptance is claimed.
+
+
+## Stronger prior-loss propagation outcomes — 2026-10-06
+
+**Observed:** main test commit `f5e9093` extends the settled TCP outcome to
+0%, 0.4%, 0.8% and 1.2% earlier physical loss. Loss occurs only during seconds
+5–6; the unchanged-capacity propagation step remains at second 20. Each loss
+case must physically drop bytes, pre-change TCP service must reach 75% of its
+independent reference, and service after the step must retain at least 75%
+of its measured pre-change value in every required second. All four cases
+pass three times on accepted `b444920` and main with identical harness inputs.
+The new 0.8% and 1.2% cases fail three times on experimental `c7ecab6`, despite
+settled pre-change service: post-step delivery collapses. Earlier 0%/0.4%
+passes are retained. These are additional candidate regressions, not an
+original `f75668e` failure. Main's full required non-privileged gate passes.
+
+**Observed diagnostic:** the experimental capacity sampler can certify
+980 B/s across an empty-flight gap when there is no previous capacity bucket.
+The same test with an aged, unrotated 100 kB/s bucket passes because that
+bucket prevents the lower sample replacing its value; the pass is retained.
+A separate exact one-datagram / 1 ms sender-and-receiver interval reports
+147667 B/s under the longer captured-flight average rather than its measured
+1329000 B/s. Neither leaf diagnostic establishes a field performance gain.
+Clock-origin and adjacent-receipt prototypes improve selected measurements
+but do not clear discovery and broader propagation outcomes; none is staged.
+
+**Rejected inference:** using the loss ledger's absolute cumulative floor as
+an exact permanent-loss allowance can pass narrow drain cases, but that
+quantity is documented as meaningful only through differences. Stronger
+outcomes still reject that prototype, including insufficient pre-change
+service at 1.2% earlier loss. It is not a proof of physical drain and is not
+adopted. A separate bounded-receipt-window hypothesis uses existing physical
+ACK metadata and remains under test; no wire change or field result is claimed.
+
+Evidence: `reactive-prior-loss-ratio-{matrix-before,main-repeat3,b444-repeat3}.txt`,
+`prior-loss-ratio-main-full-gate.txt`, `reactive-{empty-flight-reproduction-before-v2,
+short-push-reproduction-before,clock-origin-adjacent-selected,
+historical-loss-ratio-matrix-repeat3,recent-prefix-drain-selected}.txt` and
+associated immutable overlays under `/srv/nvme/tmp/wanbond-adaptive-evidence`.
+The accepted field baseline remains `b444920` / `v0.0.3`; work continues.

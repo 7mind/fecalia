@@ -697,3 +697,13 @@ this experiment uses 30.017 MB measured mobile RX+TX including background. See
 the [completed comparison](drafts/20261002-1730-adaptive-policy-plan.md#reactive-delay-measurement-field-comparison--2026-10-06-11261134-utc). Sources, timing limits,
 cleanup, metering and continuing work are in the
 [record](drafts/20261002-1730-adaptive-policy-plan.md#frame-timestamp-field-repeat-and-paced-tcp-regression--2026-10-06). No release or lab/profile completion is claimed.
+
+
+The settled TCP propagation outcome now covers 0%, 0.4%, 0.8% and 1.2% earlier
+physical loss, requiring actual dropped bytes and adequate pre-change service.
+All cases pass three times on accepted `b444920` and main; the two stronger
+loss cases expose further regressions on experimental `c7ecab6`. Main's full
+non-privileged gate passes. Sampling and physical-drain prototypes remain
+isolated and have no field verdict. The plan retains the passing cases,
+failed reproductions and the rejected absolute-loss-floor inference in the
+[continuing diagnostic record](drafts/20261002-1730-adaptive-policy-plan.md#stronger-prior-loss-propagation-outcomes--2026-10-06).
