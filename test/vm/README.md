@@ -3813,3 +3813,12 @@ binaries/network state and owned cleanup are independently verified; disjoint
 staging and comparison-through-cleanup windows measure 25.247 MB mobile RX+TX
 including background. The earlier capture failure remains unexplained. Exact
 method, direct-reference limits and metering are in the [completed field set](../../docs/drafts/20261002-1730-adaptive-policy-plan.md#completed-bounded-receipt-field-comparison--2026-10-06-12561306-utc).
+
+The subsequent `33efb4f` RTT-duration experiment passes repeated selected
+discovery outcomes but retains 25 default test failures, propagation
+regressions and an initial tagged timeout. The longer retry completes with
+46 failing groups and 107 failure entries. Native Nix/ARM builds pass. Its
+unshaped field upload is 2.86 Mbit/s between 3.63/3.19 C8 baselines, without
+an across-metric gain. This is a rejected experiment, not completed lab or
+profile qualification. The [source-matched record](../../docs/drafts/20261002-1730-adaptive-policy-plan.md#rtt-duration-discovery-trial-and-unshaped-field-comparison--2026-10-06)
+retains direct-reference limits, restoration and 32.879 MB mobile accounting.

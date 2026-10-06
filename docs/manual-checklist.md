@@ -726,3 +726,12 @@ binaries/network state and owned cleanup are independently verified; disjoint
 staging and comparison-through-cleanup windows measure 25.247 MB mobile RX+TX
 including background. The earlier capture failure remains unexplained. Exact
 method, direct-reference limits and metering are in the [completed field set](drafts/20261002-1730-adaptive-policy-plan.md#completed-bounded-receipt-field-comparison--2026-10-06-12561306-utc).
+
+The subsequent unshaped `33efb4f` trial uses restarted C8/candidate/C8,
+voice-only preflights, immediately preceding capped uplink references and
+six-second 6 Mbit/s TCP offers. It establishes no across-metric gain. All
+whole-run echoes arrive; candidate upload is lower than both baselines, and
+direct service varies. Both hosts and owned cleanup are independently
+verified, with 32.879 MB mobile RX+TX across disjoint recorded intervals.
+The [method and rejection](drafts/20261002-1730-adaptive-policy-plan.md#rtt-duration-discovery-trial-and-unshaped-field-comparison--2026-10-06)
+retain the destination mismatch; use same-destination references next.

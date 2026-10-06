@@ -4943,3 +4943,104 @@ usage total.
 Evidence is `recent-prefix-retry-field-20261006/` and the standalone diagnostic
 subdirectories in `recent-prefix-field-20261006/`, under the adaptive evidence
 root. Installed `b444920` / `v0.0.3` remains accepted. The goal continues.
+
+## RTT-duration discovery trial and unshaped field comparison — 2026-10-06
+
+**Observed source:** unmerged code `11b7c4b`, documented and built as
+`33efb4f`, replaces the capacity push duration bound with the greater of its
+existing excess-service duration and the aged unloaded RTT, still capped at
+200 ms. It uses queued real traffic and existing estimates, without a new
+constant, synthetic traffic, extra copies or wire change. The combined
+experimental controller retains eight constant names versus accepted C8's 31.
+On clean parent `b56bc21`, cellular-RTT discovery fails three repetitions at
+3.23/5.40 Mbit/s. On this source the selected discovery/noisy-service/drop and
+physical-receipt outcomes pass three times; discovery reaches 95.68/94.15.
+The four settled propagation-change cases regress and remain failing.
+
+**Observed qualification:** source-matched native Nix and ARM builds pass;
+native `version` reports the full source and UTC commit time. Frontend's 44
+tests, build, vet, dependency checks and formatting pass. The full default
+gate fails 25 top-level bond tests: eight parent failures resolve and nine
+new groups fail. The first tagged run reaches Go's 600-second timeout; its
+97 recorded test failure entries are incomplete, not a completed tagged
+gate. A longer-timeout retry is retained separately. No assertion is relaxed.
+That source-matched retry completes in 967.6 seconds, with 46 failing groups
+and 107 failure entries. Versus the parent, eight groups resolve and eleven
+new groups fail, including its previously resolved 3a and voice-primed
+standby-start outcomes. Neither full gate passes.
+ARM SHA-256 is
+`861935fbfe44fc93defdabf845260c677ef29ad6377ab6093bab7755733a8547`.
+The diagnostic matrix preserves thirteen earlier immutable overlay trials
+and their negative outcomes. Its adoption flags describe that earlier
+snapshot; this duration variant subsequently received this isolated field
+trial. None is promoted to a release.
+
+**Observed baseline diagnostics:** separate accepted-build, unshaped 3/6
+Mbit/s offers receive 2.91/3.28 Mbit/s at the hub. Guarded loaded voice p99 is
+47/49 and 58/59 ms edge/hub, with 1250/1250 whole-run echoes per host. Immediate
+direct 5G upload references are 2.98/3.36. These are capped OCI-route
+observations, not maximum capacities or proof of RF stationarity. No candidate
+or TC change is used. Source/hash, network, exit and owned cleanup checks pass.
+Disjoint mobile RX+TX through cleanup is 11.385145 plus 11.583537 MB, including
+background; direct-reference intervals are nested and not added again.
+
+**Observed field comparison, 14:17–14:27 UTC:** compressed staging is followed
+by restarting baseline/candidate/baseline, voice-only preflights, immediate
+bounded direct references, and two 50 Hz echo streams around each six-second
+TCP upload. The offer is 6 Mbit/s with 1200-byte writes; no WAN shaping or
+blackout is introduced. Candidate restoration timers are verified before
+activation, and removal timers precede temporary firewall permission. The
+workload has a measured 42 MB mobile abort threshold. This set omits the
+passive frame observer and establishes application measurements only.
+
+| Observed metric | Baseline before | `33efb4f` | Baseline after |
+|---|---:|---:|---:|
+| Whole receiving-hub TCP mean, Mbit/s | 3.632 | 2.857 | 3.185 |
+| Receiver bounds in seconds 3–6, Mbit/s | 2.893–5.712 | 2.157–4.480 | 2.432–4.893 |
+| Guarded TCP-active voice p99, edge/hub ms | 56.6/54.7 | 56.4/48.5 | 49.1/118.1 |
+| Whole received/sent echoes, each host | 1250/1250 | 1250/1250 | 1250/1250 |
+| Immediately preceding direct 5G upload, Mbit/s | 4.418 | 3.938 | 4.083 |
+| 5G capacity-push counter delta in sampled TCP window | 3 | 32 | 3 |
+| Expiration counter in sampled TCP window | 0 | 0 | 0 |
+
+**Inference:** this set establishes no across-metric improvement. Candidate
+whole throughput is below both baselines, while raw service also varies;
+receiver interval bounds overlap. Its larger push count is a correlation,
+not a demonstrated cause. The OCI route differs from the tunnel destination,
+so its reference ratio cannot identify a policy defect or maximum utilization.
+Receiver summaries come from the receiving server (`sender=false`); report
+bounds and same-host guarded voice clocks retain their prior limitations.
+
+**Observed restoration:** both boot IDs remain unchanged. Independent checks
+verify deployed `b444920` hashes, empty overrides, original exit, no test
+timers/firewall rules or shaping, and absent owned temporary binaries. The
+three owned edge `/run` reference directories are archived and byte-verified
+before removal. Staging 0.874992 MB plus comparison through runtime cleanup
+32.004303 MB is 32.879295 MB mobile RX+TX including background. Together with
+the two standalone diagnostics these disjoint recorded intervals total
+55.847977 MB; small inter-window traffic and later verification are excluded.
+This is not a whole-goal total. `b444920` / `v0.0.3` remains accepted.
+
+**Intended next work:** establish bounded direct references to the same
+concentrator destination, then explain the finite-upload pacing/window and
+delivery trajectories before proposing another policy correction. A separate
+fixed-service, finite voice-primed model fixture passes on `33efb4f`; it is not
+a reproduction of the field shortfall. Under the identical model harness,
+the directional-noise case delivers 323200 B/s on `33efb4f` versus 274400 on
+production `b444920`: pass/fail repeats three times at the existing 75% of
+428230 B/s reference criterion. The fixed-delay case passes on both but
+delivers less on the candidate, 328800 versus 368400 B/s. These are model
+observations, not a field improvement or a justification for a new fix.
+Direct public SSH port 22 times out over both WANs in a later bounded check,
+which changes no firewall and records 0.086039 MB mobile RX+TX. Its cause is
+unknown; same-destination transfer references have not been established.
+Keep those findings, retained
+propagation regressions and source-matched full-gate failures. Neither local
+wall-clock speed nor a model gain establishes a field gain. Existing stage,
+profile and repetition requirements remain unfulfilled; no new stage, tag or
+deployment is accepted.
+
+Evidence is `rtt-length-unshaped-field-20261006/`, `rtt-length-final-*`,
+`rtt-length-selected-repeat3.txt`, `recent-prefix-floor-duration-before-repeat3.txt`,
+`recent-prefix-probe-diagnostic-matrix-20261006.json`, `finite-voice-primed-upload-*`
+and `unshaped-baseline{,-6mbit}-field-20261006/` under the existing evidence root.

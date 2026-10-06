@@ -3251,3 +3251,12 @@ binaries/network state and owned cleanup are independently verified; disjoint
 staging and comparison-through-cleanup windows measure 25.247 MB mobile RX+TX
 including background. The earlier capture failure remains unexplained. Exact
 method, direct-reference limits and metering are in the [completed field set](drafts/20261002-1730-adaptive-policy-plan.md#completed-bounded-receipt-field-comparison--2026-10-06-12561306-utc).
+
+Unmerged `33efb4f` bounds real-traffic capacity pushes below by the aged
+unloaded RTT and above by the existing 200 ms limit. It adds no estimate or
+wire field. Repeated discovery improves, but propagation outcomes regress
+and full gates fail. Its unshaped six-second field upload is 2.86 Mbit/s
+between C8 baselines of 3.63/3.19; direct references also vary. Voice is
+loss-free but shows no consistent gain across metrics. The field rejection,
+restoration, sampling limits and next investigation are recorded in the
+[RTT-duration trial](drafts/20261002-1730-adaptive-policy-plan.md#rtt-duration-discovery-trial-and-unshaped-field-comparison--2026-10-06).
