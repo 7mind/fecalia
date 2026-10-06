@@ -3033,3 +3033,25 @@ commit. It retains at least 99.9% delivery and at most 0.1% later than
 Before and after, three virtual-time runs deliver 5,500/5,500, none later
 than 150 ms, maximum 110 ms. Copy counts remain diagnostics. No production
 copy behavior changes in this commit.
+
+### Ordinary-copy removal remains insufficient — 2026-10-06, 01:00 IST
+
+**Observed diagnostic:** with the demand-step ceiling removed, disabling the
+ordinary copy budget while retaining suspect-lane fallback delivers
+5,499/5,500 in the existing 0.4%-loss voice/bulk model, but 19 arrive later
+than 150 ms (maximum 247 ms). The unchanged outcome gate allows at most
+0.1% late. Giving normal retries their original traffic priority produces
+5,500/5,500 but 20 late, maximum 279 ms. Sending an alternate first attempt
+when a later physical packet is confirmed and this packet has waited one
+measured RTT produces 5,500/5,500 but 16 late, maximum 232 ms. Every result
+repeats three times. Demand-step, suspect-fallback and eight-seed takeover
+checks pass in these selected runs. None of these diagnostics is shipped or
+field-tested. Logs/overlays and `diagnostic-summary.json` are under
+`/srv/nvme/tmp/wanbond-adaptive-evidence/c8-voice-demand-step-repro/fallback-only`.
+
+**Inferred next constraint:** ordinary-copy removal needs a better bounded
+fallback decision; neither liveness alone, retry priority, nor later-packet
+confirmation plus mean RTT meets the retained voice outcome. Preserve these
+counterexamples when replacing acknowledgement timing and capacity policy.
+Main's non-privileged gate and Nix build pass at `19738ec`; production policy
+remains C8, field hosts restored, and the improvement goal remains active.
