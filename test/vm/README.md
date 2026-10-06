@@ -3788,3 +3788,18 @@ non-privileged gate passes. Sampling and physical-drain prototypes remain
 isolated and have no field verdict. The plan retains the passing cases,
 failed reproductions and the rejected absolute-loss-floor inference in the
 [continuing diagnostic record](../../docs/drafts/20261002-1730-adaptive-policy-plan.md#stronger-prior-loss-propagation-outcomes--2026-10-06).
+
+
+Unmerged `b56bc21` replaces quiet-delay measurement's lifetime zero-loss
+requirement with a complete current physical receipt bitmap, no outstanding
+bulk attempts, and a later measurement sent after observed drain. ACK v1 and
+the capacity sampler are unchanged. Fail-first positive/negative receipts and
+stronger prior-loss outcomes pass three times; three previously failing
+scenario groups resolve and also pass three repetitions. Full default/tagged
+gates still fail; native Nix/ARM builds pass. Its field attempt stops on a
+passive capture failure during the first deployed-baseline phase, before
+candidate activation. Both hosts and owned runtime state are independently
+restored/verified; measured disjoint mobile windows total 31.811 MB. Longer
+capacity-push diagnostics improve discovery while regressing voice/drop
+outcomes and remain unadopted. Exact source, failures, provenance and limits
+are in the [continuing record](../../docs/drafts/20261002-1730-adaptive-policy-plan.md#bounded-recent-physical-receipts-checked-source-and-incomplete-field-attempt--2026-10-06).

@@ -4811,3 +4811,75 @@ short-push-reproduction-before,clock-origin-adjacent-selected,
 historical-loss-ratio-matrix-repeat3,recent-prefix-drain-selected}.txt` and
 associated immutable overlays under `/srv/nvme/tmp/wanbond-adaptive-evidence`.
 The accepted field baseline remains `b444920` / `v0.0.3`; work continues.
+
+
+## Bounded recent physical receipts: checked source and incomplete field attempt — 2026-10-06
+
+**Observed candidate:** unmerged `b56bc2187bf40b8ce627f756b25561fb880b3ae7`,
+code `3c060f4`, test commits `1baec36` and `6369a7c`; ARM SHA-256
+`2cdfcb7d9038ac9468ce2fd3346311582cd43a89a1b95fab60f3e995a384ad45`.
+The fail-first receipt test exposes an earlier cumulative deficit outside the
+complete current 64-attempt bitmap. Its unresolved-older-bulk negative case
+passes on the preceding source and fails on a bitmap-only prototype.
+The final correction requires every outstanding bulk attempt to clear and a
+later measurement sent after the observed drain. It replaces the lifetime
+zero-loss condition using existing ACK v1 fields; no estimator, constant,
+synthetic probe, redundant bulk copy or wire change is added. Control constants
+remain eight versus main's 31. The candidate has no accepted field verdict.
+
+The positive and negative receipt cases, all four prior-loss service cases,
+selected physical-deficit/timing/material-loss outcomes, twelve early and
+three settled capacity-drop cases pass three times. Full tagged results
+resolve three top-level failures compared with `c7ecab6`, with no newly failing
+top-level test: call-lane delay increase, voice-primed standby upload startup,
+and directional noise during that startup. All three groups also pass three
+separate repetitions. This does not imply every original scenario/profile
+gate passes: the full default gate retains 24 top-level bond failures and the
+full tagged gate retains 96 failure entries in 43 top-level tests, versus
+102 entries in 46 previously. Frontend 44, build/vet, patched dependency,
+formatting and all other Go packages pass. Native Nix and ARM builds pass.
+No stage, release or complete non-privileged gate is declared satisfied.
+
+**Observed field attempt, 12:33–12:38 UTC:** initial attempts stopped before
+staging on an SSH routing failure and then Starlink DOWN. Both WANs later
+report UP with unchanged boot IDs, permitting a capped two-link comparison.
+Staging succeeds but the run stops in its first `b444920` baseline phase:
+the hub's passive observer reports 1788 decode failures, 36990 decoded data
+frames, zero truncation and zero kernel drops. Both edge captures report
+zero decode failures/drops. No candidate activation occurs. The captured
+application interval has receiver upload bounds 0.386–0.584 Mbit/s and
+voice p99 287.1/289.5 ms, with no missing echoes in the guarded active windows.
+These are baseline-only observations, not a candidate comparison. Immediate
+capped references and complete raw logs are retained; their different route
+cannot establish the cause of loaded tunnel behavior.
+
+Both deployed executable hashes, empty overrides, original exit policy,
+unshaped interfaces, absent temporary timers/rules and absence of the owned
+inactive binaries/references are independently verified after cleanup.
+The one temporary reference directory is archived with byte verification
+before removal. Measured mobile RX+TX including background is 5.214919 MB
+in the staging window plus 26.595594 MB in the disjoint comparison-through-
+cleanup window: 31.810513 MB. The 23.373036 MB comparison-only figure is
+nested and must not be added. Traffic outside those windows is unmeasured.
+A separate idle capture reports no decode failures; a packet-header-only
+check does not support the bridge-forwarded-packet hypothesis. The loaded
+capture cause remains unknown; metadata-only rejection diagnostics are under
+investigation. The observer gate has not been relaxed.
+
+**Observed local diagnostics, not adopted:** sustaining an above-estimate
+push for a feedback round reaches 79.07/72.14 Mbit/s in cold/rise discovery,
+leaving the rise gate failed and regressing later propagation service.
+Removing the unconditional capacity ceiling as well reaches 95.29/81.18
+Mbit/s and clears both discovery cases, but voice p99 rises to 167 ms and
+settled capacity-drop queue delay remains about 68 ms. Stronger prior-loss
+cases pass; the 0.4% fixture establishes no dropped bytes, so that case is
+inconclusive. Short-push adjacent-clock variants retain tested drop/loss/voice
+outcomes but discovery remains below 10 Mbit/s. None is staged or committed
+as policy. A throughput-only gain is insufficient for the active objective.
+
+Evidence is `recent-prefix-final-*`, `recent-prefix-resolved-scenarios-repeat3.txt`,
+`recent-prefix-committable-selected-repeat3.txt`, `reactive-recent-prefix-*`,
+`recent-prefix-*-selected.txt`, `recent-prefix-feedback-length-lower-bound-{outcomes,
+adaptivepolicy}.txt` and `recent-prefix-field-20261006/` under
+`/srv/nvme/tmp/wanbond-adaptive-evidence`. Installed `b444920` / `v0.0.3`
+remains accepted. Work continues on bounded discovery and field measurement.

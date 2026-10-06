@@ -707,3 +707,12 @@ non-privileged gate passes. Sampling and physical-drain prototypes remain
 isolated and have no field verdict. The plan retains the passing cases,
 failed reproductions and the rejected absolute-loss-floor inference in the
 [continuing diagnostic record](drafts/20261002-1730-adaptive-policy-plan.md#stronger-prior-loss-propagation-outcomes--2026-10-06).
+
+
+Unmerged `b56bc21` resolves three repeated model scenario groups but retains
+full-gate failures. Its first field attempt never activates the candidate:
+the baseline capture has hub decode failures and poor loaded application
+metrics. Independent restoration/owned cleanup passes, with 31.811 MB mobile
+RX+TX across disjoint staging and comparison-through-cleanup windows.
+The capture cause is under investigation, with no relaxed observer gate or
+accepted new field candidate. See the [source and incomplete attempt](drafts/20261002-1730-adaptive-policy-plan.md#bounded-recent-physical-receipts-checked-source-and-incomplete-field-attempt--2026-10-06).
