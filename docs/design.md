@@ -3078,3 +3078,17 @@ source remains an unshipped diagnostic. Prior field snapshots do not locate
 the high echo delay. A bounded C8 packet-timing capture is running to observe
 the physical and TUN stages, with no candidate activated. The adaptive-policy
 plan retains exact sources, raw gates, accounting and measurement limits.
+
+
+The C8-only packet-timing workload completes with all 2750 echoes per host
+and guarded loaded p99 48.72/48.46 ms. Initial collection errors are retained;
+recovery and independent source/network cleanup pass, and byte-verified
+host-local archives preserve raw captures before owned directory removal.
+Measured disjoint mobile intervals total 23.198 MB including background.
+Exact same-datagram races show 5G first for 28.6% uplink and 76.6% downlink
+of copies recorded on both paths. TUN-to-encrypted-frame timing matches are
+explicit inferences with ambiguity and impossible matches excluded. This
+baseline observation establishes no improvement or profile gate. Receipt-gap
+copies fail the unchanged model deadline and remain unshipped; an aged-floor
+and directional-noise ranking diagnostic is running. The plan records exact
+sources, collection failures, recovery, archives, clocks and sampling limits.

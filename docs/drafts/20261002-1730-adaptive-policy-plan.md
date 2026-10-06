@@ -3849,3 +3849,75 @@ This is observation of installed C8, not a candidate trial, new policy or a
 performance claim from host CPU timing. Network changes retain removal timers.
 `packet-timing-field-20261006/` records preparation and metering; completion,
 cleanup and findings are still pending. The improvement goal remains active.
+
+
+### C8 packet timing: completed recovery and directional evidence — 2026-10-06, 05:40 IST
+
+**Observed:** one C8-only voice-first run, with adjacent direct references,
+fixed 2 Mbit/s wanbond 5G shaping and capped 3 Mbit/s upload, delivers all
+2750 echoes per host. Whole-run p99 is 50.19/49.38 ms and guarded loaded p99
+48.72/48.46 ms edge/hub. Receiver-relative upload bounds are 1.225–1.521
+Mbit/s in seconds 5–15 and 1.023–1.592 in seconds 25–30. This is a baseline
+observation; no candidate, improvement or rate-rise gate is claimed.
+
+Exact authenticated physical-frame hashes match 10989/10989 recorded edge
+224-byte data attempts and 9173/9176 recorded hub attempts across hosts.
+Capture-boundary omissions are not established packet losses. Both tcpdump
+captures report zero kernel drops. One-way transit variation above each
+lane's first percentile is Starlink 22.29/10.74 ms p99 uplink/downlink and
+5G 119.09/56.37 ms. These cross-host differences assume a stable relative
+clock offset over the capture; they are not absolute one-way latency.
+
+Same-datagram first-arrival comparisons use only the receiver's clock and
+avoid that assumption. Of 5489 edge datagrams recorded on both paths, 5G
+arrives first for 1571 (28.6%); its median lead is 5.45 ms. Of 3673 hub
+datagrams recorded on both, 5G arrives first for 2812 (76.6%); median lead is
+6.36 ms. Every direction has 5500 distinct 224-byte datagrams. This is the
+measured value of copies in this shaped observation, not evidence that every
+copy is necessary or that unshaped paths have the same distribution.
+
+**Inferred mapping, explicitly bounded:** a one-ms unique TUN-to-first-frame
+matching window identifies 5115/5500 and 5241/5500 datagrams. Sender-stage
+p99 is 0.234/0.193 ms and receiver-stage p99 0.238/0.262 ms in those subsets.
+Ambiguous or absent matches are retained as excluded counts. A two-ms window
+initially produced two impossible negative processing intervals; those are
+rejected and the failed analysis retained. Timing uniqueness does not prove
+the encrypted-to-plaintext mapping. Exact physical hashes and same-receiver
+copy races remain independent of this inference. No universal CPU or
+processing-delay conclusion is drawn from the subsets.
+
+The initial runner fails during collection: the edge archive exceeds its
+sixty-second transfer timeout, and the hub cleanup timer expires while edge
+collection is blocked. Recovery retrieves reduced metadata with bounded
+longer transfers. Original errors and incomplete runner status remain in
+raw manifests; supplemental `field-result.json` records completed workload,
+recovered collection and independently verified cleanup. Both C8 source/hash,
+original exit policy, no overrides, shaping, temporary rules or timers are
+verified after workload, owned cleanup and final checks. Verified inactive
+decoders and this run's reference directory are removed. Raw captures and
+logs are byte-verified into host-local archives before removal of their owned
+working directories. Keys and payloads are not exported.
+
+Archives are `wanbond-packet-timing-capture-{edge,hub}-archive-20261006.tar.gz`
+under each host's `/var/tmp`; SHA-256 is
+`2b63634be1bf56087a338b90d9182aff4cf553d357ea0f0314302682d1f5db4a`
+edge and `c511f6cfe75157f875006c84648187fe7cfc142c8d5e870ca7715bed054df422`
+hub. The edge reference archive is
+`/var/tmp/wanbond-packet-timing-upload-reference-archive-20261006.tar.gz`,
+SHA-256 `28f72a9d20282c2b0408ed5761c3c37d7e79b06fc34acfed3b58f92d8481b9a5`.
+Mobile RX+TX with background is 13.102 MB at the failed collection checkpoint,
+22.872 through final checks (overlapping), plus
+0.326 separate staging: 23.198 MB over disjoint measured intervals.
+The planned twenty-MB interval is exceeded during extended collection and
+background traffic; no hard volume enforcement is inferred from the runner's
+between-phase check. Payload offers remain capped. Evidence and exact limits
+are `packet-timing-field-20261006/` under the existing root.
+
+**Observed next diagnostics:** receipt-gap-only ordinary copies retain suspect
+fallback but fail unchanged loss-case gates three times: 5499/5500 delivered,
+eleven beyond 150 ms, longest 190 ms. It is rejected without field activation.
+The field's directional first-arrival evidence motivates replacing loaded RTT
+ranking with the existing aged RTT floor plus forward-delay noise. That
+single-rule overlay adds no estimator, constant or wire field. Repeated model
+checks are running; no source is promoted. Installed C8 remains accepted and
+the improvement goal stays active.
