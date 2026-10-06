@@ -3032,3 +3032,14 @@ worsens. It is not promoted. Both hosts are independently verified restored
 to C8 and owned runtime artifacts cleaned. The plan records exact sources,
 RF references, limits, seventeen failures and 29.536 MB measured mobile use.
 The next diagnostic removes the probe exception to voice-lane isolation.
+
+
+The `7a7092c` probe-isolation source passes fifteen selected outcomes three
+times and native/ARM builds, but retains seventeen full bond failures. Its
+new lossy-voice regression repeats: 1 → 7 of 5500 packets exceed 150 ms.
+Copies leave immediately; their modeled fast-lane service wait is 109–175 ms.
+A drain-target restriction worsens both service and loss-case voice and is
+rejected. A bounded fixed-2-Mbit/s B/C/B field comparison is being staged
+to isolate useful-service voice protection; it is not a rate-rise gate or
+acceptance. Exact sources, traces, research provenance and limitations remain
+in the adaptive-policy plan.

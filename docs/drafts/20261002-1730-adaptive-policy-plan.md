@@ -3614,3 +3614,44 @@ outcome and single-lane discovery guards; its success and field effect are
 not yet established. `slow-voice-{wire-isolation,lane-state}-*` retains traces.
 Installed `b444920` remains the accepted baseline; the improvement goal stays
 active and no new release is tagged.
+
+
+### Probe isolation: retained loss case and focused field question — 2026-10-06
+
+**Observed:** exact source `7a7092cec391295a5b9eb3313e5f8c8f4879bd7b`
+(code `0db4044`, ARM SHA-256
+`b32f112adb32fc0b286c31e46a8863b971384d6ad83a6b4626a3ebe62d5d2dc5`)
+passes fifteen distinct selected outcomes three times, native Nix and ARM.
+The full non-privileged gate has seventeen bond failures: slow-voice
+isolation resolves, but the lossy-voice deadline outcome newly fails. Other
+gate components pass. Before/after repetitions give 1 → 7 late datagrams
+of 5500 against five permitted, with longest delay 163 → 209 ms. The gate
+is retained unchanged. Traces show the seven copies leave immediately, then
+wait behind 109–175 ms of modeled fast-lane service. The learned floor and
+congestion allowance rise with the standing queue. This establishes the
+model tradeoff, not a field cause.
+
+A drain-target diagnostic prevents raising held service from peak evidence
+while draining. Three repetitions worsen late deliveries to 96 and reduce
+cold/rise discovery to 1.17/1.21 Mbit/s; several service outcomes collapse.
+It is rejected without production changes or activation. Evidence is
+`probe-isolation-lossy-deadline-{before,after}.txt`,
+`probe-isolation-lossy-voice*-trace.txt`, `probe-isolation-gate-result.json`
+and `probe-drain-keeps-held-service-*`.
+
+**Documented research:** the [July 2026 BBR draft's ProbeRTT section](https://www.ietf.org/archive/id/draft-ietf-ccwg-bbr-06.html#section-5.3.4)
+pairs RTT-floor estimation with queue-draining measurement. **Inference:**
+a sliding minimum alone does not establish an unloaded floor under sustained
+self-queue; this merits a separate estimator/lifecycle reproduction. No new
+drain mechanism or wire change is selected from that document alone.
+
+**Intended field isolation:** one timer-backed C8/candidate/C8 comparison at
+a fixed 2 Mbit/s wanbond 5G cap, with the same voice-first preflight, adjacent
+direct references and capped 3 Mbit/s upload. It tests whether protecting
+Starlink while 5G has useful bulk service improves loaded tails without
+losing service. It does not test a rate rise or waive the repeated loss-case
+regression. The bounded field experiment is authorized under section 7's
+field-first amendment; no promotion is intended from selected model gains.
+The forty-five-MB comparison ceiling, source/hash checks and restorations
+remain. Preparation is `probe-isolation-field-20261006/`; staging is running,
+no result or acceptance is claimed. Installed C8 remains accepted.
