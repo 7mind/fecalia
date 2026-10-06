@@ -716,3 +716,13 @@ metrics. Independent restoration/owned cleanup passes, with 31.811 MB mobile
 RX+TX across disjoint staging and comparison-through-cleanup windows.
 The capture cause is under investigation, with no relaxed observer gate or
 accepted new field candidate. See the [source and incomplete attempt](drafts/20261002-1730-adaptive-policy-plan.md#bounded-recent-physical-receipts-checked-source-and-incomplete-field-attempt--2026-10-06).
+
+
+The source-matched `b56bc21` field retry completes baseline/candidate/baseline
+with nine clean passive captures and 1250/1250 echoes each way per phase.
+Upload bounds overlap both baselines; candidate loaded voice p99 is 79/62 ms
+versus 54/55 before and 40/40 after. It does not justify promotion. Both deployed
+binaries/network state and owned cleanup are independently verified; disjoint
+staging and comparison-through-cleanup windows measure 25.247 MB mobile RX+TX
+including background. The earlier capture failure remains unexplained. Exact
+method, direct-reference limits and metering are in the [completed field set](drafts/20261002-1730-adaptive-policy-plan.md#completed-bounded-receipt-field-comparison--2026-10-06-12561306-utc).

@@ -4883,3 +4883,63 @@ Evidence is `recent-prefix-final-*`, `recent-prefix-resolved-scenarios-repeat3.t
 adaptivepolicy}.txt` and `recent-prefix-field-20261006/` under
 `/srv/nvme/tmp/wanbond-adaptive-evidence`. Installed `b444920` / `v0.0.3`
 remains accepted. Work continues on bounded discovery and field measurement.
+
+
+### Completed bounded-receipt field comparison — 2026-10-06, 12:56–13:06 UTC
+
+**Observed:** the source-matched `b56bc21` retry completes all three
+`b444920`/candidate/`b444920` phases. Both running hashes/commits match and
+the candidate's restoration timer is independently observed. The shorter
+method uses 25 seconds of 50 Hz voice each way, a six-second TCP upload at a
+3 Mbit/s offer, and a 2 Mbit/s cap on only the edge's concentrator-bound
+5G UDP. Immediate direct references precede every tunnel workload; voice-only
+preflights come first. All nine passive captures have zero decode failures,
+truncations and kernel drops. Rejection diagnostics are enabled without
+relaxing the observer gate. The earlier capture failure remains unexplained.
+
+| Observed metric | Baseline before | `b56bc21` | Baseline after |
+|---|---:|---:|---:|
+| Upload receiver bounds in seconds 3–6, Mbit/s | 0.998–1.878 | 0.979–1.894 | 0.934–1.904 |
+| Whole receiver TCP mean, Mbit/s | 1.128 | 1.261 | 1.286 |
+| Guarded TCP-active voice p99, edge/hub ms | 54.3/55.4 | 79.4/62.5 | 39.8/39.8 |
+| Whole voice p50, edge/hub ms | 29.3/29.5 | 30.8/29.5 | 33.2/31.5 |
+| Whole voice p99, edge/hub ms | 51.1/50.4 | 62.5/52.7 | 43.9/41.7 |
+| Whole received/sent echoes, each host | 1250/1250 | 1250/1250 | 1250/1250 |
+
+Candidate upload bounds overlap both baselines; its whole receiver mean lies
+between them. Guarded active p99 worsens against both, although it stays below
+150 ms. This is not a repeatable across-metric improvement and does not
+justify promotion. It is one field set, not a three-run/profile gate.
+Receiver bounds retain entire report intervals definitely/possibly within
+the window. Rates derived by assuming uniform arrival within reports are not
+used to prove exact deadlines. Voice uses each host's local timestamps;
+active windows contain 211–219 echoes and exclude startup/cleanup boundaries.
+The passive observations are kernel packet hooks, not application acceptance
+or cross-host one-way timing.
+
+Capped direct upload references are Starlink 0.511/0.506/0.508 Mbit/s under a
+1 Mbit/s offer, and 5G 3.012/2.949/2.873 under 3 Mbit/s. Capped downloads are
+Starlink 0.521/0.530/0.546 under 1 Mbit/s and 5G 5.972/6.000/5.974 under
+6 Mbit/s. Near-offer rates establish lower bounds, not maximum capacity; the
+OCI route cannot establish stationarity or causally attribute tunnel tails.
+Two preceding standalone loaded-capture diagnostics remain on `b444920`.
+Their one and three Mbit/s offers produce zero decode failures, with
+measured mobile RX+TX of 1.896936 and 4.300849 MB respectively. The second
+uses full-sized TCP segments and delivers 1.872/2.935 Mbit/s upload/download.
+These are diagnostic observations, not policy comparisons or maximum rates.
+
+Both hosts' deployed hashes, empty overrides, original exit policy, original
+queues, absent test timers/firewall rules and absence of owned inactive
+binaries/reference directories are independently verified after restoration
+and cleanup. The three owned edge `/run` reference directories are archived
+and byte-verified before removal. Disjoint mobile RX+TX windows including
+background are 1.206838 MB staging plus 24.039790 MB comparison through
+cleanup: 25.246628 MB. Comparison-only 23.515635 MB is nested and is not added.
+Including the earlier incomplete attempt and the two standalone diagnostics,
+these recorded disjoint windows total 63.254926 MB. Inter-window traffic and
+small passive/control-only intervals are unmeasured; this is not a whole-goal
+usage total.
+
+Evidence is `recent-prefix-retry-field-20261006/` and the standalone diagnostic
+subdirectories in `recent-prefix-field-20261006/`, under the adaptive evidence
+root. Installed `b444920` / `v0.0.3` remains accepted. The goal continues.
