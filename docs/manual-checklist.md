@@ -626,3 +626,13 @@ is independently verified restored and owned `/run` references/binaries removed.
 Measured disjoint mobile intervals total 77.264 MB including background; see
 [the ACK-prefix measurement record](drafts/20261002-1730-adaptive-policy-plan.md#ack-prefix-field-comparison--2026-10-06-06350656-utc)
 for identities, exact windows and the unproven original-loss occurrence.
+
+
+Combined receipt correction `8a64750` completes capped C8/candidate/C8 upload
+with 1750/1750 echoes each host/phase and no guarded TCP-active loss. Its receiver
+bounds overlap and whole-phase candidate p99 exceeds both baselines; retain
+those tails rather than claiming non-regression from guarded windows alone.
+Both installed identities and temporary state are independently verified
+restored; owned runtime references and candidate binaries are removed. Measured
+mobile RX+TX with background is 26.901 MB over disjoint intervals. The combined
+receipt checks total 104.166 MB excluding gaps; no performance release follows.

@@ -4233,3 +4233,65 @@ Continue the capacity and allocation investigation with these receipt outcomes
 as constraints; retain the rejected delay/drain and directional-noise results.
 Stage/profile gates, three-run lab series and the full metric objective remain
 outstanding. No release or permanent deployment is made.
+
+
+### Combined ACK correction field check — 2026-10-06, 07:08–07:20 UTC
+
+**Observed source:** `8a64750fcfdb78583ed8f078c053900c727fcdd1`, ARM SHA-256
+`9757731eba32a0fe4ac91a13cb9e5824b526185611957380b50462c86d5e03fc`.
+Final-source full non-privileged checks and native/ARM builds pass. Complete
+tagged policy tests retain exactly C8's 47 failure names. The controller is
+still C8; neither receipt correction adds an estimator, constant or wire field.
+
+The same capped upload comparison completes C8/candidate/C8: a ten-second
+3 Mbit/s offer against a 2 Mbit/s cap on wanbond's 5G uplink, beside 35 seconds
+of voice in both directions. Each 500/500 voice-only preflight passes; each
+whole voice stream delivers 1750/1750. The sources restart before their
+measurements and have immediate capped direct upload/download references.
+
+| Observed metric | C8 before | Combined correction | C8 after |
+|---|---:|---:|---:|
+| Upload receiver payload, seconds 5–10, bounded Mbit/s | 0.933–1.281 | 1.054–1.532 | 1.077–1.599 |
+| Guarded TCP-active voice RTT p99, edge/hub ms | 48.48 / 46.62 | 48.23 / 47.27 | 47.05 / 46.42 |
+| Whole-phase voice RTT p99, edge/hub ms | 48.53 / 47.63 | 55.99 / 55.41 | 50.80 / 48.72 |
+| Whole-phase missing echoes, edge/hub | 0 / 0 | 0 / 0 | 0 / 0 |
+| Adjacent direct 5G upload against 3 Mbit/s offer | 2.837 | 2.980 | 2.461 |
+
+Bounds overlap both baselines. The returning baseline matches candidate
+throughput and slightly betters guarded tail latency; whole-phase candidate
+p99 is higher than both. Similar guarded windows do not establish whole-phase
+non-regression. Direct 5G ICMP p99 is 123/95/154 ms with raw missing replies
+retained. These measurements establish no causal controller conclusion or
+broad performance gain. They do not show the reproduced receipt patterns
+occurred during this trial and are neither three repetitions nor profile gates.
+
+Both deployed source/hashes, original exit policy, absence of overrides,
+restoration timers, shapers and test firewall rules are independently verified
+after restoration and owned cleanup. Edge reference files are byte-verified
+into `/var/tmp/wanbond-ack-complete-prefix-upload-reference-archive-20261006.tar.gz`
+before their own `/run` directories are removed. Inactive candidate binaries
+are removed on both hosts. Measured disjoint mobile RX+TX includes 0.998 MB
+staging and 25.903 MB trial through cleanup: **26.901 MB** with background.
+Combined with the prior receipt checks, this continuation measures **104.166 MB**
+over disjoint intervals, excluding gaps; nested intervals are not added twice.
+Evidence is `ack-complete-prefix-field-20261006/` and
+`ack-complete-prefix-{final-nonprivileged-gate,nix-build,arm-build,tagged-comparison}.*`
+under the established evidence root.
+
+**Observed model diagnostic:** applying only both receipt corrections and the
+reordered-ACK outcome fixture to rejected estimator source `22d0657` passes
+both new four-size receipt matrices, but the complete default bond suite keeps
+all sixteen top-level failures (twenty-six including subtests), matching the
+previously recorded failure names. Correct receipts alone do not resolve its
+capacity/delay failures. The isolated patch remains uncommitted and never runs
+in the field. Evidence is `ack-corrected-policy-{receipts.patch,default.jsonl,default-comparison.json}`.
+The automatic three-way merge's resolved hunk was reviewed before running.
+
+**Intended:** retain the receipt corrections as a separately reviewed correctness
+change, not a performance release. Investigate matched send/receive sampling
+and whether delay reductions revise capacity from sender-paced evidence;
+retain the propagation-shift, real-capacity-drop, variable-delay, voice and
+small-standby constraints. Shipping a correction does not complete adaptive
+stages 2–3 or justify using the rejected estimator. Installed `b444920` / `v0.0.3`
+remains the performance baseline; all profile/lab repetition gates and the
+field metric objective remain outstanding. The goal stays active.

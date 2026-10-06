@@ -3679,3 +3679,19 @@ passes on code `11f7359`; final-source checks/builds and field regression checks
 are still being completed; it supplies
 no completed stage/profile gate or performance claim. Evidence and revisions
 remain in the adaptive-policy plan.
+
+
+The combined receipt correction `8a64750` passes exact-source full non-privileged
+checks, native Nix and clean ARM builds, retaining C8's same 47 tagged policy
+failures. Its capped C8/candidate/C8 upload check delivers all 1750 echoes per
+host/phase; guarded upload-active tails are similar and receiver bounds overlap.
+Whole-phase candidate p99 is higher than both baselines (56/55 ms versus
+49/48 and 51/49 ms). No broad performance or whole-phase non-regression claim
+follows. Both deployments and temporary state are independently verified
+restored; reference files are byte-verified into an edge archive before owned
+runtime cleanup. Disjoint measured mobile RX+TX with background is 26.901 MB,
+bringing this continuation's receipt checks to 104.166 MB, excluding gaps.
+The same corrections on the rejected estimator pass their new matrices but
+retain its sixteen top-level default failures. That source remains outside the
+field. Exact identities, clocks, RF references, bounds and next investigation
+are retained in the plan; no stage/profile acceptance or release is made.
