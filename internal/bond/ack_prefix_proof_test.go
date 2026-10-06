@@ -1,6 +1,7 @@
 package bond
 
 import (
+	"strconv"
 	"testing"
 	"time"
 )
@@ -8,6 +9,15 @@ import (
 // Correctness-Subcutaneous-Group: submit wire-valid frames directly to isolate
 // receipt accounting from capacity discovery, then observe actual repair delivery.
 func TestOldArrivalCannotAcknowledgeANewLostDatagram(t *testing.T) {
+	for _, bytes := range []int{32, 160, 384, 1200} {
+		t.Run(strconv.Itoa(bytes), func(t *testing.T) {
+			oldArrivalCannotAcknowledgeNewLoss(t, bytes)
+		})
+	}
+}
+
+func oldArrivalCannotAcknowledgeNewLoss(t *testing.T, bytes int) {
+	t.Helper()
 	start := time.Unix(100, 0)
 	a, b := New(Epoch{Boot: 1, Generation: 1}), New(Epoch{Boot: 2, Generation: 1})
 	a.SetRemote(b.Epoch(), true)
@@ -22,7 +32,10 @@ func TestOldArrivalCannotAcknowledgeANewLostDatagram(t *testing.T) {
 	path.rate, path.confirmedWireBytes = 12500000, maxPackets*maxDatagram
 	var received [86]int
 	submit := func(value byte, now time.Time) Transmission {
-		return a.transmit(&packet{payload: []byte{value}, created: now, class: classRealtime, interactive: true}, path, now)
+		payload := make([]byte, bytes)
+		payload[0] = value
+		c := classify(bytes, PacketMetadata{})
+		return a.transmit(&packet{payload: payload, created: now, class: c, interactive: c != classBulk}, path, now)
 	}
 	deliver := func(tx Transmission, now time.Time) []Delivery {
 		got, err := b.Receive(tx.Path, tx.Frame, now)
@@ -30,7 +43,7 @@ func TestOldArrivalCannotAcknowledgeANewLostDatagram(t *testing.T) {
 			t.Fatal(err)
 		}
 		for _, d := range got {
-			if len(d.Payload) != 1 || int(d.Payload[0]) >= len(received) {
+			if len(d.Payload) != bytes || int(d.Payload[0]) >= len(received) {
 				t.Fatalf("unexpected delivery: %v", d)
 			}
 			received[d.Payload[0]]++
@@ -50,6 +63,7 @@ func TestOldArrivalCannotAcknowledgeANewLostDatagram(t *testing.T) {
 	}
 	acknowledge(start.Add(40 * time.Millisecond))
 	initialDeficit := path.sent - path.ackedBytes
+	path.rate = 12500000
 	const missing = byte(4)
 	for value := missing; value <= 85; value++ {
 		tx := submit(value, start.Add(41*time.Millisecond))
@@ -69,7 +83,7 @@ func TestOldArrivalCannotAcknowledgeANewLostDatagram(t *testing.T) {
 		now := start.Add(time.Duration(tick) * time.Millisecond)
 		for _, tx := range poll(a, now) {
 			for _, got := range deliver(tx, now) {
-				if len(got.Payload) == 1 && got.Payload[0] == missing {
+				if len(got.Payload) == bytes && got.Payload[0] == missing {
 					t.Logf("repaired after %s", now.Sub(start.Add(41*time.Millisecond)))
 					return
 				}
