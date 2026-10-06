@@ -3927,3 +3927,12 @@ metrics. Upload voice tails worsen on candidate; concurrent service is near
 the offer on candidate and final baseline. Source, guarded latency results,
 reference limits and evidence paths are in the
 [comparison record](../../docs/drafts/20261002-1730-adaptive-policy-plan.md#directional-tcp-comparison-and-queue-period-correction--2026-10-06).
+
+## Release checkpoint — 2026-10-06
+
+Operator-selected `v0.0.4` tags `ad7fea9` exactly. Full non-privileged checks
+and Nix build pass; the 52-case corrected-model series still has 35 failures
+per repetition. Lab/profile triplicates and existing VM non-regression gates
+remain incomplete. Experimental queue-period `07731c7` remains unmerged.
+Further work is paused; the [wrap-up](../../docs/drafts/20261006-2142-adaptive-policy-wrap-up.md)
+preserves directional field results, byte accounting and the resume point.

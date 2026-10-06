@@ -3345,3 +3345,12 @@ of staged candidates. Four disjoint recorded intervals use 82.373319 MB
 mobile RX+TX with background. Exact guarded voice results, byte accounting,
 source qualification and incomplete stage/profile proofs are in the
 [directional comparison record](drafts/20261002-1730-adaptive-policy-plan.md#directional-tcp-comparison-and-queue-period-correction--2026-10-06).
+
+### Operator-selected release boundary — 2026-10-06
+
+The operator selects `ad7fea9` for `v0.0.4` and pauses further improvement work.
+Its production source matches restored field `2f3187e`; later commits correct
+the shared TCP test model and documentation. Experimental queue correction
+`07731c7` remains unmerged. The [release wrap-up](drafts/20261006-2142-adaptive-policy-wrap-up.md)
+records telemetry/receipt changes since `v0.0.3`, field results, unchanged
+invariants and incomplete adaptive acceptance.

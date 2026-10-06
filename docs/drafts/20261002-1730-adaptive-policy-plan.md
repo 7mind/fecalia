@@ -5448,3 +5448,13 @@ Evidence under `/srv/nvme/tmp/wanbond-adaptive-evidence/` is
 `tcp-download-startup-field-diagnostics.json`, `unknown-capacity-flight-*`,
 `unknown-bulk-delay-flight-*` and `unknown-flight-reno-baseline-before.txt`.
 No new accepted policy candidate, release or field activation follows.
+
+## Operator release and pause — 2026-10-06
+
+**Operator decision:** tag `ad7fea9` exactly as `v0.0.4`, write a wrap-up and
+stop improvement work for now. This supersedes section 11's instruction to
+continue work; it does not declare its metrics or section 4 gates achieved.
+The release's production source matches restored field `2f3187e`.
+Experimental queue correction `07731c7` remains unmerged. The
+[wrap-up](20261006-2142-adaptive-policy-wrap-up.md) records the release boundary,
+measured outcomes, model/lab limits, cleanup and deferred strategy.
