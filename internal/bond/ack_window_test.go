@@ -139,6 +139,12 @@ func TestReorderedACKMergesReceiptsWithoutRegressingFeedback(t *testing.T) {
 	a.Path(0, 0, 80*time.Millisecond, now)
 	a.paths[0].rate = 12500000
 	a.paths[0].confirmedWireBytes = maxPackets * maxDatagram
+	// A lost keepalive leaves the physical prefix incomplete, so delivery
+	// still needs the older global receipt bitmap.
+	now = now.Add(200 * time.Millisecond)
+	if sent := poll(a, now); len(sent) != 1 || a.seq != 0 || a.paths[0].seq != 1 {
+		t.Fatal("fixture did not send the initial keepalive")
+	}
 	for i := 0; i < 400; i++ {
 		at := now.Add(time.Duration(i) * 120 * time.Microsecond)
 		if err := a.Enqueue(make([]byte, 1200), PacketMetadata{}, at); err != nil {
@@ -147,8 +153,8 @@ func TestReorderedACKMergesReceiptsWithoutRegressingFeedback(t *testing.T) {
 		poll(a, at)
 	}
 	full := [ackReceiptWords]uint64{^uint64(0), ^uint64(0), ^uint64(0), ^uint64(0)}
-	old := acknowledgement{observed: a.Epoch(), high: 256, mask: ^uint64(0), bytes: 256 * (1200 + wireOverhead), elapsed: uint64(30 * time.Millisecond), receivedHigh: 256, receivedMask: full}
-	newer := acknowledgement{observed: a.Epoch(), high: 400, mask: ^uint64(0), bytes: 400 * (1200 + wireOverhead), elapsed: uint64(48 * time.Millisecond), receivedHigh: 400, receivedMask: full}
+	old := acknowledgement{observed: a.Epoch(), high: 257, mask: ^uint64(0), bytes: 256 * (1200 + wireOverhead), elapsed: uint64(30 * time.Millisecond), receivedHigh: 256, receivedMask: full}
+	newer := acknowledgement{observed: a.Epoch(), high: 401, mask: ^uint64(0), bytes: 400 * (1200 + wireOverhead), elapsed: uint64(48 * time.Millisecond), receivedHigh: 400, receivedMask: full}
 	if _, err := a.Receive(0, ackFrame(remote, 0, 2, newer), now.Add(60*time.Millisecond)); err != nil {
 		t.Fatal(err)
 	}
@@ -169,7 +175,7 @@ func TestReorderedACKMergesReceiptsWithoutRegressingFeedback(t *testing.T) {
 	if _, err := a.Receive(0, frame, now.Add(61*time.Millisecond)); err != nil {
 		t.Fatalf("first arrival of a reordered receipt must be useful: %v", err)
 	}
-	if len(a.pending) != 0 || path.inflight != 0 {
+	if len(a.pending) != 0 || path.inflight != wireOverhead {
 		t.Fatalf("reordered receipt left pending=%d in_flight=%d", len(a.pending), path.inflight)
 	}
 	if path.ackRevision != 2 || path.ackedBytes != newer.bytes || path.ackedElapsed != newer.elapsed || path.rate != previousRate || path.rtt != previousRTT || path.lastACK != previousACK {
