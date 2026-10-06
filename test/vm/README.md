@@ -3608,7 +3608,16 @@ is held without staging. The conditional unloaded-mean alternative also
 fails persistent choice. Corrected `734f7ad` retains the physical-ACK RTT mean
 and replaces RTT variation with forward noise; seven selected outcomes pass
 three times, but lightly loaded p99 rises 51 to 55 ms within its unchanged
-gate. Native/ARM builds pass; complete corrected checks are running. The
-bounded field comparison is prepared with independent cleanup and a measured
-owned-workload abort threshold. No candidate is uploaded or active. Exact
-sources, failures, experimental target limits and metering are in the plan.
+gate. Native/ARM builds pass. Complete corrected checks retain sixteen default
+bond failures and failed scenario families, with no new failure; a supplementary
+buffered rate-fall outcome now passes. A complete capped C8/candidate/C8 field
+comparison retains all 2750 echoes each way in each phase. Guarded loaded p99
+is 52.009/61.822 → 51.133/50.506 → 52.539/52.117 ms; early TCP bounds fall
+below the first baseline and overlap the second, while late bounds overlap.
+Whole-phase tails improve more, with variable direct ICMP latency. No gain
+across all metrics or causal attribution is established. Both C8 deployments
+and network/policy state are independently verified after owned cleanup;
+inactive candidate binaries are removed. Disjoint measured mobile RX+TX
+with background is 41.167 MB. The observation-only probe trace refutes early
+probe termination in the cellular discovery failure. Exact source, failed
+gates, bounds, references, metering and continuing investigation are in the plan.

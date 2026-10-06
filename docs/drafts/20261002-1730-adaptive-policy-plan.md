@@ -3965,3 +3965,72 @@ voice senders, with PID/identity guards, while retaining observation.
 Uncontrolled background and collection remain outside volume enforcement.
 Corrected source is not uploaded or active; exact gate review remains first.
 Installed C8 remains accepted and the improvement goal stays active.
+
+
+### Corrected directional-noise field comparison — 2026-10-06, 06:12 IST
+
+**Observed:** exact source `734f7ad` completes native/ARM builds and all
+checks. The default gate fails the same sixteen top-level bond outcomes as
+parent `b564d74`, with no new failure. The tagged suite still fails the
+section 4 scenario families; supplementary
+`TestAdaptivePolicy2aBufferedLowLatencyLaneFalls` newly passes. Frontend,
+build/vet, dependency/device tests, formatting and other Go packages pass.
+Neither gate is accepted or weakened.
+
+The fixed-2-Mbit/s capped C8/candidate/C8 comparison completes all three
+phases without reboot, cleanup error or budget abort. Each voice-only
+preflight is 500/500 in both directions; each loaded phase is 2750/2750
+in both directions. These are observations from one comparison, not three
+repetitions or a profile-family gate.
+
+| Observed metric | C8 before | Candidate | C8 after |
+|---|---:|---:|---:|
+| TCP receiver payload, seconds 5–15, bounded Mbit/s | 1.322–1.635 | 1.068–1.318 | 1.254–1.533 |
+| TCP receiver payload, seconds 25–30, bounded Mbit/s | 1.179–1.820 | 1.092–1.574 | 1.137–1.626 |
+| Guarded TCP-active echo p99, edge/hub ms | 52.009 / 61.822 | 51.133 / 50.506 | 52.539 / 52.117 |
+| Whole-phase echo p99, edge/hub ms | 100.685 / 89.546 | 49.299 / 49.897 | 54.988 / 55.395 |
+| Whole-phase missing echoes, edge/hub | 0 / 0 | 0 / 0 | 0 / 0 |
+| Adjacent direct Starlink / 5G upload, Mbit/s | 0.518 / 3.008 | 0.518 / 2.975 | 0.510 / 2.966 |
+
+TCP bounds use complete receiver reports certainly inside or possibly
+overlapping each window. They do not assume uniform arrivals or prove an
+adaptation deadline. Direct offers are 1/3 Mbit/s, not maximum-capacity tests.
+Direct 5G idle ICMP p99 varies 122/70.9/107 ms; Starlink varies
+37.9/53.9/37.9 ms, with missing replies retained. Similar bounded rates do
+not establish stationary latency. The whole-phase tail gain is larger than
+the guarded loaded-tail difference; the latter is the relevant comparison
+for a call during TCP load. Early candidate bounds are below the first
+baseline but overlap the second; late bounds overlap both. No improvement
+across the metric set or causal RF/controller conclusion is established.
+
+Late first-submission counters put candidate voice on Starlink and almost
+all bulk on 5G (481/0 voice and 1/599 bulk). C8 before uses 0/470 voice and
+116/567 bulk; C8 after uses 463/7 voice and 12/631 bulk. These exclude copies
+and repairs and do not establish socket receipt. Candidate real-time queue
+residence p99 is bounded by 1 ms, with zero small-queue drops; outer expiry is
+18/0 → 2/0 → 1/0, not application loss. The TBF backlog/rate proxy does not
+uniformly improve and is not packet waiting time.
+
+Both deployed C8 source/hashes, original exit policy, absence of overrides,
+timers and test network rules are independently verified before and after
+owned cleanup. Inactive candidate binaries are removed. Reference files are
+byte-verified into
+`/var/tmp/wanbond-directional-current-mean-upload-reference-archive-20261006.tar.gz`
+on the edge, SHA-256
+`084960e1f9a1ce998cbdfdd942e22f7293edbdc2e0c7c5ba6bc198249c4753e5`,
+before their owned runtime directories are removed. Measured mobile RX+TX
+with background is 39.310 MB at comparison completion, 40.151 through cleanup
+(overlapping), plus 1.016 separate staging: 41.167 MB over disjoint intervals.
+The 42 MB owned-workload abort monitor never triggers; its abort path is not
+field-proven, and uncontrolled background/collection is outside enforcement.
+Evidence is `directional-current-mean-field-20261006/` under the existing root.
+
+**Observed diagnostic:** observation-only overlays trace the unchanged
+cellular discovery failure: 114 probe endings, none earlier than their
+planned 10–12 ms bounds, and 3.41/4.32 Mbit/s after five seconds. The
+hypothesis that early-success termination causes this failure is refuted
+in this reproduction; no behavior patch follows. Longer probes already
+regress voice/queue outcomes. **Intended next investigation:** isolate the
+remaining delivery-sampling and residual-service constraints while retaining
+voice protection and physical-reference measurements. This source remains
+unaccepted; installed C8 is the baseline and the improvement goal is active.
