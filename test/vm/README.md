@@ -1020,6 +1020,19 @@ the lowest transit time seen; a wandering path sits above that floor most of
 the time, and when the wander is slow the samples of a control interval move
 together, so their minimum is no nearer the floor than any of them.
 
+The shared sender's 2026-10-06 Reno-friendly recovery correction changes the
+input to both this model and `adaptivepolicy`, leaving their acceptance
+assertions unchanged. The ten-flight loss reproduction fails on original
+`f75668e` before correction and passes three times afterwards. Four controls
+preserve slow start, cubic growth, congestion reduction and acknowledged-data
+credit. The full non-privileged gate and native Nix build pass. All 52 scenario
+measurements and verdicts are identical across three repetitions: original
+controller passes 13, current policy 17. Preserve older results with their
+input version; neither this input correction nor the pass count establishes
+better field performance. The
+[repeated scenario record](../../docs/drafts/20261002-1730-adaptive-policy-plan.md#tcp-model-recovery-and-download-startup--2026-10-06)
+also retains the separately rejected initial-flight diagnostics.
+
 Model, 300+300 Mbit/s unless stated, last 30 of 60 s, Mbit/s (T =
 `668f40a`, X = the candidate):
 

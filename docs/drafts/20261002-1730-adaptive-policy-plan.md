@@ -5362,3 +5362,89 @@ unchanged. Preserve `generation-byte-clock-*`, `probe-service-isolation-*`
 and `bulk-completion-rank-*`; these diagnostics are not candidates. Work
 continues on qualified discovery, with all three TCP workloads required in
 future field comparisons.
+
+## TCP model recovery and download startup — 2026-10-06
+
+**Observed reproduction and correction:** the CUBIC-like test sender omits
+Reno-friendly congestion avoidance. Ten acknowledged flights following a
+20-to-14-segment loss reduction reach only 15.345 segments; the 18-segment
+outcome bound fails three times on both original `f75668e` and current source.
+Test-only `67eca56` precedes shared-model correction `90dcac1`. The corrected
+sender retains an additive window estimate, credited by newly acknowledged
+segments and reset on congestion reduction or entry into congestion avoidance.
+It reaches 19.294. Four controls preserve slow start, cubic growth, a new
+congestion reduction and the need for acknowledged data; all pass three times.
+No production rule, wire format or scenario assertion changes.
+
+**Observed field configuration and source basis:** both hosts report CUBIC,
+Reno friendliness `1`, beta `717`, scale `41`, HyStart `1`, detection `3`, low
+window `16`; kernels are edge `6.18.52`, hub `6.18.42`. The model's additive
+estimate approximates [RFC 9438 section 4.3](https://www.rfc-editor.org/rfc/rfc9438.html#section-4.3).
+[Linux 6.18 CUBIC](https://github.com/torvalds/linux/blob/v6.18/net/ipv4/tcp_cubic.c)
+also supplies Reno-friendly growth. These are read-only runtime observations
+and authoritative source descriptions, not a claim of complete Linux emulation.
+A separate sparse-ACK reproduction ends slow start at 41 rather than 80
+segments. Adding the minimum-sample/low-window guard in a diagnostic restores
+that case but leaves quiet finite download unchanged; retain it as an unresolved
+model approximation. That diagnostic is not applied to the repeated input.
+
+**Observed unchanged-gate remeasurement:** all 52 cases on each controller
+have identical measurements and verdicts across three repetitions. The
+original controller's test-only adapter accounts for its older void `Path`
+and single-result `Poll` APIs; controller code is untouched. Retain the first
+unadapted compilation failure separately from the successful scenario runs.
+
+| Section 4 scenario | Original `f75668e` pass / fail | Current policy pass / fail |
+|---|---|---|
+| 1a blackout | 5 / 3 | 4 / 4 |
+| 1b recovery | 0 / 4 | 0 / 4 |
+| 1c one-way blackout | 6 / 10 | 9 / 7 |
+| 2a rate fall | 0 / 4 | 0 / 4 |
+| 2b rate rise | 0 / 2 | 0 / 2 |
+| 2c plan change | 0 / 2 | 0 / 2 |
+| 2d cellular grants | 0 / 2 | 1 / 1 |
+| 3a preferred lane gains delay | 2 / 2 | 2 / 2 |
+| 3b other lane improves | 0 / 4 | 0 / 4 |
+| 3c both lanes gain delay | 0 / 4 | 1 / 3 |
+| 0 cold transfer | 0 / 2 | 0 / 2 |
+| Total | 13 / 39 | 17 / 35 |
+
+The original-controller passes remain findings against section 2's predicted
+caller-visible failures; do not change them to make every case fail. Current
+radio lane-0 blackout with bulk now fails where original passes. The higher
+total pass count is not improvement across metrics or stage acceptance. The
+full non-privileged gate and native Nix build pass for the model correction.
+Existing lab continuity/benchmark/UDP gates and triplicate field acceptance
+are not established by this model run.
+
+**Observed finite-model limits:** on the prior short-push prototype, adding
+Reno-friendly recovery changes quiet download from 555,600 to 1,479,200 B/s,
+above its unchanged 75% reference bound; the delay-pulse variant still fails
+at 1,290,400 B/s. Concurrent quiet download remains below its bound at
+1,001,200 B/s. This is a model-input change, not a production performance gain.
+
+**Observed field startup and rejected replacements:** retained hub sender
+reports show first-interval RTT 378.298 / 377.235 / 379.982 ms for baseline /
+queue-period candidate / baseline download. Near the hub's own setup timestamp,
+early bulk originals favor Starlink; by about two seconds, its loss-signal
+counter rises and peer expirations reach 4 / 4 / 7 while 5G's loss signal does
+not rise. Those samples use setup-relative windows, not certified TCP starts;
+peer counters can include background. The counter named `repair_packets_total`
+includes copies, as inferred from `transmit`, and is not a count of repairs
+alone. This supports a startup-assignment hypothesis, not a proven field cause.
+
+Replacing the probe class-window clamp with one-datagram flight while capacity
+is unknown collapses finite quiet download to 23,600 B/s. Gating it on missing
+full-size delay evidence instead reaches 1,664,000 / 2,095,600 B/s in the two
+finite download cases, but both replacements collapse healthy sole-lane bulk
+with voice from 535,200 / 5,570,480 to 12,000 B/s. Cold transfer and concurrent
+outcomes still fail. Both replacements are rejected and receive no field trial.
+Continue by reproducing startup assignment and physical receipt qualification
+without depriving discovery of the real queued traffic it needs.
+
+Evidence under `/srv/nvme/tmp/wanbond-adaptive-evidence/` is
+`tcp-reno-friendly-*`, `tcp-model-cubic*-field-parameters.json`,
+`tcp-sparse-feedback-*`, `tcp-hystart-sample-count-*`,
+`tcp-download-startup-field-diagnostics.json`, `unknown-capacity-flight-*`,
+`unknown-bulk-delay-flight-*` and `unknown-flight-reno-baseline-before.txt`.
+No new accepted policy candidate, release or field activation follows.

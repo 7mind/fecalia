@@ -408,6 +408,21 @@ scenario gates. The [trial record](drafts/20261004-1105-adaptive-stage1-trial.md
 retains executable/source hashes, old and corrected model provenance,
 field variability, counter deltas and outstanding acceptance work.
 
+**Observed model correction, 2026-10-06:** a post-loss recovery reproduction
+fails three times on `f75668e` and the installed-policy source: ten acknowledged
+flights grow a 14-segment window to 15.345, below the 18-segment recovery bound.
+Both field hosts report CUBIC with Reno friendliness enabled. The shared test
+sender now retains an additive window estimate from newly acknowledged
+segments, as described by [RFC 9438 section 4.3](https://www.rfc-editor.org/rfc/rfc9438.html#section-4.3),
+and takes the greater growth. It reaches 19.294; slow start, new congestion
+reductions and the requirement for acknowledged data retain passing controls.
+This changes test input, with no production controller or gate-threshold change.
+All 52 scenarios repeat identically three times: original controller passes
+13, current policy 17, with failed outcomes retained. The models remain
+approximations: a separate sparse-ACK HyStart reproduction and minimum-sample
+diagnostic are retained without applying that diagnostic. See the
+[remeasurement record](drafts/20261002-1730-adaptive-policy-plan.md#tcp-model-recovery-and-download-startup--2026-10-06).
+
 A further test-model reproduction found previously SACKed data being sampled
 again on cumulative progress, while fresh SACK timing was ignored. Both
 models now share RTT selection that excludes ambiguous retransmission timing
