@@ -3800,3 +3800,52 @@ Each repeats three times. These are unshipped diagnostics, not field gains.
 `queue-offset-{delayed-copy,floor-timed-copy}-*` retains sources and outcomes.
 A measured-copy-demand reservation diagnostic is running. Its outcome and
 any field effect remain unknown; the improvement goal stays active.
+
+
+### Copy timing: bounded local benefit, unresolved field cause — 2026-10-06, 05:21 IST
+
+**Observed local:** after allowance-removal source `b564d74`, a two-file
+external overlay delays ordinary real-time copies until the larger of the
+aged RTT floor and peer ACK cadence, and reserves measured extra-attempt
+traffic in place of the prediction from all originals. Suspect fallback and
+the ordinary token allowance remain. The measured rate includes real-time
+repairs as well as first copies; it is not a distinct repair-cost measurement.
+This replaces rules rather than adding a parallel policy, without new
+constants or wire fields. No production file is changed or candidate built.
+
+Ten default outcome tests pass three times, including mixed voice/bulk,
+physical batching, slow-lane takeover and lossy preferred-lane service. The
+full default bond suite retains the parent's sixteen failures and adds none.
+The tagged early alternate-delivery outcome fails the parent for its stated
+receiver deadline three times and passes the overlay three times. It proves
+early alternate delivery, not correct suspect classification. The full tagged
+selection also resolves `TestAdaptivePolicy2dCellularGrants/radio`, with no
+new failure in one before/after run; most scenario gates remain failed. This
+is not a three-run profile or stage gate.
+
+Test-only public-transmission accounting over eight seeds, with zero and
+0.4% preferred-lane loss, measures 1.17–2.66% fewer voice-frame wire bytes.
+All 5500 voice datagrams arrive in each case. p99 is generally 1–3 ms higher;
+lossy seed four has one arrival at 156 ms, versus none beyond 150 ms and a
+111 ms maximum on its parent. **Inference:** the small byte saving and higher
+tails do not establish a better candidate. This diagnostic remains local and
+unaccepted. Its exact sources, full gates, seed outcomes and accounting are
+`queue-offset-{cadence-floor-copy,copy-cost,copy-tagged}-*` under the existing
+evidence root. The earlier floor-plus-cadence measured-reservation diagnostic
+fails unchanged loss-case gates: 5499/5500 delivered and six beyond 150 ms.
+Its late copies leave 81 ms after creation; this is observed transmission
+timing, not evidence of delayed copy admission.
+
+**Observed field-trace limit:** the allowance-removal candidate's high echo
+delays coexist with much smaller preceding lane RTT samples. For example a
+239 ms echo follows samples of 36/47 ms, taken 19 ms before its send. Those
+snapshots do not identify the physical attempt, reverse path or processing
+stage responsible. **Intended:** capture authenticated outer-frame metadata
+and the test's TUN UDP timings during one C8 voice-first, capped upload after
+adjacent direct references. The decoder reads keys on the hosts and exports
+only timing, sequence, sizes and hashes; keys and payloads stay local. Its
+synthetic Ethernet, cooked Linux and raw IPv4 checks pass, and ARM builds.
+This is observation of installed C8, not a candidate trial, new policy or a
+performance claim from host CPU timing. Network changes retain removal timers.
+`packet-timing-field-20261006/` records preparation and metering; completion,
+cleanup and findings are still pending. The improvement goal remains active.

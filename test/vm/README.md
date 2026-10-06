@@ -3576,3 +3576,14 @@ remains unaccepted with sixteen bond failures; native/ARM builds pass.
 Longer probes improve modeled discovery but regress voice/queue outcomes.
 Delayed copies and their reservations also expose a service/deadline tradeoff.
 Those diagnostics remain local; the plan records exact sources and limits.
+
+
+Copy-timing overlays after `b564d74` retain sixteen default bond failures and
+add none; ten selected outcomes pass three times. Two tagged outcomes resolve
+in one full comparison, while most scenario gates remain failed. Eight seeds
+with and without preferred-lane loss measure 1.17–2.66% lower voice-frame byte
+cost but generally higher p99; one lossy-seed packet arrives at 156 ms. The
+source remains an unshipped diagnostic. Prior field snapshots do not locate
+the high echo delay. A bounded C8 packet-timing capture is running to observe
+the physical and TUN stages, with no candidate activated. The adaptive-policy
+plan retains exact sources, raw gates, accounting and measurement limits.
