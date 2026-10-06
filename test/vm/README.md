@@ -3629,7 +3629,9 @@ C8 passes that fixture. Restoring only parent RTT-variation ranking gives
 1250/1250 each way and 45/52 ms p99 three times; no field causal conclusion
 follows. The new outcome is committed before removing the failed ranking
 rule. Production then equals parent `b564d74`; shared voice gates and seven
-selected outcomes pass three times. Complete removal-source checks/build
-remain pending. This is correction of a rejected experiment, not a new field
-candidate or accepted improvement. Exact fixture inputs, revisions, logs and
+selected outcomes pass three times. Complete removal-source checks retain
+the same sixteen top-level default bond failures and sixty-eight tagged failure entries as its parent, with no
+new or resolved failure. Other gate components and native Nix builds pass;
+the new directional-noise outcome passes. This is correction of a rejected
+experiment, not a new field candidate or accepted improvement. Exact fixture inputs, revisions, logs and
 continuing constraints are recorded in the adaptive-policy plan.

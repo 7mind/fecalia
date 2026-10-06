@@ -4064,7 +4064,13 @@ Seven selected existing outcomes pass three times. Production policy equals
 parent `b564d74` after removal: no new estimator, constant, traffic or wire
 field is added. The `control.go` count remains eight versus thirty-one in C8.
 This corrects a rejected experiment, not a new field improvement or release.
-Complete removal-source gates and Nix build remain pending at this record.
+Complete checks of removal source `6eb40eb` retain the same sixteen
+top-level default failures (twenty-six including subtests) and the same
+sixty-eight tagged failure entries as parent `b564d74`, with no added or
+resolved failure. The new directional-noise outcome passes. Frontend,
+build/vet, patched-device tests, formatting and other Go packages pass;
+native Nix builds pass on that experiment and main `c6bfa76`. These failures
+remain acceptance blockers.
 
 Evidence is `field-residual-service-*`, `directional-noise-committed-repro-*`,
 `directional-noise-shared-voice-gates-green.txt` and
