@@ -4686,8 +4686,8 @@ queued-receipt and settled TCP outcomes pass three times. Selected genuine
 capacity drops, settled propagation service and voice constraints pass;
 noisy voice p99 is 102/103 ms and bulk 800760/844200 B/s. All 5500 lossy voice
 datagrams arrive within 150 ms, maximum 115 ms. Discovery (3.23/5.40 Mbit/s)
-and jittery startup still fail. Full checks/builds are running; this new source
-has no field result. No estimator, control constant, synthetic traffic or wire
+and jittery startup still fail. At this checkpoint full checks/builds were running and this source had no
+field result. The completed checks and first field comparison are recorded below. No estimator, control constant, synthetic traffic or wire
 field is added; `control.go` has eight constants against main's 31.
 
 Evidence is `post-drain-frames-field-20261006/`,
@@ -4698,7 +4698,76 @@ Evidence is `post-drain-frames-field-20261006/`,
 qualified-selected,qualified-capacity-drop,final-*}.*` under
 `/srv/nvme/tmp/wanbond-adaptive-evidence`.
 
-**Intended:** preserve the new qualifications, finish source checks and test
-in the field, while resolving discovery and noisy startup. The installed
+**Intended at this checkpoint:** preserve the new qualifications, finish source
+checks and test in the field, while resolving discovery and noisy startup. The installed
 `b444920` / `v0.0.3` remains the accepted baseline. No new tag, completed stage,
 three-run lab/profile acceptance or all-metric improvement is claimed.
+
+
+## Reactive delay measurement field comparison — 2026-10-06, 11:26–11:34 UTC
+
+**Observed:** exact source `c7ecab697c5d6e9df4ebdef9d753cf793fc8c2d7`
+(code `b270409`, preceding outcome test `593faa4`) builds natively with Nix
+and for ARM64. The ARM executable SHA256 is
+`f8a7e25b436c7021f392d513da98c6f2aa64272d8226b9305edf4d6acea53e9e`.
+The complete default gate retains 24 top-level bond failures; tagged adaptive
+checks retain 102 failure entries / 46 top-level failures. Other default gate
+components pass. Those failures are recorded before field staging; the
+experiment remains unmerged and is not a release candidate.
+
+The bounded C8/experiment/C8 comparison uses the preceding field method:
+500/500 voice-only preflight per host, immediate capped direct references,
+ten-second TCP upload offered at 3 Mbit/s, wanbond-only 2 Mbit/s 5G cap,
+35-second bidirectional voice, passive authenticated frame timestamps, and
+independent restoration timers. No blackout or wire change occurs.
+
+| Observed metric | C8 before | `c7ecab6` | C8 after |
+|---|---:|---:|---:|
+| Whole-phase edge voice p50, ms | 29.19 | 29.22 | 31.41 |
+| Whole-phase edge voice p99, ms | 44.54 | 44.76 | 47.00 |
+| Whole-phase hub voice p50, ms | 30.63 | 30.56 | 30.90 |
+| Whole-phase hub voice p99, ms | 47.59 | 45.28 | 46.07 |
+| Upload-active edge/hub p99, ms | 42.39 / 40.70 | 44.03 / 42.66 | 47.15 / 45.06 |
+| Late upload receiver bounds, Mbit/s | 1.19616–1.80480 | 1.22880–1.80288 | 0.19392–0.30144 |
+| Whole upload receiver mean, Mbit/s | 1.2314 | 1.2957 | 0.2248 |
+| Whole-phase edge/hub echoes | 1750 / 1750 | 1750 / 1750 | 1750 / 1750 |
+| Largest edge/hub receive gap, ms | 70.22 / 52.08 | 68.16 / 45.57 | 64.05 / 43.92 |
+| Direct 5G upload, 3 Mbit/s offer | 2.927 | 2.998 | 2.997 |
+| Direct Starlink upload, 1 Mbit/s offer | 0.522 | 0.516 | 0.499 |
+
+**Observed limits:** candidate and preceding-baseline late upload bounds overlap;
+active voice tails are slightly higher in the candidate. The trailing baseline
+has much lower TCP service despite a similar immediately preceding direct
+reference. Its sender intervals include several zero-byte seconds and TCP RTT
+up to 647 ms; sampled 5G capacity stays near 59.6 kB/s, with no upward probes
+through the upload. The experiment samples approximately 264–287 kB/s capacity
+and continuing probes. These are controller/TCP observations, not evidence of
+stationary RF conditions or a causal source-to-throughput gain. No consistent
+improvement across metrics or repeated acceptance is established. Whole means
+come from the hub's receiver summary; adaptation bounds use receiver intervals,
+without within-report interpolation proving a deadline.
+
+All nine frame captures have zero authentication/decoding failures, truncation
+or kernel drops. Packet hooks remain distinct from physical emission and
+application delivery. Both deployed binary hashes, empty service overrides,
+exit policy, original qdiscs, and absence of owned timers/processes/artifacts
+are independently verified after cleanup; boot IDs are unchanged. Three owned
+edge `/run` reference directories are byte-verified into
+`/var/tmp/wanbond-reactive-measurement-upload-reference-archive-20261006.tar.gz`
+before removal. The verified inactive candidate and observer binaries are
+removed on both hosts.
+
+Disjoint measured mobile RX+TX including background is **30.016841 MB**:
+1.403991 MB staging plus 28.612850 MB trial through runtime cleanup. The
+27.570070 MB trial-only interval is nested and must not be added again.
+This is this experiment's accounting, not the entire multi-day goal total.
+
+Evidence: `reactive-measurement-final-*` and
+`reactive-measurement-field-20261006/{comparison,bounded-analysis,
+voice-analysis,direct-reference-summary,frame-analysis,qdisc-analysis,
+queue-analysis,cleanup-metering}.json`, identity/cleanup logs and raw phase
+files under `/srv/nvme/tmp/wanbond-adaptive-evidence`.
+
+**Intended:** keep the accepted `b444920` / `v0.0.3` deployment and continue
+capacity-discovery diagnosis with the physical receipt qualifications intact.
+No new release, completed stage or three-run lab/profile acceptance is claimed.

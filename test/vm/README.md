@@ -3766,7 +3766,15 @@ mobile intervals total 35.891 MB, including observer validation and background.
 The new settled TCP propagation/loss outcome passes accepted `b444920` and
 main three times and fails `2099735`; this is a candidate regression, with no
 original `f75668e` verdict. An isolated reactive-delay correction retains
-selected drain/congestion/voice outcomes while discovery/startup fail; full
-checks/builds are pending and it has no field result. Sources, timing limits,
+selected drain/congestion/voice outcomes while discovery/startup fail. Exact
+source `c7ecab6` passes native/ARM builds, with 24 default bond failures and
+102 tagged failure entries retained. Its first bounded field comparison delivers
+all echoes and has upload bounds overlapping the preceding baseline; active
+voice p99 is slightly higher. The trailing baseline has much lower TCP service
+and a low 5G estimate without probes, despite a similar immediate direct
+reference. No consistent all-metric gain or causal attribution is established.
+Both deployments/network state and owned cleanup are independently verified;
+this experiment uses 30.017 MB measured mobile RX+TX including background. See
+the [completed comparison](../../docs/drafts/20261002-1730-adaptive-policy-plan.md#reactive-delay-measurement-field-comparison--2026-10-06-11261134-utc). Sources, timing limits,
 cleanup, metering and continuing work are in the
 [record](../../docs/drafts/20261002-1730-adaptive-policy-plan.md#frame-timestamp-field-repeat-and-paced-tcp-regression--2026-10-06). No release or lab/profile completion is claimed.
