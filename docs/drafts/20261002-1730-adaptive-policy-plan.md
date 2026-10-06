@@ -4512,3 +4512,84 @@ measurement, genuine capacity-drop recovery, voice deadlines and settled bulk.
 No new field experiment follows the recorded `307ca74` comparison yet. The
 installed `b444920` / `v0.0.3` remains the performance baseline; the goal is
 active and no stage/profile gate or all-metric objective is completed.
+
+
+## Post-drain current-delay field comparison — 2026-10-06, 10:13–10:26 UTC
+
+**Observed:** clean isolated source `209973515ef97e359a97f48cb2feee293a90f9d2`
+(`2099735`), ARM SHA-256
+`a0d47e92aa847d8959044d20f55f0677cd7ee1229a9294f4dc890c1f85801eb5`,
+completes one capped C8/experiment/C8 upload comparison. This build includes
+the physical-prefix, post-drain timing and current-delay corrections, while
+retaining the earlier short capacity probe. Smaller-gain and reactive-response
+overlays are not in the field binary. Native Nix and ARM builds pass; the full
+non-privileged check completes with 25 top-level bond failures, and the tagged
+suite has 113 failing entries (46 top-level tests). Other non-privileged
+components pass. Failed gates remain recorded; the operator authorized
+reversible field experiments despite them, not promotion.
+
+Voice-only preflight is 500/500 per host/phase. Each phase then measures both
+physical uplinks before tunnel traffic, limits only wanbond's 5G UDP traffic
+to 2 Mbit/s, and offers a ten-second 3 Mbit/s TCP upload beside 35 seconds of
+bidirectional voice. Every network change has a verified 120-second removal
+timer; the candidate also has independent 15-minute service restoration.
+No WAN blackout occurs. Original source/hash, exit and qdiscs are verified
+before staging and independently verified after restoration and owned cleanup.
+Both boot IDs remain unchanged.
+
+| Observed metric | C8 before | `2099735` | C8 after |
+|---|---:|---:|---:|
+| Whole-phase edge voice p50, ms | 34.53 | 29.75 | 32.85 |
+| Whole-phase edge voice p99, ms | 50.58 | 133.59 | 52.00 |
+| Whole-phase hub voice p50, ms | 33.25 | 30.01 | 34.76 |
+| Whole-phase hub voice p99, ms | 49.49 | 107.65 | 51.23 |
+| Guarded upload-active edge/hub p99, ms | 46.23 / 45.46 | 119.69 / 67.89 | 51.96 / 71.56 |
+| Late upload report bounds, Mbit/s | 1.06368–1.53408 | 1.04256–1.60512 | 1.10976–1.63776 |
+| Whole-phase voice echoes, each host | 1750/1750 | 1750/1750 | 1750/1750 |
+| Immediate direct 5G upload, 3 Mbit/s offer | 2.861 | 2.872 | 2.725 |
+| Immediate direct Starlink upload, 1 Mbit/s offer | 0.513 | 0.514 | 0.504 |
+
+The receiver bounds use whole reports within/overlapping seconds 5–10 and
+are not interpolated deadline measurements. Voice uses each host's local
+clock; no one-way timing is inferred. The direct rates establish offered
+service, not maximum capacity or identical RF delay. All direct 5G ICMP
+references to the exact hub address receive 100/100 replies; average RTT is
+28.82 / 33.90 / 31.32 ms with maxima 95.58 / 102.23 / 103.72 ms. These limits
+preclude claiming that only the policy changed.
+
+**Observed verdict:** lower medians do not offset the worse whole-phase tails,
+larger arrival gaps and overlapping throughput bounds. The source is rejected
+as a performance candidate. Its sampled real-time local queue residence has
+p99 upper bound 1 ms and no real-time queued drops; this does not explain the
+larger end-to-end RTT tail or identify its cause. The fixed qdisc backlog is
+also insufficient as a latency proxy: the candidate's later-window backlog
+p99 is 34.684 ms versus 71.024/86.896 ms for the baselines, while its echo tail
+is worse. Ordinary copies remain included in `repair_packets_total`.
+
+Owned inactive candidate binaries are removed from both hosts. Three owned
+edge runtime references are byte-verified into
+`/var/tmp/wanbond-post-drain-current-upload-reference-archive-20261006.tar.gz`
+then removed. Disjoint measured mobile RX+TX including background is 0.786874 MB
+staging plus 26.674483 MB trial through runtime cleanup: **27.461357 MB**.
+The nested 25.778863 MB trial counter is not added again; gaps and later
+read-only SSH are excluded. Evidence is `post-drain-current-field-20261006/`
+and `post-drain-current-final-{nonprivileged-gate,nix-build,arm-build,tagged}.*`.
+
+**Observed additional model constraint:**
+`TestSettledPropagationServiceAfterEarlierPhysicalLoss` establishes at least
+75% of independent pre-change TCP service, then raises propagation delay at
+20 seconds. Both loss-free and earlier-loss cases pass three times on current
+main. Both fail three times on `2099735`; an earlier short loss interval makes
+the collapse more severe. The loss-free case also fails, so previous loss is
+not established as the sole cause. The model gate is retained as an overlay,
+not a claim about original `f75668e`. Its first fixture revision did not compile
+because it named a nonexistent direction; only the corrected v2 run is evidence.
+A reactive measurement overlay preserving subsequent delay cuts passes
+selected UDP service/drop/deadline constraints but still fails discovery and
+jittery startup. None of these overlays is deployed or promoted.
+
+**Intended:** distinguish originals, copies and their timing on the physical
+paths before attributing the observed voice tail, then correct the reproduced
+TCP/delay failure without losing genuine congestion recovery. The field remains
+the performance reference. Installed `b444920` / `v0.0.3` remains the accepted
+baseline, stage/profile gates are incomplete, and the goal remains active.

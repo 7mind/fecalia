@@ -658,3 +658,16 @@ selected model passes are insufficient when the full suite still regresses.
 The original baseline's three-run settled-drop passes and the unmerged
 physical-drain corrections are retained in the
 [continuing policy record](drafts/20261002-1730-adaptive-policy-plan.md#settled-capacity-drops-and-physical-drain-qualification--2026-10-06). No new metered field run is claimed.
+
+
+The isolated post-drain current-delay source `2099735` completes one capped
+C8/experiment/C8 field comparison. All 1750 echoes per host/phase arrive and
+medians fall, but whole-phase p99 rises from approximately 50 ms to 134/108 ms
+and upload bounds overlap. It is rejected as a performance candidate. Source
+checks retain 25 default top-level failures and 113 tagged entries; native/ARM
+builds pass. Both deployed identities, original network state and owned cleanup
+are independently verified. Disjoint mobile RX+TX including background is
+27.461 MB through cleanup. The new TCP propagation/loss regression and the
+unresolved packet-placement/fallback hypothesis are retained in the
+[field record](drafts/20261002-1730-adaptive-policy-plan.md#post-drain-current-delay-field-comparison--2026-10-06-10131026-utc). The accepted baseline remains `b444920` / `v0.0.3`;
+no new stage, repeated field acceptance or release is claimed.
