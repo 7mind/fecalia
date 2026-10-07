@@ -45,6 +45,12 @@ jobs:
           (cd third_party/amneziawg-go && go test ./device/...)
 
       - name: golangci-lint
-        uses: golangci/golangci-lint-action@v6
+        uses: golangci/golangci-lint-action@v9
         with:
-          version: latest
+          # golangci-lint v2 matches .golangci.yml (version: "2") and the version
+          # pinned in the flake dev shell — keep in sync with flake.nix.
+          # goinstall builds it with the workflow's Go toolchain, so the binary's
+          # language version always satisfies go.mod (action@v6 resolved a
+          # go1.24-built v1-line binary that refused to run against go 1.26.4).
+          version: v2.12.2
+          install-mode: goinstall
