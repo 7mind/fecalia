@@ -17,7 +17,11 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: stable
+          # Pin to the project toolchain (go.mod / flake dev shell). A newer
+          # toolchain's stdlib source crashes staticcheck's IR builder in
+          # golangci-lint 2.12.2 (honnef.co/go/tools v0.7.0); keep the Go and
+          # golangci-lint pins in sync when bumping either.
+          go-version-file: go.mod
 
       - uses: actions/setup-node@v4
         with:
