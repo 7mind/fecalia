@@ -120,8 +120,8 @@ func streamMonitor(ctx context.Context, addr, token string, once, color bool, ou
 	}
 	defer func() { _ = conn.CloseNow() }()
 	if !once {
-		fmt.Fprint(out, "\x1b[?1049h\x1b[?25l")
-		defer fmt.Fprint(out, "\x1b[?25h\x1b[?1049l")
+		_, _ = fmt.Fprint(out, "\x1b[?1049h\x1b[?25l")
+		defer func() { _, _ = fmt.Fprint(out, "\x1b[?25h\x1b[?1049l") }()
 	}
 	for {
 		readCtx, cancel := context.WithTimeout(ctx, monitorFrameTimeout)
@@ -173,9 +173,10 @@ func localMonitorAddress(listen string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("monitor: invalid listen address %q: %w", listen, err)
 	}
-	if host == "::" {
+	switch host {
+	case "::":
 		host = "::1"
-	} else if host == "" || host == "0.0.0.0" {
+	case "", "0.0.0.0":
 		host = "127.0.0.1"
 	}
 	return net.JoinHostPort(host, port), nil

@@ -175,7 +175,7 @@ func TestBidirectionalCapacityAndOutage(t *testing.T) {
 		}
 		for i, p := range peers {
 			for path := 0; path < 2; path++ {
-				if tick%200 == 0 && !(path == 0 && outage) {
+				if tick%200 == 0 && (path != 0 || !outage) {
 					p.Path(bond.PathID(path), bond.PathID(path), time.Duration(30+20*path)*time.Millisecond, now)
 				}
 			}

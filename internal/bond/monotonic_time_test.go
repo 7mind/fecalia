@@ -22,20 +22,21 @@ func TestTransportRejectsRegressingTime(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if operation == "path" {
+			switch operation {
+			case "path":
 				err = p.Path(1, 1, time.Millisecond, now)
 				if err == nil || len(p.Snapshot(now.Add(time.Millisecond)).Paths) != 1 {
 					t.Fatal("regressing path update changed the transport")
 				}
-			} else if operation == "poll" {
+			case "poll":
 				if _, err = p.Poll(now); err == nil {
 					t.Fatal("poll accepted regressing time")
 				}
-			} else if operation == "enqueue" {
+			case "enqueue":
 				if err := p.Enqueue(make([]byte, 1200), bond.PacketMetadata{}, now); err == nil {
 					t.Fatal("enqueue accepted a time before the previous poll")
 				}
-			} else {
+			default: // "receive"
 				// The frame is valid for this receiver, isolating the clock violation.
 				q := bond.New(bond.Epoch{Boot: 2, Generation: 1})
 				q.SetRemote(p.Epoch(), true)

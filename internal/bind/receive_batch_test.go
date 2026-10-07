@@ -25,14 +25,14 @@ func TestReceiveDrainsReadyBatch(t *testing.T) {
 	src := netip.MustParseAddrPort("192.0.2.1:51820")
 	for i := range packets {
 		packets[i] = make([]byte, 1500)
-		m.peerState.resequencer.Load().Observe(uint64(i), []byte{byte(i)}, src)
+		m.resequencer.Load().Observe(uint64(i), []byte{byte(i)}, src)
 	}
 	n, err := receivers[0](packets, sizes, endpoints)
 	if err != nil || n != count {
 		t.Fatalf("ready receive batch returned %d packets, want %d: %v", n, count, err)
 	}
 	for i := range packets {
-		if sizes[i] != 1 || packets[i][0] != byte(i) || endpoints[i] != m.peerState.virt {
+		if sizes[i] != 1 || packets[i][0] != byte(i) || endpoints[i] != m.virt {
 			t.Errorf("packet %d lost order or peer identity: size=%d data=%v endpoint=%v", i, sizes[i], packets[i][:sizes[i]], endpoints[i])
 		}
 	}
@@ -50,7 +50,7 @@ func TestAdaptiveReceiveCoalescesBulkAndFlushesInteractive(t *testing.T) {
 			t.Cleanup(func() { _ = m.Close() })
 			start := clock.Now()
 			src := netip.MustParseAddrPort("192.0.2.1:51820")
-			rq := m.peerState.resequencer.Load()
+			rq := m.resequencer.Load()
 			rq.Observe(1, []byte{1}, src)
 			injected := false
 			m.beforeReceivePark = func(deadline time.Time) {

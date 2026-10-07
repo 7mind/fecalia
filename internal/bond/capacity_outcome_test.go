@@ -27,20 +27,6 @@ func checkSparseAndResumedSenders(t *testing.T, policed bool) {
 	}
 }
 
-// Performance-Blackbox-Group: a formerly slow lane must carry the extra
-// demand after its service rate rises, rather than merely count probe wins.
-func checkSlowLaneRateIncrease(t *testing.T) {
-	t.Helper()
-	m := policyRun{lanes: []modelLane{{condition: func(side int, at time.Duration) modelCondition {
-		rate := 90e3
-		if at >= 10*time.Second {
-			rate = 625e3
-		}
-		return modelCondition{rate: rate, delay: 30 * time.Millisecond, buffer: 100 * time.Millisecond}
-	}}}, seconds: 30, trafficAt: 2, voice: true, bulk: true}
-	checkCapacityService(t, m, 20, 30)
-}
-
 // Performance-Blackbox-Group: batched receipts must not strand bulk at an
 // estimate established by one release of the receiver's backlog.
 func TestBatchedReceiptsKeepBulkProductive(t *testing.T) {
